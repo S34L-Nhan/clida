@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude Desk</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <aside class="sidebar" aria-label="Chats">
+      <div class="sidebar-inner">
+        <div class="side-head">
+          <button class="icon-btn" data-action="toggle-sidebar" title="Seitenleiste einklappen (Strg+Umschalt+B)" aria-label="Seitenleiste einklappen" data-icon="panel"></button>
+          <span class="brand">Claude Desk</span>
+        </div>
+        <button class="new-chat" data-action="new-chat" title="Neuer Chat (Strg+Umschalt+O)"><span data-icon="plus"></span>Neuer Chat</button>
+        <label class="search">
+          <span data-icon="search"></span>
+          <input id="search" type="search" placeholder="Chats durchsuchen" autocomplete="off" spellcheck="false">
+        </label>
+        <nav id="session-list" class="session-list"></nav>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="tabbar">
+        <div class="rail">
+          <button class="icon-btn" data-action="toggle-sidebar" title="Seitenleiste ausklappen (Strg+Umschalt+B)" aria-label="Seitenleiste ausklappen" data-icon="panel"></button>
+          <button class="icon-btn" data-action="new-chat" title="Neuer Chat (Strg+Umschalt+O)" aria-label="Neuer Chat" data-icon="plus"></button>
+        </div>
+        <div id="tabs" class="tabs" role="tablist"></div>
+      </div>
+      <div id="banner" class="banner" hidden>Server nicht erreichbar – läuft <code>claude-desk</code> noch?</div>
+      <div id="views" class="views">
+        <div id="empty" class="empty">
+          <h1>Womit legen wir los?</h1>
+          <p>Starte einen neuen Chat oder öffne links einen früheren.<br>Laufende Sessions arbeiten im Hintergrund weiter, auch wenn ihr Tab geschlossen ist.</p>
+          <button class="btn primary" data-action="new-chat">Neuer Chat</button>
+          <dl class="keys">
+            <dt>Strg+Umschalt+O</dt><dd>Neuer Chat</dd>
+            <dt>Strg+Umschalt+B</dt><dd>Seitenleiste ein/aus</dd>
+            <dt>Strg+Bild↑/↓</dt><dd>Tab wechseln</dd>
+            <dt>Umschalt+Enter</dt><dd>Zeilenumbruch im Terminal</dd>
+          </dl>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="new-dialog" class="dialog">
+    <form id="new-form" method="dialog">
+      <h2>Neuer Chat</h2>
+      <label for="new-cwd">Arbeitsverzeichnis</label>
+      <input id="new-cwd" list="cwd-list" autocomplete="off" spellcheck="false" required>
+      <datalist id="cwd-list"></datalist>
+      <div id="cwd-chips" class="chips"></div>
+      <label for="new-title">Titel <span class="muted">(optional)</span></label>
+      <input id="new-title" autocomplete="off" placeholder="wird sonst automatisch vergeben">
+      <p id="new-error" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" value="cancel" data-action="close-dialog">Abbrechen</button>
+        <button type="submit" class="btn primary">Starten</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

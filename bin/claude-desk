@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# claude-desk: start the local server (if needed) and open the app window.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+STATE="${CLAUDE_DESK_HOME:-$HOME/.claude-desk}"
+PORT="${CLAUDE_DESK_PORT:-47321}"
+LOG="$STATE/server.log"
+KEEPALIVE_LOCK="$STATE/keepalive.lock"
+WIN32="/mnt/c/Windows/System32"
+
+usage() {
+  cat <<EOF
+Usage: claude-desk [open|start|stop|restart|status|serve|url|shortcut]
+
+  open     (default) start the server if needed and open the window
+  app      like open, then keep WSL alive while the server runs (Windows shortcut target)
+  start    start the server in the background only
+  stop     stop the server; asks first if sessions are running (--force: don't ask)
+  restart  stop + open (same question, same --force)
+  status   show whether the server runs and how many sessions it hosts
+  serve    run the server in the foreground (logs to the terminal)
+  url      print a one-time login URL (valid 60 s), e.g. for another browser
+  shortcut create or update the "Claude Desk" shortcut on the Windows desktop
+EOF
+}
+
+healthy() { curl -fsS -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/healthz" 2>/dev/null; }
+
+# Call the local API; the token goes in via stdin so it never shows up in `ps`.
+local_api() {
+  printf 'cookie = "claude_desk_token=%s"\n' "$(cat "$STATE/token")" |
+    curl -fsS --max-time 2 -K - -X "$1" -H "Host: localhost:$PORT" "http://127.0.0.1:$PORT$2"
+}
+
+ensure_deps() {
+  if [[ ! -f "$ROOT/node_modules/@xterm/xterm/lib/xterm.mjs" ]]; then
+    echo "claude-desk: installing frontend libraries (one-time npm install) ..." >&2
+    (cd "$ROOT" && npm install --no-audit --no-fund --silent)
+  fi
+}
+
+start_server() {
+  healthy && return 0
+  ensure_deps
+  mkdir -p -m 700 "$STATE"
+  cd "$ROOT"
+  setsid nohup python3 -m desk --port "$PORT" >>"$LOG" 2>&1 < /dev/null &
+  for _ in $(seq 1 50); do
+    healthy && return 0
+    sleep 0.1
+  done
+  echo "claude-desk: server did not come up, see $LOG" >&2
+  tail -n 20 "$LOG" >&2 || true
+  exit 1
+}
+
+# A one-time ticket (valid 60 s) instead of the token, so the token never lands in browser history.
+login_url() {
+  local ticket
+  ticket="$(local_api POST /api/login-ticket | python3 -c 'import json, sys; print(json.load(sys.stdin)["ticket"])')"
+  echo "http://localhost:$PORT/?ticket=$ticket"
+}
+
+open_window() {
+  local url edge chrome
+  url="$(login_url)"
+  edge="/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+  chrome="/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+  for browser in "$edge" "$chrome"; do
+    if [[ -x "$browser" ]]; then
+      # Start from a Windows path so the .exe does not complain about a UNC working directory.
+      (cd /mnt/c && nohup "$browser" --app="$url" --window-size=1440,920 >/dev/null 2>&1 &)
+      return 0
+    fi
+  done
+  if command -v xdg-open >/dev/null; then
+    xdg-open "$url" >/dev/null 2>&1 &
+  else
+    echo "Open in a browser: $url"
+  fi
+}
+
+# WSL shuts down once no Windows-side wsl.exe client is left, taking the server with it.
+# A headless wsl.exe that waits while the server is up prevents that.
+keepalive() {
+  exec 9>"$KEEPALIVE_LOCK"
+  flock -n 9 || return 0
+  local misses=0
+  while (( misses < 3 )); do
+    if healthy; then misses=0; else misses=$((misses + 1)); fi
+    sleep 15
+  done
+}
+
+ensure_keepalive() {
+  [[ -n "${WSL_DISTRO_NAME:-}" && -x "$WIN32/WindowsPowerShell/v1.0/powershell.exe" ]] || return 0
+  flock -n "$KEEPALIVE_LOCK" true || return 0  # one is already running
+  # Started from the Windows side, so it does not hang on this terminal's interop session.
+  (cd /mnt/c && "$WIN32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -Command \
+    "Start-Process -WindowStyle Hidden -FilePath wsl.exe -ArgumentList '-d','$WSL_DISTRO_NAME','-e','$ROOT/bin/claude-desk','keepalive'" \
+    >/dev/null 2>&1 &)
+}
+
+make_shortcut() {
+  [[ -n "${WSL_DISTRO_NAME:-}" ]] || { echo "claude-desk: shortcuts need WSL" >&2; exit 1; }
+  local appdata dir script
+  appdata="$(cd /mnt/c && "$WIN32/cmd.exe" /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')"
+  dir="$(wslpath "$appdata")/claude-desk"
+  mkdir -p "$dir"
+  cp "$ROOT/static/icon.ico" "$dir/claude-desk.ico"
+  # conhost --headless runs wsl.exe without a console window.
+  script=$(cat <<EOF
+\$ProgressPreference = 'SilentlyContinue'
+\$desktop = [Environment]::GetFolderPath('Desktop')
+\$path = Join-Path \$desktop 'Claude Desk.lnk'
+\$link = (New-Object -ComObject WScript.Shell).CreateShortcut(\$path)
+\$link.TargetPath = Join-Path \$env:SystemRoot 'System32\\conhost.exe'
+\$link.Arguments = '--headless ' + (Join-Path \$env:SystemRoot 'System32\\wsl.exe') + ' -d $WSL_DISTRO_NAME -e bash -lc "$ROOT/bin/claude-desk app"'
+\$link.IconLocation = '$appdata\\claude-desk\\claude-desk.ico,0'
+\$link.WorkingDirectory = \$env:USERPROFILE
+\$link.Description = 'Claude Code CLI im Desktop-Fenster (WSL: $WSL_DISTRO_NAME)'
+\$link.Save()
+\$path
+EOF
+)
+  (cd /mnt/c && "$WIN32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -EncodedCommand \
+    "$(python3 -c 'import base64, sys; print(base64.b64encode(sys.stdin.read().encode("utf-16-le")).decode())' <<<"$script")") \
+    | tr -d '\r'
+}
+
+stop_server() {
+  local pid
+  pid="$(cat "$STATE/server.pid" 2>/dev/null || true)"
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+    echo "claude-desk is not running."
+    return 0
+  fi
+  # Stopping ends every session hosted here - possibly the very one that runs this command.
+  local running answer
+  running="$(local_api GET /api/status 2>/dev/null | python3 -c '
+import json, sys
+print(sum(t["status"] != "exited" for t in json.load(sys.stdin)["terminals"]))' 2>/dev/null || echo 0)"
+  if (( running > 0 )) && [[ "$FORCE" != 1 ]]; then
+    if [[ -t 0 ]]; then
+      read -r -p "$running session(s) still running in claude-desk and will be ended. Stop anyway? [y/N] " answer
+      [[ "$answer" =~ ^[yYjJ] ]] || { echo "Aborted."; return 1; }
+    else
+      echo "claude-desk: $running session(s) still running; use 'claude-desk stop --force'." >&2
+      return 1
+    fi
+  fi
+  kill "$pid"
+  for _ in $(seq 1 80); do
+    kill -0 "$pid" 2>/dev/null || { echo "claude-desk stopped."; return 0; }
+    sleep 0.1
+  done
+  echo "claude-desk did not stop in time (pid $pid)." >&2
+  return 1
+}
+
+FORCE=0
+[[ "${2:-}" == "--force" ]] && FORCE=1
+
+case "${1:-open}" in
+  open) start_server; open_window; ensure_keepalive ;;
+  app) start_server; open_window; keepalive ;;
+  keepalive) keepalive ;;
+  start) start_server; ensure_keepalive; echo "claude-desk runs on http://localhost:$PORT" ;;
+  stop) stop_server ;;
+  restart) stop_server; start_server; open_window; ensure_keepalive ;;
+  status)
+    if healthy; then
+      echo "claude-desk runs on http://localhost:$PORT (pid $(cat "$STATE/server.pid" 2>/dev/null || echo '?'))"
+      local_api GET /api/status | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+live = [t for t in d["terminals"] if t["status"] != "exited"]
+print(f"{len(live)} session(s) running in claude-desk")
+for t in live:
+    print("  {status:<8} {cwd}  {session_id}".format(**t))'
+    else
+      echo "claude-desk is not running."
+    fi
+    ;;
+  serve) ensure_deps; cd "$ROOT"; exec python3 -m desk --port "$PORT" ;;
+  url) start_server; login_url ;;
+  shortcut) make_shortcut ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac
