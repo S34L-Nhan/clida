@@ -1,5 +1,6 @@
 """Claude CLI processes running in pseudo-terminals, shared with any attached browser tabs."""
 
+import collections
 import fcntl
 import os
 import pty
@@ -13,6 +14,8 @@ import uuid
 from . import registry
 
 SCROLLBACK_BYTES = 2 * 1024 * 1024
+VIEWER_BACKLOG_BYTES = 8 * 1024 * 1024  # a tab further behind than this is dropped and reconnects
+EXITED_TTL = 600  # seconds an exited terminal waits for a tab that has not seen its end yet
 
 # Variables that would make the child think it runs inside this server's own Claude session.
 _INHERITED_SESSION_VARS = {
@@ -30,6 +33,65 @@ def child_env() -> dict:
     return env
 
 
+class _Viewer:
+    """One attached browser tab. Its own thread does the sending, so a slow tab never stalls the PTY."""
+
+    def __init__(self, ws):
+        self.ws = ws
+        self._items = collections.deque()  # bytes (terminal output) or dict (control message)
+        self._queued = 0
+        self._cond = threading.Condition()
+        self._closed = False
+        threading.Thread(target=self._run, name="ws-writer", daemon=True).start()
+
+    def push(self, item):
+        """Queue output for this tab; never blocks."""
+        size = len(item) if isinstance(item, bytes) else 0
+        with self._cond:
+            if self._closed:
+                return
+            if self._queued + size > VIEWER_BACKLOG_BYTES:
+                self._closed = True
+                self._cond.notify()
+                self.ws.abort()
+                return
+            self._items.append(item)
+            self._queued += size
+            self._cond.notify()
+
+    def close(self):
+        with self._cond:
+            self._closed = True
+            self._cond.notify()
+
+    def _next(self):
+        """Wait for the next message; merge queued output into one frame."""
+        with self._cond:
+            while not self._items and not self._closed:
+                self._cond.wait()
+            if self._closed:
+                return None
+            item = self._items.popleft()
+            if isinstance(item, bytes):
+                chunks = [item]
+                while self._items and isinstance(self._items[0], bytes) and len(chunks) < 256:
+                    chunks.append(self._items.popleft())
+                item = b"".join(chunks)
+                self._queued -= len(item)
+            return item
+
+    def _run(self):
+        while (item := self._next()) is not None:
+            try:
+                if isinstance(item, bytes):
+                    self.ws.send_binary(item)
+                else:
+                    self.ws.send_json(item)
+            except OSError:
+                self.close()
+                self.ws.abort()
+
+
 class Terminal:
     def __init__(self, claude: str, cwd: str, session_id: str, argv: list):
         self.id = session_id          # stable key for tabs and websockets
@@ -38,16 +100,20 @@ class Terminal:
         self.started = time.time()
         self.last_output = 0.0
         self.exit_code = None
+        self.exited_at = None
         self._buf = bytearray()
-        self._clients = []
+        self._viewers = {}  # websocket -> _Viewer
         self._lock = threading.Lock()
+        env = child_env()
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             try:
                 os.chdir(cwd)
-                os.execve(claude, [claude, *argv], child_env())
+                os.execve(claude, [claude, *argv], env)
             finally:
                 os._exit(127)
+        # pty.fork() leaves the master inheritable: every later session would get a copy.
+        os.set_inheritable(self.fd, False)
         self.resize(120, 32)
         threading.Thread(target=self._pump, name=f"pty-{self.id[:8]}", daemon=True).start()
 
@@ -78,33 +144,36 @@ class Terminal:
                 if len(self._buf) > SCROLLBACK_BYTES:
                     cut = self._buf.find(b"\n", len(self._buf) - SCROLLBACK_BYTES)
                     del self._buf[:cut + 1 if cut >= 0 else len(self._buf) - SCROLLBACK_BYTES]
-                self._broadcast(lambda ws: ws.send_binary(data))
+                for viewer in self._viewers.values():
+                    viewer.push(data)
         _, status = os.waitpid(self.pid, 0)
         # The master fd stays open until close(), so a late write() can never hit a reused fd.
         with self._lock:
+            self.exited_at = time.time()  # before exit_code: reap() reads it once alive is False
             self.exit_code = os.waitstatus_to_exitcode(status)
-            self._broadcast(lambda ws: ws.send_json({"t": "exit", "code": self.exit_code}))
+            for viewer in self._viewers.values():
+                viewer.push({"t": "exit", "code": self.exit_code})
 
-    def _broadcast(self, send):
-        for ws in list(self._clients):
-            try:
-                send(ws)
-            except OSError:
-                self._clients.remove(ws)
+    @property
+    def watched(self) -> bool:
+        with self._lock:
+            return bool(self._viewers)
 
     def attach(self, ws):
         """Replay the scrollback, then stream live output to ws."""
+        viewer = _Viewer(ws)
         with self._lock:
             if self._buf:
-                ws.send_binary(bytes(self._buf))
+                viewer.push(bytes(self._buf))
             if not self.alive:
-                ws.send_json({"t": "exit", "code": self.exit_code})
-            self._clients.append(ws)
+                viewer.push({"t": "exit", "code": self.exit_code})
+            self._viewers[ws] = viewer
 
     def detach(self, ws):
         with self._lock:
-            if ws in self._clients:
-                self._clients.remove(ws)
+            viewer = self._viewers.pop(ws, None)
+        if viewer:
+            viewer.close()
 
     def write(self, data: bytes):
         if not self.alive:
@@ -193,6 +262,15 @@ class Terminals:
                 return True
         term.terminate()
         return True
+
+    def reap(self):
+        """Forget exited terminals that no tab watches any more."""
+        now = time.time()
+        with self._lock:
+            for terminal_id, term in list(self._by_id.items()):
+                if not term.alive and now - term.exited_at > EXITED_TTL and not term.watched:
+                    del self._by_id[terminal_id]
+                    term.close()
 
     def shutdown(self, timeout: float = 5):
         terms = [t for t in self.all() if t.alive]

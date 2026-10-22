@@ -4,8 +4,10 @@ Ein Desktop-Fenster für die Claude Code CLI, ähnlich wie Claude Desktop:
 
 - **Seitenleiste** mit allen bisherigen Chats aus `~/.claude/projects`, gruppiert nach Datum (Heute, Gestern, Letzte 7 Tage …), mit Suche. Sie lässt sich ein- und ausklappen.
 - **Chats umbenennen**: Stift-Symbol, Doppelklick auf den Titel in Liste oder Tab, oder Klick auf die Überschrift.
+- **Ordner**: Mit dem Ordner-Symbol oben in der Seitenleiste legst du einen neuen Ordner an. Chats ziehst du per Drag & Drop hinein und wieder heraus in die normale Liste. Per Rechtsklick lässt sich ein Ordner umbenennen oder löschen. Beim Löschen eines Ordners kommen seine Chats zurück in die Liste.
+- **Rechtsklick auf einen Chat**: *Archivieren* nimmt ihn aus der Liste, den Verlauf behält er. Unten im Bereich *Archiv* kannst du ihn wiederherstellen. *Löschen* entfernt den Verlauf nach einer Rückfrage endgültig von der Platte, also Transcript, Tool-Ausgaben, Datei-Backups und Env-Snapshot. Laufende Sitzungen müssen vorher beendet werden. Sonst gibt es keinen Rechtsklick, außer in Textfeldern (Einfügen, Rechtschreibung).
 - **Hybrid-Ansicht** pro Chat:
-  - *Verlauf*: der Chat als gerenderte Unterhaltung (Markdown, Tool-Aufrufe zusammengeklappt).
+  - *Verlauf*: der Chat als gerenderte Unterhaltung (Markdown, Tool-Aufrufe zusammengeklappt). Code-Blöcke sind farbig hervorgehoben (SQL, PHP, JS, Bash, JSON …) und haben einen Kopieren-Knopf. Die Textbreite stellt ein Schieberegler im Kopf ein. Die Mitte ist die Standardbreite, ein Doppelklick setzt ihn darauf zurück.
   - *Terminal*: die echte `claude` CLI im eingebetteten Terminal (xterm.js). Alles funktioniert wie gewohnt: Berechtigungsabfragen, Slash-Commands, Plan- und Auto-Mode.
 - **Parallele Sessions**: Jede Session hat einen eigenen Tab und arbeitet im Hintergrund weiter, auch wenn ihr Tab geschlossen ist. Die Punkte zeigen den Zustand:
   - orange pulsierend = arbeitet
@@ -47,6 +49,8 @@ WSL fährt herunter, sobald auf Windows-Seite kein `wsl.exe` mehr läuft, und ni
 | Strg+C mit Markierung | Kopieren (ohne Markierung: normales Strg+C an die CLI) |
 | Strg+V | Einfügen |
 | Mittelklick auf Tab | Tab schließen |
+| Tab-Taste, dann Enter | Chat in der Seitenleiste oder Tab per Tastatur öffnen |
+| F2 | ausgewählten Chat oder Tab umbenennen |
 
 - **Neuer Chat**: Arbeitsverzeichnis wählen (zuletzt genutzte Verzeichnisse werden vorgeschlagen) und optional einen Titel angeben. Der Titel geht per `--name` an die CLI.
 - **Früheren Chat öffnen**: zeigt zuerst den Verlauf. Mit *Fortsetzen* läuft `claude --resume <id>` im ursprünglichen Arbeitsverzeichnis. Läuft der Chat schon in einem anderen Terminal, fragt Claude Desk vorher nach.
@@ -59,7 +63,7 @@ WSL fährt herunter, sobald auf Windows-Seite kein `wsl.exe` mehr läuft, und ni
   - `transcripts.py` liest die Verläufe aus `~/.claude/projects/*/*.jsonl`. Die Dateien werden nur inkrementell gelesen, der Index liegt in `~/.claude-desk/index.json`.
   - `registry.py` liest `~/.claude/sessions/<pid>.json`. Dort meldet jede laufende CLI ihren Status (busy/idle/wartet).
   - `ws.py` ist eine minimale WebSocket-Implementierung für den Terminal-Stream.
-- `static/` ist das Frontend: Vanilla-JS, ohne Build-Schritt. xterm.js, marked und DOMPurify kommen per `npm install` nach `node_modules/` (macht `claude-desk` beim ersten Start automatisch) und werden lokal ausgeliefert.
+- `static/` ist das Frontend: Vanilla-JS, ohne Build-Schritt. xterm.js, marked, DOMPurify und highlight.js kommen per `npm install` nach `node_modules/` (macht `claude-desk` beim ersten Start automatisch) und werden lokal ausgeliefert.
 
 ### Titel
 
@@ -85,6 +89,7 @@ Eine Einschränkung macht der Browser: Cookies unterscheiden nicht zwischen Port
 | `~/.claude-desk/server.log` | Server-Log |
 | `~/.claude-desk/index.json` | Cache des Chat-Index (darf gelöscht werden) |
 | `~/.claude-desk/titles.json` | in Claude Desk vergebene Titel |
+| `~/.claude-desk/library.json` | Ordner und archivierte Chats |
 | `~/.claude-desk/token` | Login-Token des Fensters |
 
 Port und Pfade lassen sich über `CLAUDE_DESK_PORT`, `CLAUDE_DESK_HOME` und `CLAUDE_DESK_CLAUDE` (Pfad zur CLI) ändern.

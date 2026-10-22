@@ -3,6 +3,7 @@ import { FitAddon } from '/vendor/addon-fit.mjs';
 import { WebLinksAddon } from '/vendor/addon-web-links.mjs';
 import { marked } from '/vendor/marked.esm.js';
 import DOMPurify from '/vendor/purify.es.mjs';
+import hljs from '/vendor/highlight.mjs';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -16,9 +17,19 @@ const ICONS = {
   panel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  folderPlus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10.5v5M9.5 13h5"/></svg>',
+  chevronRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>',
+  restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 5v5h5"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  width: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16M20 4v16M8 12h8M10.5 9.5L8 12l2.5 2.5M13.5 9.5L16 12l-2.5 2.5"/></svg>',
 };
 const icon = (name) => {
   const span = el('span');
@@ -28,6 +39,8 @@ const icon = (name) => {
 
 const STATUS_LABEL = { busy: 'arbeitet', waiting: 'wartet auf dich', idle: 'bereit', starting: 'startet', exited: 'beendet' };
 const HISTORY_WINDOW = 400;
+// Text width slider 0..100: 0 = narrowest, 50 = the classic 800px column, 100 = full width.
+const HISTORY_WIDTH = { min: 480, normal: 800, start: 50 };
 const TERM_THEME = {
   background: '#1d1c1a', foreground: '#e8e6e1', cursor: '#d97757', cursorAccent: '#1d1c1a',
   selectionBackground: 'rgba(217, 119, 87, 0.35)',
@@ -49,6 +62,9 @@ const state = {
   active: null,
   home: '',
   renaming: false,
+  folders: [],
+  dragging: null,   // session id while a chat is dragged
+  menu: null,       // open context menu
   online: true,
 };
 
@@ -73,6 +89,61 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 // Transcripts can quote anything (web pages, tool output), so no styles or form controls either.
 const PURIFY = { FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select'], FORBID_ATTR: ['style'] };
 const markdown = (text) => DOMPurify.sanitize(marked.parse(text), PURIFY);
+hljs.registerAliases(['mysql', 'mariadb', 'pgsql', 'postgres', 'postgresql', 'sqlite', 'tsql', 'plsql'], { languageName: 'sql' });
+
+function renderMarkdown(node, text) {
+  node.innerHTML = markdown(text);
+  for (const pre of node.querySelectorAll('pre')) enhanceCodeBlock(pre);
+}
+
+function enhanceCodeBlock(pre) {
+  const code = pre.querySelector('code');
+  if (!code) return;
+  const lang = [...code.classList].find((c) => c.startsWith('language-'))?.slice('language-'.length) || '';
+  if (lang && hljs.getLanguage(lang)) hljs.highlightElement(code);
+  const box = el('div', 'codeblock');
+  const bar = el('div', 'codeblock-bar');
+  const copy = el('button', 'codeblock-copy');
+  copy.type = 'button';
+  copy.title = 'In die Zwischenablage kopieren';
+  copy.append(icon('copy'), el('span', '', 'Kopieren'));
+  copy.onclick = () => copyText(code.textContent.replace(/\n$/, ''), copy);
+  bar.append(el('span', 'codeblock-lang', lang || 'code'), copy);
+  pre.replaceWith(box);
+  box.append(bar, pre);
+}
+
+async function copyText(text, button) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = el('textarea');
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    document.execCommand('copy');
+    area.remove();
+  }
+  button.replaceChildren(icon('check'), el('span', '', 'Kopiert'));
+  button.classList.add('done');
+  clearTimeout(button.resetTimer);
+  button.resetTimer = setTimeout(() => {
+    button.replaceChildren(icon('copy'), el('span', '', 'Kopieren'));
+    button.classList.remove('done');
+  }, 1500);
+}
+
+function historyWidthCss(value) {
+  const { min, normal } = HISTORY_WIDTH;
+  if (value <= 50) return `${Math.round(min + (normal - min) * value / 50)}px`;
+  return `calc(${normal}px + (100% - ${normal}px) * ${((value - 50) / 50).toFixed(3)})`;
+}
+
+function setHistoryWidth(value) {
+  document.documentElement.style.setProperty('--history-width', historyWidthCss(value));
+  store.set('historyWidth', value);
+  for (const tab of state.tabs) tab.widthRange.value = String(value);
+}
 
 async function api(method, path, body) {
   const res = await fetch(path, {
@@ -123,8 +194,8 @@ async function refreshStatus() {
   try {
     finished = applyStatus(await api('GET', '/api/status'));
     setOnline(true);
-  } catch {
-    setOnline(false);
+  } catch (e) {
+    setOnline(false, e.status);
     return;
   }
   for (const tab of state.tabs) {
@@ -147,21 +218,28 @@ async function refreshSessions() {
   try {
     data = await api('GET', '/api/sessions');
     setOnline(true);
-  } catch {
-    setOnline(false);
+  } catch (e) {
+    setOnline(false, e.status);
     return;
   }
   state.home = data.home;
   state.sessions = data.sessions;
   state.byId = new Map(data.sessions.map((s) => [s.id, s]));
+  state.folders = data.folders || [];
   applyStatus(data);
-  if (!state.renaming) renderSidebar();
+  if (!state.renaming && !state.dragging) renderSidebar();
   paint();
 }
 
-function setOnline(online) {
+function setOnline(online, status) {
   state.online = online;
-  $('#banner').hidden = online;
+  const banner = $('#banner');
+  banner.hidden = online;
+  if (online) return;
+  // 403: the server runs but no longer knows this window (new token), so a reload cannot help.
+  banner.replaceChildren(...(status === 403
+    ? ['Anmeldung abgelaufen – bitte Claude Desk über die Verknüpfung oder ', el('code', '', 'claude-desk'), ' neu öffnen.']
+    : ['Server nicht erreichbar – läuft ', el('code', '', 'claude-desk'), ' noch?']));
 }
 
 const tabSession = (tab) => state.terminals.get(tab.id)?.session_id || tab.id;
@@ -197,14 +275,31 @@ function timeLabel(mtime) {
   return d.toDateString() === new Date().toDateString() ? CLOCK.format(d) : SHORT_DATE.format(d);
 }
 
+function matchesSearch(s, query) {
+  return !query || [s.title, s.cwd_label, s.first_prompt, s.last_prompt].some((v) => v && v.toLowerCase().includes(query));
+}
+
 function renderSidebar() {
   const list = $('#session-list');
   const query = $('#search').value.trim().toLowerCase();
-  const matches = state.sessions.filter((s) => !query
-    || [s.title, s.cwd_label, s.first_prompt, s.last_prompt].some((v) => v && v.toLowerCase().includes(query)));
+  const collapsedFolders = store.get('collapsedFolders', {});
+  const byFolder = new Map(state.folders.map((f) => [f.id, []]));
+  const loose = [];
+  const archived = [];
+  for (const s of state.sessions) {
+    if (!matchesSearch(s, query)) continue;
+    if (s.archived) archived.push(s);
+    else if (byFolder.has(s.folder)) byFolder.get(s.folder).push(s);
+    else loose.push(s);
+  }
   const nodes = [];
+  for (const folder of state.folders) {
+    const chats = byFolder.get(folder.id);
+    if (query && !chats.length) continue;
+    nodes.push(folderNode(folder, chats, query ? true : !collapsedFolders[folder.id]));
+  }
   let group = null;
-  for (const s of matches) {
+  for (const s of loose) {
     const label = groupLabel(s.mtime);
     if (label !== group) {
       nodes.push(el('div', 'group-label', label));
@@ -212,8 +307,21 @@ function renderSidebar() {
     }
     nodes.push(sessionItem(s));
   }
-  if (!matches.length) nodes.push(el('div', 'list-empty', query ? 'Keine Treffer' : 'Noch keine Chats'));
+  if (archived.length) nodes.push(archiveNode(archived, query ? true : store.get('archiveOpen', false)));
+  if (!nodes.length) nodes.push(el('div', 'list-empty', query ? 'Keine Treffer' : 'Noch keine Chats'));
+  const focused = document.activeElement?.closest('#session-list .item, #session-list .folder-head, #session-list .archive-head');
+  const focusKey = focused && (focused.dataset.id || focused.dataset.folder || 'archive');
   list.replaceChildren(...nodes);
+  if (focusKey) focusSidebar(focusKey);
+}
+
+// Put keyboard focus back on a sidebar entry (chat id, folder id or 'archive') after a rebuild.
+function focusSidebar(key) {
+  const list = $('#session-list');
+  const node = key === 'archive'
+    ? list.querySelector('.archive-head')
+    : list.querySelector(`.item[data-id="${key}"], .folder-head[data-folder="${key}"]`);
+  node?.focus();
 }
 
 function sessionItem(s) {
@@ -230,8 +338,79 @@ function sessionItem(s) {
   rename.onclick = (ev) => { ev.stopPropagation(); startRename(title, s.id); };
   title.ondblclick = (ev) => { ev.stopPropagation(); startRename(title, s.id); };
   item.onclick = () => openSession(s.id);
+  item.tabIndex = 0;
+  item.setAttribute('role', 'button');
+  item.onkeydown = (ev) => onItemKey(ev, item, () => openSession(s.id), () => startRename(title, s.id));
+  if (!s.archived) {
+    item.draggable = true;
+    item.ondragstart = (ev) => startDrag(ev, s.id);
+    item.ondragend = endDrag;
+  }
   item.append(el('span', 'dot'), text, rename);
   return item;
+}
+
+function folderNode(folder, chats, open) {
+  const box = el('div', 'folder');
+  const head = el('div', 'folder-head');
+  head.dataset.folder = folder.id;
+  head.tabIndex = 0;
+  head.setAttribute('role', 'button');
+  head.setAttribute('aria-expanded', String(open));
+  head.append(icon(open ? 'chevronDown' : 'chevronRight'), icon('folder'),
+    el('span', 'folder-name', folder.name), el('span', 'folder-count', String(chats.length)));
+  head.onclick = () => toggleFolder(folder.id);
+  head.onkeydown = (ev) => onItemKey(ev, head, () => toggleFolder(folder.id), () => renameFolder(folder));
+  box.append(head);
+  if (open) {
+    const body = el('div', 'folder-body');
+    body.append(...(chats.length ? chats.map(sessionItem) : [el('div', 'folder-empty', 'Chats hierher ziehen')]));
+    box.append(body);
+  }
+  dropZone(box, folder.id);
+  return box;
+}
+
+function archiveNode(chats, open) {
+  const box = el('div', 'archive');
+  const head = el('div', 'archive-head');
+  head.tabIndex = 0;
+  head.setAttribute('role', 'button');
+  head.setAttribute('aria-expanded', String(open));
+  head.append(icon(open ? 'chevronDown' : 'chevronRight'), icon('archive'),
+    el('span', 'folder-name', 'Archiv'), el('span', 'folder-count', String(chats.length)));
+  const toggle = () => {
+    store.set('archiveOpen', !open);
+    renderSidebar();
+    paintSidebar();
+  };
+  head.onclick = toggle;
+  head.onkeydown = (ev) => onItemKey(ev, head, toggle, () => {});
+  box.append(head);
+  if (open) {
+    const body = el('div', 'folder-body');
+    body.append(...chats.map(sessionItem));
+    box.append(body);
+  }
+  return box;
+}
+
+function toggleFolder(folderId) {
+  const collapsed = store.get('collapsedFolders', {});
+  if (collapsed[folderId]) delete collapsed[folderId];
+  else collapsed[folderId] = true;
+  store.set('collapsedFolders', collapsed);
+  renderSidebar();
+  paintSidebar();
+}
+
+// Enter/Space opens, F2 renames - only when the entry itself has focus, not its rename field.
+function onItemKey(ev, node, open, rename) {
+  if (ev.target !== node) return;
+  if (ev.key === 'Enter' || ev.key === ' ') open();
+  else if (ev.key === 'F2') rename();
+  else return;
+  ev.preventDefault();
 }
 
 function paintSidebar() {
@@ -247,35 +426,36 @@ function paintSidebar() {
   }
 }
 
-function startRename(target, sid) {
+// Swap target's text for an input. Enter or leaving the field saves, Escape cancels.
+// focusKey: the sidebar entry that gets keyboard focus back afterwards (see focusSidebar).
+function inlineEdit(target, initial, save, focusKey = null) {
   if (target.querySelector('input')) return;
-  const old = titleOf(sid);
   const original = target.textContent;
   const input = el('input', 'rename-input');
-  input.value = old;
+  input.value = initial;
   target.replaceChildren(input);
   input.focus();
   input.select();
   state.renaming = true;
   let done = false;
-  const finish = async (save) => {
+  const finish = async (commit) => {
     if (done) return;
     done = true;
-    state.renaming = false;
     const value = input.value.trim();
-    target.textContent = save && value ? value : original;
-    if (save && value && value !== old) {
+    const refocus = document.activeElement === input;  // false when the user clicked elsewhere
+    target.textContent = commit && value ? value : original;
+    if (commit && value && value !== initial) {
       try {
-        await api('PUT', `/api/sessions/${sid}/title`, { title: value });
-        const s = state.byId.get(sid);
-        if (s) s.title = value;
+        await save(value);
       } catch (e) {
         target.textContent = original;
         toast(e.message);
       }
     }
+    state.renaming = false;
     renderSidebar();
     paint();
+    if (refocus && focusKey) focusSidebar(focusKey);
   };
   input.onkeydown = (ev) => {
     ev.stopPropagation();
@@ -285,6 +465,214 @@ function startRename(target, sid) {
   input.onblur = () => finish(true);
   input.onclick = (ev) => ev.stopPropagation();
   input.ondblclick = (ev) => ev.stopPropagation();
+}
+
+function startRename(target, sid) {
+  const inSidebar = !!target.closest('#session-list');
+  inlineEdit(target, titleOf(sid), async (value) => {
+    await api('PUT', `/api/sessions/${sid}/title`, { title: value });
+    const s = state.byId.get(sid);
+    if (s) s.title = value;
+  }, inSidebar ? sid : null);
+}
+
+// ---- folders, archive, delete -------------------------------------------------------------
+
+async function newFolder() {
+  let folder;
+  try {
+    folder = await api('POST', '/api/folders', { name: 'Neuer Ordner' });
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  state.folders.push(folder);
+  renderSidebar();
+  paintSidebar();
+  renameFolder(folder);
+}
+
+function renameFolder(folder) {
+  const name = $(`#session-list .folder-head[data-folder="${folder.id}"] .folder-name`);
+  if (!name) return;
+  name.scrollIntoView({ block: 'nearest' });
+  inlineEdit(name, folder.name, async (value) => {
+    await api('PUT', `/api/folders/${folder.id}`, { name: value });
+    folder.name = value;
+  }, folder.id);
+}
+
+async function deleteFolder(folder) {
+  try {
+    await api('DELETE', `/api/folders/${folder.id}`);
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  await refreshSessions();
+}
+
+async function moveToFolder(sid, folderId) {
+  const s = state.byId.get(sid);
+  if (!s || (s.folder || null) === folderId) return;
+  try {
+    await api('PUT', `/api/sessions/${sid}/folder`, { folder: folderId });
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  s.folder = folderId;
+  if (folderId) {  // open the target folder, so the chat does not seem to vanish
+    const collapsed = store.get('collapsedFolders', {});
+    delete collapsed[folderId];
+    store.set('collapsedFolders', collapsed);
+  }
+  renderSidebar();
+  paintSidebar();
+}
+
+async function setArchived(sid, archived) {
+  try {
+    await api('PUT', `/api/sessions/${sid}/archived`, { archived });
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  const s = state.byId.get(sid);
+  if (s) s.archived = archived;
+  renderSidebar();
+  paintSidebar();
+}
+
+function confirmDelete(name) {
+  const dialog = $('#delete-dialog');
+  $('#delete-name').textContent = `„${name}“`;
+  dialog.returnValue = '';
+  dialog.showModal();
+  $('#delete-cancel').focus();
+  return new Promise((resolve) => {
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'delete'), { once: true });
+  });
+}
+
+async function deleteChat(sid) {
+  if (!(await confirmDelete(titleOf(sid)))) return;
+  try {
+    await api('DELETE', `/api/sessions/${sid}`);
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  for (const tab of [...state.tabs]) {
+    const row = state.terminals.get(tab.id);
+    if (tabSession(tab) === sid && (!row || row.status === 'exited')) closeTab(tab);
+  }
+  await refreshSessions();
+}
+
+// ---- drag and drop ------------------------------------------------------------------------
+
+function startDrag(ev, sid) {
+  state.dragging = sid;
+  ev.dataTransfer.setData('application/x-claude-desk-session', sid);
+  ev.dataTransfer.effectAllowed = 'move';
+  closeMenu();
+}
+
+function endDrag() {
+  state.dragging = null;
+  for (const node of document.querySelectorAll('.drop-target')) node.classList.remove('drop-target');
+}
+
+// node accepts dragged chats: into a folder, or with folderId null back into the main list.
+function dropZone(node, folderId) {
+  node.addEventListener('dragover', (ev) => {
+    if (!state.dragging) return;
+    ev.stopPropagation();
+    if ((state.byId.get(state.dragging)?.folder || null) === folderId) return;  // already there
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'move';
+    for (const other of document.querySelectorAll('.drop-target')) if (other !== node) other.classList.remove('drop-target');
+    node.classList.add('drop-target');
+  });
+  node.addEventListener('dragleave', (ev) => {
+    if (!node.contains(ev.relatedTarget)) node.classList.remove('drop-target');
+  });
+  node.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const sid = state.dragging;
+    endDrag();
+    if (sid) moveToFolder(sid, folderId);
+  });
+}
+
+// ---- context menu -------------------------------------------------------------------------
+
+function chatMenu(sid, ev, anchor) {
+  const s = state.byId.get(sid);
+  if (!s) return;
+  showMenu(ev, anchor, [
+    s.archived
+      ? { label: 'Wiederherstellen', icon: 'restore', action: () => setArchived(sid, false) }
+      : { label: 'Archivieren', icon: 'archive', action: () => setArchived(sid, true) },
+    { label: 'Löschen', icon: 'trash', danger: true, action: () => deleteChat(sid) },
+  ]);
+}
+
+function folderMenu(folderId, ev, anchor) {
+  const folder = state.folders.find((f) => f.id === folderId);
+  if (!folder) return;
+  showMenu(ev, anchor, [
+    { label: 'Umbenennen', icon: 'pencil', action: () => renameFolder(folder) },
+    { label: 'Ordner löschen', icon: 'trash', danger: true, action: () => deleteFolder(folder) },
+  ]);
+}
+
+function showMenu(ev, anchor, entries) {
+  closeMenu();
+  const menu = el('div', 'ctx-menu');
+  menu.setAttribute('role', 'menu');
+  for (const entry of entries) {
+    const button = el('button', entry.danger ? 'ctx-item danger' : 'ctx-item');
+    button.type = 'button';
+    button.setAttribute('role', 'menuitem');
+    button.append(icon(entry.icon), el('span', '', entry.label));
+    button.onclick = () => {
+      closeMenu();
+      entry.action();
+    };
+    menu.append(button);
+  }
+  menu.onkeydown = (e) => {
+    const items = [...menu.querySelectorAll('button')];
+    const at = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') items[(at + 1) % items.length].focus();
+    else if (e.key === 'ArrowUp') items[(at - 1 + items.length) % items.length].focus();
+    else if (e.key === 'Escape' || e.key === 'Tab') {
+      closeMenu();
+      anchor.focus();
+    } else return;
+    e.preventDefault();
+  };
+  document.body.append(menu);
+  // Opened by keyboard (menu key, Shift+F10) there is no pointer position, so use the entry's.
+  const box = anchor.getBoundingClientRect();
+  const x = ev.clientX || box.left + 24;
+  const y = ev.clientY || box.bottom;
+  const { width, height } = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(4, Math.min(x, innerWidth - width - 4))}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, innerHeight - height - 4))}px`;
+  anchor.classList.add('menu-open');
+  state.menu = { menu, anchor };
+  menu.querySelector('button').focus();
+}
+
+function closeMenu() {
+  if (!state.menu) return;
+  state.menu.menu.remove();
+  state.menu.anchor.classList.remove('menu-open');
+  state.menu = null;
 }
 
 function setCollapsed(collapsed) {
@@ -325,6 +713,18 @@ function buildView(tab) {
   const meta = el('div', 'view-meta');
   titleBox.append(title, meta);
 
+  const widthCtl = el('label', 'width-ctl');
+  widthCtl.title = 'Textbreite (Doppelklick: Standard)';
+  const widthRange = el('input');
+  widthRange.type = 'range';
+  widthRange.min = '0';
+  widthRange.max = '100';
+  widthRange.value = String(store.get('historyWidth', HISTORY_WIDTH.start));
+  widthRange.setAttribute('aria-label', 'Textbreite');
+  widthRange.oninput = () => setHistoryWidth(Number(widthRange.value));
+  widthRange.ondblclick = () => setHistoryWidth(HISTORY_WIDTH.start);
+  widthCtl.append(icon('width'), widthRange);
+
   const seg = el('div', 'seg');
   const histBtn = el('button', '', 'Verlauf');
   const termBtn = el('button', '', 'Terminal');
@@ -342,7 +742,7 @@ function buildView(tab) {
   const stop = el('button', 'btn danger', 'Beenden');
   stop.onclick = () => stopTab(tab);
   actions.append(refresh, resume, stop);
-  head.append(titleBox, seg, actions);
+  head.append(titleBox, widthCtl, seg, actions);
 
   const body = el('div', 'view-body');
   const hist = el('div', 'history');
@@ -356,7 +756,7 @@ function buildView(tab) {
   body.append(hist, termWrap);
   root.append(head, body);
   $('#views').append(root);
-  Object.assign(tab, { root, title, meta, histBtn, termBtn, refresh, resume, stop, hist, histInner, termWrap, termHost, overlay });
+  Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, refresh, resume, stop, hist, histInner, termWrap, termHost, overlay });
 }
 
 function activate(id) {
@@ -418,6 +818,17 @@ function cycleTab(step) {
 
 function renderTabs() {
   if (state.renaming && document.activeElement?.closest('#tabs')) return;
+  // Polling repaints every 2 s; rebuilding unchanged tabs would only throw away focus and hover.
+  const signature = JSON.stringify(state.tabs.map((tab) => {
+    const sid = tabSession(tab);
+    return [tab.id, sid, titleOf(sid), state.terminals.get(tab.id)?.status, statusFor(sid).cls,
+      state.attention.has(tab.id), tab.id === state.active];
+  }));
+  if (signature === state.tabsSignature) return;
+  state.tabsSignature = signature;
+  const focusedTab = document.activeElement?.closest('#tabs .tab');
+  const focusId = focusedTab?.dataset.id;
+  const focusClose = !!focusedTab && document.activeElement !== focusedTab;
   const nodes = state.tabs.map((tab) => {
     const sid = tabSession(tab);
     const st = statusFor(sid);
@@ -426,6 +837,9 @@ function renderTabs() {
     node.classList.toggle('active', tab.id === state.active);
     node.classList.toggle('attention', state.attention.has(tab.id));
     node.setAttribute('role', 'tab');
+    node.setAttribute('aria-selected', String(tab.id === state.active));
+    node.dataset.id = tab.id;
+    node.tabIndex = 0;
     node.title = titleOf(sid) + (st.label ? ` – ${st.label}` : '');
     const dot = el('span', `dot ${row ? row.status : st.cls} ${state.attention.has(tab.id) ? 'attention' : ''}`);
     const label = el('span', 'tab-label', titleOf(sid));
@@ -436,10 +850,13 @@ function renderTabs() {
     close.onclick = (ev) => { ev.stopPropagation(); closeTab(tab); };
     node.onclick = () => activate(tab.id);
     node.onauxclick = (ev) => { if (ev.button === 1) closeTab(tab); };
+    node.onkeydown = (ev) => onItemKey(ev, node, () => activate(tab.id), () => startRename(label, sid));
     node.append(dot, label, close);
     return node;
   });
   $('#tabs').replaceChildren(...nodes);
+  const again = focusId && $(`#tabs .tab[data-id="${focusId}"]`);
+  if (again) (focusClose ? again.querySelector('.icon-btn') : again).focus();
 }
 
 function paintView(tab) {
@@ -461,6 +878,7 @@ function paintView(tab) {
   tab.resume.hidden = live;
   tab.stop.hidden = !live;
   tab.refresh.hidden = showTerm;
+  tab.widthCtl.hidden = showTerm;
   tab.hist.hidden = showTerm;
   tab.termWrap.hidden = !showTerm;
 }
@@ -540,7 +958,7 @@ function renderItem(item) {
     }
     case 'assistant': {
       const node = el('div', 'msg assistant md');
-      node.innerHTML = markdown(item.text);
+      renderMarkdown(node, item.text);
       return node;
     }
     case 'command': {
@@ -590,7 +1008,7 @@ function stepsGroup() {
 function renderStep(item) {
   if (item.k === 'thinking') {
     const node = el('div', 'thinking md');
-    node.innerHTML = markdown(item.text);
+    renderMarkdown(node, item.text);
     return node;
   }
   const node = el('details', 'tool');
@@ -822,9 +1240,30 @@ function wire() {
     const action = ev.target.closest('[data-action]')?.dataset.action;
     if (action === 'toggle-sidebar') setCollapsed(!$('#app').classList.contains('collapsed'));
     else if (action === 'new-chat') openNewDialog();
+    else if (action === 'new-folder') newFolder();
     else if (action === 'close-dialog') $('#new-dialog').close();
   });
   $('#new-form').addEventListener('submit', submitNewChat);
+  $('#delete-cancel').onclick = () => $('#delete-dialog').close('cancel');
+  $('#delete-confirm').onclick = () => $('#delete-dialog').close('delete');
+  dropZone($('#session-list'), null);
+
+  // Only chats and folders have a menu. Text fields keep the browser's own (paste, spelling).
+  document.addEventListener('contextmenu', (ev) => {
+    if (ev.target.closest('input, textarea')) return;
+    ev.preventDefault();
+    const item = ev.target.closest('#session-list .item');
+    const folder = ev.target.closest('#session-list .folder-head');
+    if (item) chatMenu(item.dataset.id, ev, item);
+    else if (folder) folderMenu(folder.dataset.folder, ev, folder);
+    else closeMenu();
+  });
+  document.addEventListener('mousedown', (ev) => {
+    if (state.menu && !state.menu.menu.contains(ev.target)) closeMenu();
+  }, true);
+  window.addEventListener('blur', closeMenu);
+  window.addEventListener('resize', closeMenu);
+  $('#session-list').addEventListener('scroll', closeMenu);
   $('#search').addEventListener('input', renderSidebar);
 
   // Capture phase, so the terminal never sees the app's own shortcuts.
@@ -859,6 +1298,7 @@ function wire() {
 async function start() {
   wire();
   if (store.get('collapsed', false)) $('#app').classList.add('collapsed');
+  setHistoryWidth(store.get('historyWidth', HISTORY_WIDTH.start));
   await refreshSessions();
   for (const saved of store.get('tabs', [])) {
     if (!saved || findTab(saved.id)) continue;

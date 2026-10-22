@@ -25,12 +25,14 @@ VENDOR = {
     "addon-web-links.mjs": "@xterm/addon-web-links/lib/addon-web-links.mjs",
     "marked.esm.js": "marked/lib/marked.esm.js",
     "purify.es.mjs": "dompurify/dist/purify.es.mjs",
+    "highlight.mjs": "@highlightjs/cdn-assets/es/highlight.min.js",
 }
 COOKIE = "claude_desk_token"
 TICKET_TTL = 60  # seconds a launcher login link stays valid
 _TICKETS = {}  # one-time login ticket -> expiry (monotonic)
 _TICKET_LOCK = threading.Lock()
 SID = r"(?P<sid>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+FID = r"(?P<fid>f[0-9a-f]{12})"
 ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name in [
     ("GET", r"/", "index"),
     ("GET", r"/static/(?P<name>[\w.-]+)", "static"),
@@ -40,6 +42,12 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("GET", r"/api/cwds", "cwds"),
     ("GET", rf"/api/sessions/{SID}/messages", "messages"),
     ("PUT", rf"/api/sessions/{SID}/title", "rename"),
+    ("PUT", rf"/api/sessions/{SID}/folder", "move_session"),
+    ("PUT", rf"/api/sessions/{SID}/archived", "archive_session"),
+    ("DELETE", rf"/api/sessions/{SID}", "delete_session"),
+    ("POST", r"/api/folders", "create_folder"),
+    ("PUT", rf"/api/folders/{FID}", "rename_folder"),
+    ("DELETE", rf"/api/folders/{FID}", "delete_folder"),
     ("POST", r"/api/terminals", "start_terminal"),
     ("POST", r"/api/login-ticket", "login_ticket"),
     ("DELETE", rf"/api/terminals/{SID}", "stop_terminal"),
@@ -202,6 +210,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_rename(self, sid):
         self._send_json(200, self.desk.rename(sid, self._body().get("title")))
+
+    def route_move_session(self, sid):
+        self._send_json(200, self.desk.move_session(sid, self._body().get("folder")))
+
+    def route_archive_session(self, sid):
+        self._send_json(200, self.desk.archive_session(sid, self._body().get("archived")))
+
+    def route_delete_session(self, sid):
+        self._send_json(200, self.desk.delete_session(sid))
+
+    def route_create_folder(self):
+        self._send_json(200, self.desk.create_folder(self._body().get("name")))
+
+    def route_rename_folder(self, fid):
+        self._send_json(200, self.desk.rename_folder(fid, self._body().get("name")))
+
+    def route_delete_folder(self, fid):
+        self._send_json(200, self.desk.delete_folder(fid))
 
     def route_start_terminal(self):
         self._send_json(200, self.desk.start_terminal(self._body()))

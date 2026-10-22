@@ -7,7 +7,10 @@ index remembers how far it has read each file and only parses what was appended.
 import json
 import os
 import re
+import shutil
 import threading
+
+from pathlib import Path
 
 from . import CLAUDE_HOME, STATE_DIR
 
@@ -132,6 +135,11 @@ class Index:
         with self._lock:
             return self._by_id.get(session_id)
 
+    def paths(self, session_id: str) -> list:
+        """Every transcript of this session; resuming from another folder can leave a second one."""
+        with self._lock:
+            return [info["path"] for info in self._files.values() if info["id"] == session_id]
+
     def _refresh(self, key, session_id, project, st):
         info = self._files.get(key)
         if info and info["size"] == st.st_size and info["mtime"] == st.st_mtime:
@@ -142,13 +150,13 @@ class Index:
                 "first_prompt": None, "created": None, "ai_title": None, "custom_title": None,
                 "summary": None, "last_prompt": None,
             }
-        info["size"], info["mtime"] = st.st_size, st.st_mtime
         try:
             with open(key, "rb") as f:
                 f.seek(info["offset"])
                 data = f.read()
         except OSError:
-            return
+            return  # cache untouched, so the next scan tries again
+        info["size"], info["mtime"] = st.st_size, st.st_mtime
         end = data.rfind(b"\n") + 1  # only complete lines; the writer may be mid-line
         self._parse(info, data[:end])
         info["offset"] += end
@@ -183,6 +191,24 @@ class Index:
                 if text:
                     info["first_prompt"] = text[:300]
                     info["created"] = entry.get("timestamp")
+
+
+def delete_session_files(session_id: str, paths: list):
+    """Remove a chat for good: transcript, tool output, file backups and env snapshot."""
+    if not SESSION_ID.fullmatch(session_id):
+        raise ValueError(f"not a session id: {session_id}")
+    projects = PROJECTS.resolve()
+    targets = []
+    for path in map(Path, paths):
+        if path.name != session_id + ".jsonl" or path.resolve().parent.parent != projects:
+            raise ValueError(f"refusing to delete {path}")
+        targets += [path, path.with_suffix("")]
+    targets += [CLAUDE_HOME / "file-history" / session_id, CLAUDE_HOME / "session-env" / session_id]
+    for target in targets:
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
 
 
 def append_custom_title(path: str, session_id: str, title: str):

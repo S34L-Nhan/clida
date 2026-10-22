@@ -112,3 +112,11 @@ class WebSocket:
         if not self.closed:
             self._send_quietly(OP_CLOSE, struct.pack("!H", 1000))
             self.closed = True
+
+    def abort(self):
+        """Drop the connection at once: the reader sees EOF and the browser reconnects."""
+        self.closed = True
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass

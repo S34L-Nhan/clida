@@ -63,14 +63,15 @@ login_url() {
 }
 
 open_window() {
-  local url edge chrome
+  local url browser
   url="$(login_url)"
-  edge="/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
-  chrome="/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
-  for browser in "$edge" "$chrome"; do
-    if [[ -x "$browser" ]]; then
-      # Start from a Windows path so the .exe does not complain about a UNC working directory.
-      (cd /mnt/c && nohup "$browser" --app="$url" --window-size=1440,920 >/dev/null 2>&1 &)
+  for browser in 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' \
+                 'C:\Program Files\Google\Chrome\Application\chrome.exe'; do
+    if [[ -x "$(wslpath -u "$browser")" ]]; then
+      # Start-Process detaches the browser from our console. Started directly, it would die with
+      # the hidden console of the desktop shortcut as soon as this script exits.
+      (cd /mnt/c && "$WIN32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -Command \
+        "Start-Process -FilePath '$browser' -ArgumentList '--app=$url','--window-size=1440,920'") >/dev/null 2>&1
       return 0
     fi
   done
@@ -129,10 +130,20 @@ EOF
     | tr -d '\r'
 }
 
+# True only if the pid really is our server; after a crash or `wsl --shutdown` server.pid
+# stays behind, and the number may belong to some other process by now.
+is_server() {
+  [[ "$1" =~ ^[0-9]+$ ]] || return 1
+  local cmdline
+  cmdline="$(tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null)" || return 1
+  [[ "$cmdline" == *"-m desk --port $PORT"* ]]
+}
+
 stop_server() {
   local pid
   pid="$(cat "$STATE/server.pid" 2>/dev/null || true)"
-  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+  if ! is_server "$pid"; then
+    rm -f "$STATE/server.pid"
     echo "claude-desk is not running."
     return 0
   fi

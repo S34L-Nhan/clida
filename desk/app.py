@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 from . import STATE_DIR, registry, transcripts
+from .library import Library
 from .terminals import Terminals
 
 TITLES_FILE = STATE_DIR / "titles.json"
@@ -32,9 +33,13 @@ class Titles:
         with self._lock:
             return self._titles.get(session_id)
 
-    def set(self, session_id: str, title: str):
+    def set(self, session_id: str, title):
+        """Store a title; None removes it."""
         with self._lock:
-            self._titles[session_id] = title
+            if title is None:
+                self._titles.pop(session_id, None)
+            else:
+                self._titles[session_id] = title
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             tmp = TITLES_FILE.with_suffix(".tmp")
             tmp.write_text(json.dumps(self._titles, ensure_ascii=False, indent=1))
@@ -50,6 +55,13 @@ def _home_label(path):
     return "~" + path[len(home):] if path.startswith(home + "/") else path
 
 
+def _clean_name(value, limit: int, what: str) -> str:
+    name = " ".join(str(value or "").split())[:limit]
+    if not name:
+        raise HttpError(400, f"{what} darf nicht leer sein")
+    return name
+
+
 def _first_line(text: str, limit: int = 80) -> str:
     line = text.strip().splitlines()[0] if text and text.strip() else ""
     return line if len(line) <= limit else line[:limit - 1] + "…"
@@ -59,6 +71,7 @@ class Desk:
     def __init__(self, claude: str):
         self.index = transcripts.Index()
         self.titles = Titles()
+        self.library = Library()
         self.terminals = Terminals(claude)
 
     def _require_session(self, session_id: str) -> dict:
@@ -83,6 +96,7 @@ class Desk:
         return "Neuer Chat"
 
     def status(self) -> dict:
+        self.terminals.reap()
         running = registry.running()
         ours = {}
         terminals = []
@@ -107,12 +121,14 @@ class Desk:
 
     def sessions(self) -> dict:
         infos = self.index.scan()
+        library = self.library.snapshot()
         out = []
         for info in infos:
             out.append({
                 "id": info["id"], "title": self._title(info["id"], info), "cwd": info["cwd"],
                 "cwd_label": _home_label(info["cwd"]) or info["project"], "mtime": info["mtime"],
                 "first_prompt": info["first_prompt"], "last_prompt": info["last_prompt"],
+                "folder": library["folder_of"].get(info["id"]), "archived": info["id"] in library["archived"],
             })
         known = {s["id"] for s in out}
         for term in self.terminals.all():
@@ -122,9 +138,11 @@ class Desk:
                     "id": term.session_id, "title": self._title(term.session_id, None), "cwd": term.cwd,
                     "cwd_label": _home_label(term.cwd), "mtime": term.started,
                     "first_prompt": None, "last_prompt": None,
+                    "folder": library["folder_of"].get(term.session_id),
+                    "archived": term.session_id in library["archived"],
                 })
         out.sort(key=lambda s: s["mtime"], reverse=True)
-        return {"sessions": out, "home": str(Path.home()), **self.status()}
+        return {"sessions": out, "folders": library["folders"], "home": str(Path.home()), **self.status()}
 
     def messages(self, session_id: str) -> dict:
         info = self.index.get(session_id)
@@ -138,9 +156,7 @@ class Desk:
         return transcripts.render(info["path"])
 
     def rename(self, session_id: str, title) -> dict:
-        title = " ".join(str(title or "").split())[:200]
-        if not title:
-            raise HttpError(400, "Titel darf nicht leer sein")
+        title = _clean_name(title, 200, "Titel")
         self.titles.set(session_id, title)
         info = self.index.get(session_id)
         if info:
@@ -168,10 +184,13 @@ class Desk:
             cwd = info["cwd"]
             if not cwd or not os.path.isdir(cwd):
                 raise HttpError(400, f"Arbeitsverzeichnis existiert nicht mehr: {cwd}")
-            if not body.get("force"):
-                for ext in self.status()["external"]:
-                    if ext["session_id"] == resume:
-                        raise HttpError(409, "Dieser Chat läuft bereits in einem anderen Terminal.")
+            status = self.status()  # also updates which session each of our terminals runs now
+            for row in status["terminals"]:
+                # One of our terminals may run it under another id, after /resume or /clear in the CLI.
+                if row["session_id"] == resume and row["status"] != "exited":
+                    return {"id": row["id"], "session_id": resume, "cwd": row["cwd"]}
+            if not body.get("force") and any(ext["session_id"] == resume for ext in status["external"]):
+                raise HttpError(409, "Dieser Chat läuft bereits in einem anderen Terminal.")
             term = self.terminals.start(cwd, resume=resume)
         else:
             cwd = os.path.abspath(os.path.expanduser(str(body.get("cwd") or "~")))
@@ -182,6 +201,49 @@ class Desk:
             if title:
                 self.titles.set(term.session_id, title)
         return {"id": term.id, "session_id": term.session_id, "cwd": term.cwd}
+
+    def create_folder(self, name) -> dict:
+        return self.library.create_folder(_clean_name(name, 80, "Ordnername"))
+
+    def rename_folder(self, folder_id: str, name) -> dict:
+        name = _clean_name(name, 80, "Ordnername")
+        if not self.library.rename_folder(folder_id, name):
+            raise HttpError(404, "Ordner nicht gefunden")
+        return {"id": folder_id, "name": name}
+
+    def delete_folder(self, folder_id: str) -> dict:
+        if not self.library.delete_folder(folder_id):
+            raise HttpError(404, "Ordner nicht gefunden")
+        return {"ok": True}
+
+    def move_session(self, session_id: str, folder_id) -> dict:
+        if folder_id is not None and not isinstance(folder_id, str):
+            raise HttpError(400, "Ungültiger Ordner")
+        if not self.library.move(session_id, folder_id):
+            raise HttpError(404, "Ordner nicht gefunden")
+        return {"ok": True}
+
+    def archive_session(self, session_id: str, archived) -> dict:
+        self.library.set_archived(session_id, bool(archived))
+        return {"ok": True}
+
+    def delete_session(self, session_id: str) -> dict:
+        self._require_session(session_id)
+        status = self.status()
+        running = [t for t in status["terminals"] if t["session_id"] == session_id and t["status"] != "exited"]
+        if running or any(e["session_id"] == session_id for e in status["external"]):
+            raise HttpError(409, "Diese Sitzung läuft noch. Bitte zuerst beenden.")
+        try:
+            transcripts.delete_session_files(session_id, self.index.paths(session_id))
+        except (OSError, ValueError) as e:
+            raise HttpError(500, f"Löschen fehlgeschlagen: {e}")
+        self.library.forget(session_id)
+        self.titles.set(session_id, None)
+        term = self.terminals.get(session_id)
+        if term is not None and not term.alive:
+            self.terminals.stop(session_id)
+        self.index.scan()
+        return {"ok": True}
 
     def stop_terminal(self, terminal_id: str) -> dict:
         if not self.terminals.stop(terminal_id):

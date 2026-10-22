@@ -184,7 +184,8 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospac
 .item.attention .item-title { font-weight: 700; }
 .item-meta { font-size: 12px; color: var(--muted); }
 .item .icon-btn { width: 26px; height: 26px; display: none; }
-.item:hover .icon-btn, .item .icon-btn:focus-visible { display: inline-grid; }
+.item:hover .icon-btn, .item:focus-within .icon-btn { display: inline-grid; }
+.item:focus-visible, .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .item .icon-btn svg { width: 15px; height: 15px; }
 .rename-input {
   width: 100%;
@@ -283,7 +284,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospac
 /* ---- history --------------------------------------------------------------------------- */
 
 .history { position: absolute; inset: 0; overflow-y: auto; }
-.history-inner { max-width: 800px; margin: 0 auto; padding: 24px 28px 80px; }
+.history-inner { max-width: var(--history-width, 800px); margin: 0 auto; padding: 24px 28px 80px; }
 .loading, .empty-note { color: var(--muted); text-align: center; padding: 40px 0; }
 .more { display: block; margin: 0 auto 20px; }
 .msg { margin: 14px 0; }
@@ -457,3 +458,137 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospac
   .view-head { flex-wrap: wrap; padding: 8px 12px; }
   .history-inner { padding: 16px 16px 60px; }
 }
+
+/* ---- text width slider ----------------------------------------------------------------- */
+
+.width-ctl { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; }
+.width-ctl svg { width: 18px; height: 18px; flex: none; }
+.width-ctl input { width: 110px; accent-color: var(--accent); cursor: pointer; }
+
+/* ---- code blocks ----------------------------------------------------------------------- */
+
+.codeblock { margin: 0.8em 0; border: 1px solid var(--border); border-radius: 10px; background: var(--code-bg); overflow: hidden; }
+.codeblock-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 6px 3px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+.codeblock-lang { font-family: "Cascadia Mono", Consolas, monospace; }
+.codeblock-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.codeblock-copy:hover { background: var(--hover); color: var(--text); }
+.codeblock-copy.done { color: var(--ok); }
+.codeblock-copy svg { width: 14px; height: 14px; }
+.md .codeblock pre { margin: 0; border: none; border-radius: 0; background: transparent; }
+
+/* Syntax colors (One Light / One Dark), used by highlight.js token classes. */
+:root {
+  --hl-keyword: #a626a4;
+  --hl-string: #50a14f;
+  --hl-number: #986801;
+  --hl-comment: #a0a1a7;
+  --hl-function: #4078f2;
+  --hl-type: #c18401;
+  --hl-variable: #e45649;
+  --hl-meta: #0184bc;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --hl-keyword: #c678dd;
+    --hl-string: #98c379;
+    --hl-number: #d19a66;
+    --hl-comment: #7f848e;
+    --hl-function: #61afef;
+    --hl-type: #e5c07b;
+    --hl-variable: #e06c75;
+    --hl-meta: #56b6c2;
+  }
+}
+.hljs-keyword, .hljs-selector-tag, .hljs-doctag, .hljs-section { color: var(--hl-keyword); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color: var(--hl-string); }
+.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: var(--hl-number); }
+.hljs-comment, .hljs-quote { color: var(--hl-comment); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-name { color: var(--hl-function); }
+.hljs-built_in, .hljs-type, .hljs-title.class_ { color: var(--hl-type); }
+.hljs-variable, .hljs-template-variable, .hljs-attr, .hljs-attribute, .hljs-property,
+.hljs-selector-id, .hljs-selector-class, .hljs-deletion { color: var(--hl-variable); }
+.hljs-meta, .hljs-link { color: var(--hl-meta); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
+
+/* ---- folders, archive, drag and drop ---------------------------------------------------- */
+
+.side-head .brand { flex: 1; }
+.folder { margin-bottom: 2px; border-radius: 8px; }
+.folder-head, .archive-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.folder-head:hover, .archive-head:hover { background: var(--hover); }
+.folder-head svg, .archive-head svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.folder-head:focus-visible, .archive-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.folder-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folder-count { color: var(--muted); font-size: 12px; font-weight: normal; }
+.folder-body { margin-left: 15px; padding-left: 6px; border-left: 1px solid var(--border); }
+.folder-empty { padding: 6px 8px; color: var(--muted); font-size: 12px; font-style: italic; }
+.archive { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--border); }
+.folder.drop-target, .session-list.drop-target {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: 2px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -2px;
+}
+.item.menu-open, .folder-head.menu-open { background: var(--active); }
+
+/* ---- context menu and small dialogs ----------------------------------------------------- */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-item:hover, .ctx-item:focus-visible { background: var(--hover); outline: none; }
+.ctx-item svg { width: 16px; height: 16px; color: var(--muted); }
+.ctx-item.danger, .ctx-item.danger svg { color: var(--danger); }
+.dialog.small { width: min(420px, calc(100vw - 32px)); }
+.dialog p { margin: 0; line-height: 1.5; }
+.btn.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+.btn.danger-solid:hover { filter: brightness(1.08); }
