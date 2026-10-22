@@ -65,6 +65,7 @@ const state = {
   folders: [],
   dragging: null,   // session id while a chat is dragged
   menu: null,       // open context menu
+  sessionsSeq: 0,   // numbers sidebar loads, so a late answer cannot undo a newer state
   online: true,
 };
 
@@ -214,6 +215,7 @@ async function refreshStatus() {
 }
 
 async function refreshSessions() {
+  const seq = ++state.sessionsSeq;
   let data;
   try {
     data = await api('GET', '/api/sessions');
@@ -222,6 +224,7 @@ async function refreshSessions() {
     setOnline(false, e.status);
     return;
   }
+  if (seq !== state.sessionsSeq) return;  // a newer load or a local change came in meanwhile
   state.home = data.home;
   state.sessions = data.sessions;
   state.byId = new Map(data.sessions.map((s) => [s.id, s]));
@@ -229,6 +232,15 @@ async function refreshSessions() {
   applyStatus(data);
   if (!state.renaming && !state.dragging) renderSidebar();
   paint();
+}
+
+// Change sidebar data on the server. Loads that are still on the way carry the old state,
+// so they are dropped, and a fresh list follows once the change is saved.
+async function change(method, path, body) {
+  state.sessionsSeq += 1;
+  const result = await api(method, path, body);
+  refreshSessions();
+  return result;
 }
 
 function setOnline(online, status) {
@@ -360,7 +372,7 @@ function folderNode(folder, chats, open) {
   head.append(icon(open ? 'chevronDown' : 'chevronRight'), icon('folder'),
     el('span', 'folder-name', folder.name), el('span', 'folder-count', String(chats.length)));
   head.onclick = () => toggleFolder(folder.id);
-  head.onkeydown = (ev) => onItemKey(ev, head, () => toggleFolder(folder.id), () => renameFolder(folder));
+  head.onkeydown = (ev) => onItemKey(ev, head, () => toggleFolder(folder.id), () => renameFolder(folder.id));
   box.append(head);
   if (open) {
     const body = el('div', 'folder-body');
@@ -428,10 +440,12 @@ function paintSidebar() {
 
 // Swap target's text for an input. Enter or leaving the field saves, Escape cancels.
 // focusKey: the sidebar entry that gets keyboard focus back afterwards (see focusSidebar).
-function inlineEdit(target, initial, save, focusKey = null) {
+// maxLength: the server's limit, so the field never shows more than will be stored.
+function inlineEdit(target, initial, save, { focusKey = null, maxLength = 200 } = {}) {
   if (target.querySelector('input')) return;
   const original = target.textContent;
   const input = el('input', 'rename-input');
+  input.maxLength = maxLength;
   input.value = initial;
   target.replaceChildren(input);
   input.focus();
@@ -470,10 +484,10 @@ function inlineEdit(target, initial, save, focusKey = null) {
 function startRename(target, sid) {
   const inSidebar = !!target.closest('#session-list');
   inlineEdit(target, titleOf(sid), async (value) => {
-    await api('PUT', `/api/sessions/${sid}/title`, { title: value });
+    await change('PUT', `/api/sessions/${sid}/title`, { title: value });
     const s = state.byId.get(sid);
     if (s) s.title = value;
-  }, inSidebar ? sid : null);
+  }, { focusKey: inSidebar ? sid : null, maxLength: 200 });
 }
 
 // ---- folders, archive, delete -------------------------------------------------------------
@@ -481,47 +495,51 @@ function startRename(target, sid) {
 async function newFolder() {
   let folder;
   try {
-    folder = await api('POST', '/api/folders', { name: 'Neuer Ordner' });
+    folder = await change('POST', '/api/folders', { name: 'Neuer Ordner' });
   } catch (e) {
     toast(e.message);
     return;
   }
-  state.folders.push(folder);
+  $('#search').value = '';  // a search would hide the new, still empty folder
+  if (!state.folders.some((f) => f.id === folder.id)) state.folders.push(folder);
   renderSidebar();
   paintSidebar();
-  renameFolder(folder);
+  renameFolder(folder.id);
 }
 
-function renameFolder(folder) {
-  const name = $(`#session-list .folder-head[data-folder="${folder.id}"] .folder-name`);
-  if (!name) return;
+// Look folders up by id at every step: a sidebar reload replaces the objects in state.folders,
+// and a name written into an old object would never show up.
+function renameFolder(folderId) {
+  const folder = state.folders.find((f) => f.id === folderId);
+  const name = $(`#session-list .folder-head[data-folder="${folderId}"] .folder-name`);
+  if (!folder || !name) return;
   name.scrollIntoView({ block: 'nearest' });
   inlineEdit(name, folder.name, async (value) => {
-    await api('PUT', `/api/folders/${folder.id}`, { name: value });
-    folder.name = value;
-  }, folder.id);
+    await change('PUT', `/api/folders/${folderId}`, { name: value });
+    const current = state.folders.find((f) => f.id === folderId);
+    if (current) current.name = value;
+  }, { focusKey: folderId, maxLength: 80 });
 }
 
 async function deleteFolder(folder) {
   try {
-    await api('DELETE', `/api/folders/${folder.id}`);
+    await change('DELETE', `/api/folders/${folder.id}`);
   } catch (e) {
     toast(e.message);
-    return;
   }
-  await refreshSessions();
 }
 
 async function moveToFolder(sid, folderId) {
   const s = state.byId.get(sid);
   if (!s || (s.folder || null) === folderId) return;
   try {
-    await api('PUT', `/api/sessions/${sid}/folder`, { folder: folderId });
+    await change('PUT', `/api/sessions/${sid}/folder`, { folder: folderId });
   } catch (e) {
     toast(e.message);
     return;
   }
-  s.folder = folderId;
+  const current = state.byId.get(sid);
+  if (current) current.folder = folderId;
   if (folderId) {  // open the target folder, so the chat does not seem to vanish
     const collapsed = store.get('collapsedFolders', {});
     delete collapsed[folderId];
@@ -533,7 +551,7 @@ async function moveToFolder(sid, folderId) {
 
 async function setArchived(sid, archived) {
   try {
-    await api('PUT', `/api/sessions/${sid}/archived`, { archived });
+    await change('PUT', `/api/sessions/${sid}/archived`, { archived });
   } catch (e) {
     toast(e.message);
     return;
@@ -558,7 +576,7 @@ function confirmDelete(name) {
 async function deleteChat(sid) {
   if (!(await confirmDelete(titleOf(sid)))) return;
   try {
-    await api('DELETE', `/api/sessions/${sid}`);
+    await change('DELETE', `/api/sessions/${sid}`);
   } catch (e) {
     toast(e.message);
     return;
@@ -567,7 +585,6 @@ async function deleteChat(sid) {
     const row = state.terminals.get(tab.id);
     if (tabSession(tab) === sid && (!row || row.status === 'exited')) closeTab(tab);
   }
-  await refreshSessions();
 }
 
 // ---- drag and drop ------------------------------------------------------------------------
@@ -624,7 +641,7 @@ function folderMenu(folderId, ev, anchor) {
   const folder = state.folders.find((f) => f.id === folderId);
   if (!folder) return;
   showMenu(ev, anchor, [
-    { label: 'Umbenennen', icon: 'pencil', action: () => renameFolder(folder) },
+    { label: 'Umbenennen', icon: 'pencil', action: () => renameFolder(folder.id) },
     { label: 'Ordner löschen', icon: 'trash', danger: true, action: () => deleteFolder(folder) },
   ]);
 }
