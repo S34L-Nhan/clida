@@ -55,7 +55,7 @@ const state = {
   byId: new Map(),
   terminals: new Map(),   // terminal id -> status row
   bySession: new Map(),   // session id -> running terminal row
-  external: new Map(),    // session id -> CLI running outside claude-desk
+  external: new Map(),    // session id -> CLI running outside CLIDA
   lastStatus: new Map(),  // terminal id -> previous status, to notice "finished"
   attention: new Set(),   // terminal ids that finished or need input while unseen
   tabs: [],
@@ -250,8 +250,8 @@ function setOnline(online, status) {
   if (online) return;
   // 403: the server runs but no longer knows this window (new token), so a reload cannot help.
   banner.replaceChildren(...(status === 403
-    ? ['Anmeldung abgelaufen – bitte Claude Desk über die Verknüpfung oder ', el('code', '', 'claude-desk'), ' neu öffnen.']
-    : ['Server nicht erreichbar – läuft ', el('code', '', 'claude-desk'), ' noch?']));
+    ? ['Anmeldung abgelaufen – bitte CLIDA über die Verknüpfung oder ', el('code', '', 'clida'), ' neu öffnen.']
+    : ['Server nicht erreichbar – läuft ', el('code', '', 'clida'), ' noch?']));
 }
 
 const tabSession = (tab) => state.terminals.get(tab.id)?.session_id || tab.id;
@@ -591,7 +591,7 @@ async function deleteChat(sid) {
 
 function startDrag(ev, sid) {
   state.dragging = sid;
-  ev.dataTransfer.setData('application/x-claude-desk-session', sid);
+  ev.dataTransfer.setData('application/x-clida-session', sid);
   ev.dataTransfer.effectAllowed = 'move';
   closeMenu();
 }
@@ -906,7 +906,7 @@ function paint() {
   for (const tab of state.tabs) paintView(tab);
   $('#empty').hidden = state.tabs.length > 0;
   const waiting = state.attention.size;
-  document.title = waiting ? `(${waiting}) Claude Desk` : 'Claude Desk';
+  document.title = waiting ? `(${waiting}) CLIDA` : 'CLIDA';
 }
 
 // ---- history ------------------------------------------------------------------------------

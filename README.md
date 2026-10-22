@@ -1,4 +1,4 @@
-# Claude Desk
+# CLIDA
 
 A desktop window for the Claude Code CLI, similar to Claude Desktop. The UI is in German; UI labels below are quoted as they appear.
 
@@ -13,7 +13,7 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. The UI is i
   - pulsing orange = working
   - yellow = waiting for you (e.g. a permission prompt)
   - green = ready
-  - ring = running in another terminal outside Claude Desk
+  - ring = running in another terminal outside CLIDA
 
   When a background session finishes, its title turns bold and the window title shows `(n)`.
 
@@ -23,31 +23,31 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. The UI is i
 - Microsoft Edge or Google Chrome on the Windows side
 
 ```bash
-git clone https://github.com/S34L-Nhan/claude-desk.git ~/claude-desk
-ln -s ~/claude-desk/bin/claude-desk ~/.local/bin/claude-desk   # put the launcher on PATH
-claude-desk shortcut                                           # optional: Windows desktop shortcut
-claude-desk                                                    # first start runs npm install
+git clone https://github.com/S34L-Nhan/clida.git ~/clida
+ln -s ~/clida/bin/clida ~/.local/bin/clida   # put the launcher on PATH
+clida shortcut                               # optional: Windows desktop shortcut
+clida                                        # first start runs npm install
 ```
 
 ## Usage
 
 ```bash
-claude-desk            # start the server if needed and open the window
-claude-desk status     # is the server running, which sessions are running
-claude-desk stop       # stop the server; asks first if sessions are running (--force: no question)
-claude-desk restart
-claude-desk serve      # run the server in the foreground, logs to the terminal
-claude-desk url        # one-time login URL (valid for 60 s), e.g. for another browser
-claude-desk shortcut   # create/update the "Claude Desk" shortcut on the Windows desktop
+clida            # start the server if needed and open the window
+clida status     # is the server running, which sessions are running
+clida stop       # stop the server; asks first if sessions are running (--force: no question)
+clida restart
+clida serve      # run the server in the foreground, logs to the terminal
+clida url        # one-time login URL (valid for 60 s), e.g. for another browser
+clida shortcut   # create/update the "CLIDA" shortcut on the Windows desktop
 ```
 
 The window is an Edge app window (`msedge --app=…`): no address bar, and its own taskbar entry. If Edge is missing, Chrome is used.
 
-The desktop shortcut runs `claude-desk app` via `conhost.exe --headless wsl.exe …`, so no console window appears. Its icon lives in `%LOCALAPPDATA%\claude-desk\claude-desk.ico`. `tools/make_icon.py` renders it from the same motif as `static/icon.svg`.
+The desktop shortcut runs `clida app` via `conhost.exe --headless wsl.exe …`, so no console window appears. Its icon lives in `%LOCALAPPDATA%\clida\clida.ico`. `tools/make_icon.py` renders it from the same motif as `static/icon.svg`.
 
 ### Keeping WSL alive
 
-WSL shuts down once no `wsl.exe` is left on the Windows side, and takes the server with it. So `claude-desk` keeps a hidden `wsl.exe` process open (`claude-desk keepalive`) while the server runs. After the server stops, it exits by itself within about 45 s. Only one runs at a time (lock in `~/.claude-desk/keepalive.lock`).
+WSL shuts down once no `wsl.exe` is left on the Windows side, and takes the server with it. So `clida` keeps a hidden `wsl.exe` process open (`clida keepalive`) while the server runs. After the server stops, it exits by itself within about 45 s. Only one runs at a time (lock in `~/.clida/keepalive.lock`).
 
 ### Keys
 
@@ -65,33 +65,33 @@ WSL shuts down once no `wsl.exe` is left on the Windows side, and takes the serv
 | F2 | Rename the selected chat or tab |
 
 - **New chat**: pick a working directory (recently used ones are suggested) and optionally a title. The title goes to the CLI via `--name`.
-- **Open an earlier chat**: shows the history first. *Fortsetzen* (resume) runs `claude --resume <id>` in the original working directory. If the chat already runs in another terminal, Claude Desk asks first.
+- **Open an earlier chat**: shows the history first. *Fortsetzen* (resume) runs `claude --resume <id>` in the original working directory. If the chat already runs in another terminal, CLIDA asks first.
 - **Closing a tab** does not end the session. Use *Beenden* (stop) for that. The history is kept.
 
 ## How it works
 
-- `desk/` is a small server built on the Python stdlib only (no pip). It listens on `127.0.0.1:47321`.
+- `clida/` is a small server built on the Python stdlib only (no pip). It listens on `127.0.0.1:47321`.
   - `terminals.py` starts each session with `pty.fork()` as the real `claude` CLI. Up to 2 MB of output is buffered, so a newly opened tab can rebuild the screen. Each tab gets its own send queue, so a slow tab never stalls a session.
-  - `transcripts.py` reads the transcripts in `~/.claude/projects/*/*.jsonl`. Files are read incrementally; the index is cached in `~/.claude-desk/index.json`.
+  - `transcripts.py` reads the transcripts in `~/.claude/projects/*/*.jsonl`. Files are read incrementally; the index is cached in `~/.clida/index.json`.
   - `registry.py` reads `~/.claude/sessions/<pid>.json`, where every running CLI reports its state (busy/idle/waiting).
   - `library.py` stores folders and the archive.
   - `ws.py` is a minimal WebSocket implementation for the terminal stream.
-- `static/` is the frontend: vanilla JS, no build step. xterm.js, marked, DOMPurify and highlight.js come from `npm install` into `node_modules/` (`claude-desk` does this on first start) and are served locally.
+- `static/` is the frontend: vanilla JS, no build step. xterm.js, marked, DOMPurify and highlight.js come from `npm install` into `node_modules/` (`clida` does this on first start) and are served locally.
 
 ### Titles
 
-Titles set in Claude Desk are stored in `~/.claude-desk/titles.json` and take precedence there. Claude Desk also appends a `custom-title` entry to the transcript, exactly like `/rename` does, so `claude --resume` shows the new name too.
+Titles set in CLIDA are stored in `~/.clida/titles.json` and take precedence there. CLIDA also appends a `custom-title` entry to the transcript, exactly like `/rename` does, so `claude --resume` shows the new name too.
 
 ### Security
 
 Whoever can reach the server can start terminals, so it is protected in several layers:
 
 - **Localhost only:** it listens on `127.0.0.1` only.
-- **Token cookie:** every request needs a token cookie (`HttpOnly`, `SameSite=Strict`). The token lives in `~/.claude-desk/token` (mode 0600).
-- **One-time tickets:** `claude-desk` logs the window in with a ticket that is valid once and for 60 s only. The real token therefore never appears in a URL, the browser history or the process list.
+- **Token cookie:** every request needs a token cookie (`HttpOnly`, `SameSite=Strict`). The token lives in `~/.clida/token` (mode 0600).
+- **One-time tickets:** `clida` logs the window in with a ticket that is valid once and for 60 s only. The real token therefore never appears in a URL, the browser history or the process list.
 - **Host and Origin checks:** foreign `Host` headers (DNS rebinding) and foreign `Origin` headers (other websites, WebSockets included) are rejected.
 - **Content Security Policy:** scripts come only from the server itself, no external images, no embedding in other pages. Rendered histories also go through DOMPurify, without `<style>` and without form elements. So HTML injected into a transcript (e.g. from a fetched web page) cannot run anything.
-- **Private data folder:** `~/.claude-desk` has mode 0700, because the index, titles and log quote your prompts.
+- **Private data folder:** `~/.clida` has mode 0700, because the index, titles and log quote your prompts.
 - **Isolated sessions:** a session does not inherit the terminals of earlier sessions.
 
 One limit comes from the browser: cookies do not distinguish ports, so other local services on `localhost` receive the cookie too. They cannot use it, because the Origin check rejects their requests.
@@ -100,16 +100,16 @@ One limit comes from the browser: cookies do not distinguish ports, so other loc
 
 | Path | Contents |
 |---|---|
-| `~/.claude-desk/server.log` | Server log |
-| `~/.claude-desk/index.json` | Chat index cache (safe to delete) |
-| `~/.claude-desk/titles.json` | Titles set in Claude Desk |
-| `~/.claude-desk/library.json` | Folders and archived chats |
-| `~/.claude-desk/token` | Login token of the window |
+| `~/.clida/server.log` | Server log |
+| `~/.clida/index.json` | Chat index cache (safe to delete) |
+| `~/.clida/titles.json` | Titles set in CLIDA |
+| `~/.clida/library.json` | Folders and archived chats |
+| `~/.clida/token` | Login token of the window |
 
-Port and paths can be changed with `CLAUDE_DESK_PORT`, `CLAUDE_DESK_HOME` and `CLAUDE_DESK_CLAUDE` (path to the CLI).
+Port and paths can be changed with `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE` (path to the CLI).
 
 ## Limitations
 
-- Sessions live in the server process. `claude-desk stop`, `wsl --shutdown` or a Windows restart ends them. The history is kept, and *Fortsetzen* brings them back.
+- Sessions live in the server process. `clida stop`, `wsl --shutdown` or a Windows restart ends them. The history is kept, and *Fortsetzen* brings them back.
 - If you switch sessions inside the CLI with `/clear` or `/resume`, the tab follows the new session id from the CLI's registry. This is not tested much yet.
 - Pasting images from the clipboard does not work directly, as in any WSL terminal.

@@ -1,4 +1,4 @@
-"""Run the claude-desk server: python3 -m desk [--port N]."""
+"""Run the clida server: python3 -m clida [--port N]."""
 
 import argparse
 import os
@@ -30,19 +30,19 @@ def _token() -> str:
 
 
 def _claude_binary() -> str:
-    found = os.environ.get("CLAUDE_DESK_CLAUDE") or shutil.which("claude")
+    found = os.environ.get("CLIDA_CLAUDE") or shutil.which("claude")
     fallback = Path.home() / ".local/bin/claude"
     if not found and fallback.exists():
         found = str(fallback)
     if not found:
-        sys.exit("claude-desk: `claude` nicht gefunden (PATH oder CLAUDE_DESK_CLAUDE setzen)")
+        sys.exit("clida: `claude` nicht gefunden (PATH oder CLIDA_CLAUDE setzen)")
     return os.path.realpath(found)
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="claude-desk")
+    parser = argparse.ArgumentParser(prog="clida")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=int(os.environ.get("CLAUDE_DESK_PORT", 47321)))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("CLIDA_PORT", 47321)))
     args = parser.parse_args()
 
     # Index, titles and log quote your prompts, so keep the folder private.
@@ -59,7 +59,7 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    print(f"claude-desk läuft auf http://localhost:{args.port}", flush=True)
+    print(f"clida läuft auf http://localhost:{args.port}", flush=True)
     try:
         server.serve_forever()
     finally:

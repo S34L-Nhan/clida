@@ -27,7 +27,7 @@ VENDOR = {
     "purify.es.mjs": "dompurify/dist/purify.es.mjs",
     "highlight.mjs": "@highlightjs/cdn-assets/es/highlight.min.js",
 }
-COOKIE = "claude_desk_token"
+COOKIE = "clida_token"
 TICKET_TTL = 60  # seconds a launcher login link stays valid
 _TICKETS = {}  # one-time login ticket -> expiry (monotonic)
 _TICKET_LOCK = threading.Lock()
@@ -55,14 +55,14 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
 ]]
 mimetypes.add_type("text/javascript", ".mjs")
 
-LOCKED_PAGE = """<!doctype html><meta charset="utf-8"><title>Claude Desk</title>
+LOCKED_PAGE = """<!doctype html><meta charset="utf-8"><title>CLIDA</title>
 <body style="font:15px system-ui;padding:40px;background:#262624;color:#ecebe6">
-<h2>Claude Desk</h2><p>Bitte über <code>claude-desk</code> öffnen, damit das Fenster angemeldet wird.</p>"""
+<h2>CLIDA</h2><p>Bitte über <code>clida</code> öffnen, damit das Fenster angemeldet wird.</p>"""
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "claude-desk"
+    server_version = "clida"
     desk = None
     token = ""
     port = 0

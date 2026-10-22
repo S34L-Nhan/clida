@@ -1,4 +1,4 @@
-"""How the sidebar is organised: folders and the archive (~/.claude-desk/library.json)."""
+"""How the sidebar is organised: folders and the archive (~/.clida/library.json)."""
 
 import json
 import os
