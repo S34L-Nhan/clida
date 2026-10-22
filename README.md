@@ -1,101 +1,115 @@
 # Claude Desk
 
-Ein Desktop-Fenster für die Claude Code CLI, ähnlich wie Claude Desktop:
+A desktop window for the Claude Code CLI, similar to Claude Desktop. The UI is in German; UI labels below are quoted as they appear.
 
-- **Seitenleiste** mit allen bisherigen Chats aus `~/.claude/projects`, gruppiert nach Datum (Heute, Gestern, Letzte 7 Tage …), mit Suche. Sie lässt sich ein- und ausklappen.
-- **Chats umbenennen**: Stift-Symbol, Doppelklick auf den Titel in Liste oder Tab, oder Klick auf die Überschrift.
-- **Ordner**: Mit dem Ordner-Symbol oben in der Seitenleiste legst du einen neuen Ordner an. Chats ziehst du per Drag & Drop hinein und wieder heraus in die normale Liste. Per Rechtsklick lässt sich ein Ordner umbenennen oder löschen. Beim Löschen eines Ordners kommen seine Chats zurück in die Liste.
-- **Rechtsklick auf einen Chat**: *Archivieren* nimmt ihn aus der Liste, den Verlauf behält er. Unten im Bereich *Archiv* kannst du ihn wiederherstellen. *Löschen* entfernt den Verlauf nach einer Rückfrage endgültig von der Platte, also Transcript, Tool-Ausgaben, Datei-Backups und Env-Snapshot. Laufende Sitzungen müssen vorher beendet werden. Sonst gibt es keinen Rechtsklick, außer in Textfeldern (Einfügen, Rechtschreibung).
-- **Hybrid-Ansicht** pro Chat:
-  - *Verlauf*: der Chat als gerenderte Unterhaltung (Markdown, Tool-Aufrufe zusammengeklappt). Code-Blöcke sind farbig hervorgehoben (SQL, PHP, JS, Bash, JSON …) und haben einen Kopieren-Knopf. Die Textbreite stellt ein Schieberegler im Kopf ein. Die Mitte ist die Standardbreite, ein Doppelklick setzt ihn darauf zurück.
-  - *Terminal*: die echte `claude` CLI im eingebetteten Terminal (xterm.js). Alles funktioniert wie gewohnt: Berechtigungsabfragen, Slash-Commands, Plan- und Auto-Mode.
-- **Parallele Sessions**: Jede Session hat einen eigenen Tab und arbeitet im Hintergrund weiter, auch wenn ihr Tab geschlossen ist. Die Punkte zeigen den Zustand:
-  - orange pulsierend = arbeitet
-  - gelb = wartet auf dich (z.B. Berechtigung)
-  - grün = bereit
-  - Ring = läuft in einem anderen Terminal außerhalb von Claude Desk
+- **Sidebar** with all past chats from `~/.claude/projects`, grouped by date (today, yesterday, last 7 days …), with search. It collapses and expands.
+- **Rename chats**: pencil icon, double-click the title in the list or on a tab, or click the heading.
+- **Folders**: the folder icon at the top of the sidebar creates a folder. Drag chats into it, and drag them out again to put them back in the main list. Right-click a folder to rename or delete it. Deleting a folder moves its chats back to the main list.
+- **Right-click on a chat**: *Archivieren* (archive) takes it out of the list but keeps its history. It can be restored from the *Archiv* section at the bottom. *Löschen* (delete) asks first, then removes the chat from disk for good: transcript, tool output, file backups and env snapshot. A running session must be stopped first. Nothing else has a right-click menu, except text fields (paste, spelling).
+- **Hybrid view** per chat:
+  - *Verlauf* (history): the chat as a rendered conversation (Markdown, tool calls collapsed). Code blocks are syntax-highlighted (SQL, PHP, JS, Bash, JSON …) and have a copy button. A slider in the header sets the text width; the middle is the default width, and a double-click resets it.
+  - *Terminal*: the real `claude` CLI in an embedded terminal (xterm.js). Everything works as usual: permission prompts, slash commands, plan and auto mode.
+- **Parallel sessions**: each session has its own tab and keeps working in the background, even when its tab is closed. The dots show the state:
+  - pulsing orange = working
+  - yellow = waiting for you (e.g. a permission prompt)
+  - green = ready
+  - ring = running in another terminal outside Claude Desk
 
-  Ist eine Session im Hintergrund fertig, wird ihr Titel fett und der Fenstertitel zeigt `(n)`.
+  When a background session finishes, its title turns bold and the window title shows `(n)`.
 
-## Start
+## Requirements and setup
+
+- WSL 2 with Python 3.12 (stdlib only, no pip), Node.js/npm (only to fetch the frontend libraries), and the `claude` CLI
+- Microsoft Edge or Google Chrome on the Windows side
 
 ```bash
-claude-desk            # Server starten (falls nötig) und Fenster öffnen
-claude-desk status     # läuft der Server, welche Sessions laufen
-claude-desk stop       # Server stoppen; fragt nach, wenn noch Sessions laufen (--force: ohne Rückfrage)
-claude-desk restart
-claude-desk serve      # Server im Vordergrund, Logs im Terminal
-claude-desk url        # einmalige Login-URL (60 s gültig), z.B. für einen anderen Browser
-claude-desk shortcut   # Verknüpfung „Claude Desk“ auf dem Windows-Desktop anlegen/aktualisieren
+git clone https://github.com/S34L-Nhan/claude-desk.git ~/claude-desk
+ln -s ~/claude-desk/bin/claude-desk ~/.local/bin/claude-desk   # put the launcher on PATH
+claude-desk shortcut                                           # optional: Windows desktop shortcut
+claude-desk                                                    # first start runs npm install
 ```
 
-Das Fenster ist ein Edge-App-Fenster (`msedge --app=…`), also ohne Adressleiste und mit eigenem Taskleisten-Eintrag. Ist Edge nicht vorhanden, wird Chrome genutzt.
+## Usage
 
-Die Desktop-Verknüpfung startet `claude-desk app` über `conhost.exe --headless wsl.exe …`, also ohne Konsolenfenster. Das Icon liegt unter `%LOCALAPPDATA%\claude-desk\claude-desk.ico`. `tools/make_icon.py` erzeugt es aus demselben Motiv wie `static/icon.svg`.
+```bash
+claude-desk            # start the server if needed and open the window
+claude-desk status     # is the server running, which sessions are running
+claude-desk stop       # stop the server; asks first if sessions are running (--force: no question)
+claude-desk restart
+claude-desk serve      # run the server in the foreground, logs to the terminal
+claude-desk url        # one-time login URL (valid for 60 s), e.g. for another browser
+claude-desk shortcut   # create/update the "Claude Desk" shortcut on the Windows desktop
+```
 
-### WSL am Laufen halten
+The window is an Edge app window (`msedge --app=…`): no address bar, and its own taskbar entry. If Edge is missing, Chrome is used.
 
-WSL fährt herunter, sobald auf Windows-Seite kein `wsl.exe` mehr läuft, und nimmt dabei den Server mit. Deshalb hält `claude-desk` einen unsichtbaren `wsl.exe`-Prozess offen (`claude-desk keepalive`), solange der Server läuft. Wird der Server gestoppt, beendet er sich nach spätestens ca. 45 s von selbst. Es läuft immer nur einer davon (Lock in `~/.claude-desk/keepalive.lock`).
+The desktop shortcut runs `claude-desk app` via `conhost.exe --headless wsl.exe …`, so no console window appears. Its icon lives in `%LOCALAPPDATA%\claude-desk\claude-desk.ico`. `tools/make_icon.py` renders it from the same motif as `static/icon.svg`.
 
-## Bedienung
+### Keeping WSL alive
 
-| Taste | Aktion |
+WSL shuts down once no `wsl.exe` is left on the Windows side, and takes the server with it. So `claude-desk` keeps a hidden `wsl.exe` process open (`claude-desk keepalive`) while the server runs. After the server stops, it exits by itself within about 45 s. Only one runs at a time (lock in `~/.claude-desk/keepalive.lock`).
+
+### Keys
+
+| Key | Action |
 |---|---|
-| Strg+Umschalt+O | Neuer Chat |
-| Strg+Umschalt+B | Seitenleiste ein/aus |
-| Strg+Umschalt+F | Chats durchsuchen |
-| Strg+Bild↑ / Strg+Bild↓ | Tab wechseln |
-| Umschalt+Enter | Zeilenumbruch im Terminal (statt Absenden) |
-| Strg+C mit Markierung | Kopieren (ohne Markierung: normales Strg+C an die CLI) |
-| Strg+V | Einfügen |
-| Mittelklick auf Tab | Tab schließen |
-| Tab-Taste, dann Enter | Chat in der Seitenleiste oder Tab per Tastatur öffnen |
-| F2 | ausgewählten Chat oder Tab umbenennen |
+| Ctrl+Shift+O | New chat |
+| Ctrl+Shift+B | Toggle sidebar |
+| Ctrl+Shift+F | Search chats |
+| Ctrl+PgUp / Ctrl+PgDn | Switch tab |
+| Shift+Enter | New line in the terminal (instead of sending) |
+| Ctrl+C with a selection | Copy (without a selection: a normal Ctrl+C to the CLI) |
+| Ctrl+V | Paste |
+| Middle-click on a tab | Close tab |
+| Tab key, then Enter | Open a chat or tab with the keyboard |
+| F2 | Rename the selected chat or tab |
 
-- **Neuer Chat**: Arbeitsverzeichnis wählen (zuletzt genutzte Verzeichnisse werden vorgeschlagen) und optional einen Titel angeben. Der Titel geht per `--name` an die CLI.
-- **Früheren Chat öffnen**: zeigt zuerst den Verlauf. Mit *Fortsetzen* läuft `claude --resume <id>` im ursprünglichen Arbeitsverzeichnis. Läuft der Chat schon in einem anderen Terminal, fragt Claude Desk vorher nach.
-- **Tab schließen** beendet die Session nicht. Dafür gibt es *Beenden*. Der Verlauf bleibt dabei erhalten.
+- **New chat**: pick a working directory (recently used ones are suggested) and optionally a title. The title goes to the CLI via `--name`.
+- **Open an earlier chat**: shows the history first. *Fortsetzen* (resume) runs `claude --resume <id>` in the original working directory. If the chat already runs in another terminal, Claude Desk asks first.
+- **Closing a tab** does not end the session. Use *Beenden* (stop) for that. The history is kept.
 
-## Wie es funktioniert
+## How it works
 
-- `desk/` ist ein kleiner Server, nur mit der Python-Stdlib (kein pip). Er läuft auf `127.0.0.1:47321`.
-  - `terminals.py` startet jede Session per `pty.fork()` als echte `claude`-CLI. Bis zu 2 MB Ausgabe werden gepuffert, damit ein neu geöffneter Tab den Bildschirm wieder aufbauen kann.
-  - `transcripts.py` liest die Verläufe aus `~/.claude/projects/*/*.jsonl`. Die Dateien werden nur inkrementell gelesen, der Index liegt in `~/.claude-desk/index.json`.
-  - `registry.py` liest `~/.claude/sessions/<pid>.json`. Dort meldet jede laufende CLI ihren Status (busy/idle/wartet).
-  - `ws.py` ist eine minimale WebSocket-Implementierung für den Terminal-Stream.
-- `static/` ist das Frontend: Vanilla-JS, ohne Build-Schritt. xterm.js, marked, DOMPurify und highlight.js kommen per `npm install` nach `node_modules/` (macht `claude-desk` beim ersten Start automatisch) und werden lokal ausgeliefert.
+- `desk/` is a small server built on the Python stdlib only (no pip). It listens on `127.0.0.1:47321`.
+  - `terminals.py` starts each session with `pty.fork()` as the real `claude` CLI. Up to 2 MB of output is buffered, so a newly opened tab can rebuild the screen. Each tab gets its own send queue, so a slow tab never stalls a session.
+  - `transcripts.py` reads the transcripts in `~/.claude/projects/*/*.jsonl`. Files are read incrementally; the index is cached in `~/.claude-desk/index.json`.
+  - `registry.py` reads `~/.claude/sessions/<pid>.json`, where every running CLI reports its state (busy/idle/waiting).
+  - `library.py` stores folders and the archive.
+  - `ws.py` is a minimal WebSocket implementation for the terminal stream.
+- `static/` is the frontend: vanilla JS, no build step. xterm.js, marked, DOMPurify and highlight.js come from `npm install` into `node_modules/` (`claude-desk` does this on first start) and are served locally.
 
-### Titel
+### Titles
 
-Umbenannte Titel landen in `~/.claude-desk/titles.json` und haben in Claude Desk Vorrang. Zusätzlich hängt Claude Desk einen `custom-title`-Eintrag an das Transcript an, genau wie `/rename` es tut. Dadurch zeigt auch `claude --resume` den neuen Namen.
+Titles set in Claude Desk are stored in `~/.claude-desk/titles.json` and take precedence there. Claude Desk also appends a `custom-title` entry to the transcript, exactly like `/rename` does, so `claude --resume` shows the new name too.
 
-### Sicherheit
+### Security
 
-Wer den Server erreicht, kann Terminals starten. Deshalb ist er mehrfach abgesichert:
+Whoever can reach the server can start terminals, so it is protected in several layers:
 
-- **Nur localhost:** Er lauscht ausschließlich auf `127.0.0.1`.
-- **Token-Cookie:** Jede Anfrage braucht ein Token-Cookie (`HttpOnly`, `SameSite=Strict`). Das Token liegt in `~/.claude-desk/token` (Rechte 0600).
-- **Einmal-Tickets:** `claude-desk` meldet das Fenster mit einem Ticket an, das nur einmal und nur 60 s gilt. Das eigentliche Token taucht deshalb nie in einer URL, im Browser-Verlauf oder in der Prozessliste auf.
-- **Host- und Origin-Prüfung:** Fremde `Host`-Header (DNS-Rebinding) und fremde `Origin`-Header (andere Webseiten, auch WebSockets) werden abgewiesen.
-- **Content-Security-Policy:** Skripte kommen nur vom Server selbst, keine externen Bilder, kein Einbetten in fremde Seiten. Gerenderte Verläufe laufen zusätzlich durch DOMPurify, ohne `<style>` und ohne Formularelemente. Selbst eingeschleustes HTML in einem Verlauf (etwa aus einer abgerufenen Webseite) kann damit nichts ausführen.
-- **Privater Datenordner:** `~/.claude-desk` hat die Rechte 0700, denn Index, Titel und Log zitieren deine Prompts.
+- **Localhost only:** it listens on `127.0.0.1` only.
+- **Token cookie:** every request needs a token cookie (`HttpOnly`, `SameSite=Strict`). The token lives in `~/.claude-desk/token` (mode 0600).
+- **One-time tickets:** `claude-desk` logs the window in with a ticket that is valid once and for 60 s only. The real token therefore never appears in a URL, the browser history or the process list.
+- **Host and Origin checks:** foreign `Host` headers (DNS rebinding) and foreign `Origin` headers (other websites, WebSockets included) are rejected.
+- **Content Security Policy:** scripts come only from the server itself, no external images, no embedding in other pages. Rendered histories also go through DOMPurify, without `<style>` and without form elements. So HTML injected into a transcript (e.g. from a fetched web page) cannot run anything.
+- **Private data folder:** `~/.claude-desk` has mode 0700, because the index, titles and log quote your prompts.
+- **Isolated sessions:** a session does not inherit the terminals of earlier sessions.
 
-Eine Einschränkung macht der Browser: Cookies unterscheiden nicht zwischen Ports. Andere lokale Dienste auf `localhost` bekommen das Cookie also mitgeschickt. Benutzen können sie es nicht, weil die Origin-Prüfung ihre Anfragen abweist.
+One limit comes from the browser: cookies do not distinguish ports, so other local services on `localhost` receive the cookie too. They cannot use it, because the Origin check rejects their requests.
 
-### Daten
+### Data
 
-| Pfad | Inhalt |
+| Path | Contents |
 |---|---|
-| `~/.claude-desk/server.log` | Server-Log |
-| `~/.claude-desk/index.json` | Cache des Chat-Index (darf gelöscht werden) |
-| `~/.claude-desk/titles.json` | in Claude Desk vergebene Titel |
-| `~/.claude-desk/library.json` | Ordner und archivierte Chats |
-| `~/.claude-desk/token` | Login-Token des Fensters |
+| `~/.claude-desk/server.log` | Server log |
+| `~/.claude-desk/index.json` | Chat index cache (safe to delete) |
+| `~/.claude-desk/titles.json` | Titles set in Claude Desk |
+| `~/.claude-desk/library.json` | Folders and archived chats |
+| `~/.claude-desk/token` | Login token of the window |
 
-Port und Pfade lassen sich über `CLAUDE_DESK_PORT`, `CLAUDE_DESK_HOME` und `CLAUDE_DESK_CLAUDE` (Pfad zur CLI) ändern.
+Port and paths can be changed with `CLAUDE_DESK_PORT`, `CLAUDE_DESK_HOME` and `CLAUDE_DESK_CLAUDE` (path to the CLI).
 
-## Grenzen
+## Limitations
 
-- Die Sessions leben im Server-Prozess. `claude-desk stop`, `wsl --shutdown` oder ein Windows-Neustart beendet sie. Der Verlauf bleibt erhalten, und *Fortsetzen* holt sie zurück.
-- Wechselt man innerhalb der CLI per `/clear` oder `/resume` die Session, übernimmt der Tab die neue Session-ID aus der Registry der CLI. Das ist noch nicht ausgiebig getestet.
-- Bilder aus der Zwischenablage einfügen geht, wie in jedem WSL-Terminal, nicht direkt.
+- Sessions live in the server process. `claude-desk stop`, `wsl --shutdown` or a Windows restart ends them. The history is kept, and *Fortsetzen* brings them back.
+- If you switch sessions inside the CLI with `/clear` or `/resume`, the tab follows the new session id from the CLI's registry. This is not tested much yet.
+- Pasting images from the clipboard does not work directly, as in any WSL terminal.
