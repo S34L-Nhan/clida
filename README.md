@@ -22,6 +22,8 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on 
 - **Hybrid view** per chat:
   - *Verlauf* (history): the chat as a rendered conversation (Markdown, tool calls collapsed). Code blocks are syntax-highlighted (SQL, PHP, JS, Bash, JSON …) and have a copy button. A slider in the header sets the text width; the middle is the default width, and a double-click resets it.
   - *Terminal*: the real `claude` CLI in an embedded terminal (xterm.js). Everything works as usual: permission prompts, slash commands, plan and auto mode.
+- **Changes** per chat: the third switch in the header lists the files the chat changed with its Edit and Write calls, each with its diffs, and shows the git branch of the chat's folder and how many files there are not committed. The branch is also in the header. It shows what Claude's edit tools did, not the files as they are now: changes by hand or by shell commands (`sed`, a script) are not in it.
+- **Cost and tokens**: the header shows what the chat cost so far, as the CLI reports it (it writes its running total into the transcript now and then, so a running chat's figure lags a little). Hover it for the tokens: input, cache written, cache read, output. The bottom of the sidebar shows the cost of all chats today.
 - **Parallel sessions**: each session has its own tab and keeps working in the background, even when its tab is closed. The dots show the state:
   - pulsing orange = working
   - yellow = waiting for you (e.g. a permission prompt)
@@ -62,6 +64,7 @@ clida            # start the server if needed and open the window, or bring the 
 clida status     # is the server running, which sessions are running
 clida stop       # stop the server; asks first if sessions are running (--force: no question)
 clida restart    # stop + start; an open window reloads by itself, otherwise a new one opens
+clida update     # pull the newest version of the current branch, then restart (asks first if sessions are running)
 clida serve      # run the server in the foreground, logs to the terminal
 clida url        # one-time login URL (valid for 60 s), e.g. for another browser
 clida shortcut   # create/update the shortcut (WSL: Windows desktop, macOS: ~/Applications/CLIDA.app)
@@ -70,6 +73,10 @@ clida shortcut   # create/update the shortcut (WSL: Windows desktop, macOS: ~/Ap
 The window is a browser app window (`--app=…`): no address bar, and its own taskbar or Dock entry. CLIDA has one window. Started again (the shortcut, `clida`), it brings the open window to the front instead of opening a second one; on macOS and Linux this is not built yet, so a second window opens there and closes itself again. A second page that comes up anyway in the same browser (a `clida url` link, the address typed into a tab) steps aside with a notice, and *Hier verwenden* (use it here) moves CLIDA into it: the other window saves open notes and closes. After a server restart an open window reloads by itself, so it runs the new code too. Notes being written are saved first, a rename in progress keeps the old name, and an open new chat dialog starts nothing. On WSL, Edge comes first and Chrome second; on macOS, Chrome, Edge, Brave and Chromium in that order.
 
 On WSL, the desktop shortcut runs `clida app` via `conhost.exe --headless wsl.exe …`, so no console window appears. Its icon lives in `%LOCALAPPDATA%\clida\clida.ico`. On macOS, `clida shortcut` builds a small AppleScript app in `~/Applications` with the icon from `static/icon-1024.png`. `tools/make_icon.py` renders both icons from the same motif as `static/icon.svg`.
+
+### Updating
+
+`clida update` runs `git pull --ff-only` on the branch the checkout is on. When `package.json` changed, it runs `npm install` again. Then it restarts the server, so an open window reloads with the new code. A restart ends the running sessions, so it asks first, the same way `clida stop` does. Answer no (or run it without a terminal and without `--force`) and the server keeps the old version until `clida restart`. Local commits that diverge from the branch stop the update; `git -C ~/clida status` shows them.
 
 ### Keeping WSL alive
 
@@ -103,7 +110,7 @@ The developer tools do not open from the keyboard: F12, Ctrl+Shift+I/J/C and Ctr
 
 - `clida/` is a small server built on the Python stdlib only (no pip). It listens on `127.0.0.1:47321`.
   - `terminals.py` starts each session with `pty.fork()` as the real `claude` CLI, with `--add-dir` on the session's upload folder so the CLI may read attached files. Up to 2 MB of output is buffered, so a newly opened tab can rebuild the screen. Each tab gets its own send queue, so a slow tab never stalls a session.
-  - `transcripts.py` reads the transcripts in `~/.claude/projects/*/*.jsonl`. Files are read incrementally; the index is cached in `~/.clida/index.json`.
+  - `transcripts.py` reads the transcripts in `~/.claude/projects/*/*.jsonl`. Files are read incrementally; the index is cached in `~/.clida/index.json`. The index also sums the tokens of each chat (once per API message: the CLI writes one entry per content block, each with the message's usage) and its cost from the CLI's `cost-state` entries, split by day. The changes view comes from the transcript's Edit, MultiEdit, Write and NotebookEdit calls that succeeded.
   - `registry.py` reads `~/.claude/sessions/<pid>.json`, where every running CLI reports its state (busy/idle/waiting). It checks that the process still lives via `/proc` on Linux and WSL, and via `ps` on macOS.
   - `library.py` stores folders and the archive, `notes.py` the notes. A message note is anchored to the transcript entry's `uuid`, which stays stable across reloads, resumes and compactions.
   - `settings.py` stores the settings, checks every value against its `SCHEMA` and words the server's messages in the chosen language.

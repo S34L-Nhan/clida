@@ -44,6 +44,7 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("GET", r"/api/status", "status"),
     ("GET", r"/api/cwds", "cwds"),
     ("GET", rf"/api/sessions/{SID}/messages", "messages"),
+    ("GET", rf"/api/sessions/{SID}/changes", "changes"),
     ("PUT", rf"/api/sessions/{SID}/title", "rename"),
     ("PUT", rf"/api/sessions/{SID}/folder", "move_session"),
     ("PUT", rf"/api/sessions/{SID}/archived", "archive_session"),
@@ -257,6 +258,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_messages(self, sid):
         self._send_json(200, self.desk.messages(sid))
+
+    def route_changes(self, sid):
+        self._send_json(200, self.desk.changes(sid))
 
     def route_rename(self, sid):
         self._send_json(200, self.desk.rename(sid, self._body().get("title")))

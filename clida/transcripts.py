@@ -4,6 +4,8 @@ Transcripts are append-only JSONL files that can grow to tens of megabytes, so t
 index remembers how far it has read each file and only parses what was appended.
 """
 
+import datetime
+import difflib
 import json
 import os
 import re
@@ -18,7 +20,7 @@ from .settings import tr
 
 PROJECTS = CLAUDE_HOME / "projects"
 INDEX_FILE = STATE_DIR / "index.json"
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 # Metadata entries are written with "type" as their first key.
@@ -38,6 +40,10 @@ _SKIP_PREFIXES = (
 _HIDDEN_TAGS = ("<local-command-caveat>", "<system-reminder>", "<task-notification>", "<command-message>")
 # OSC sequences end with BEL or with ESC \ (hyperlinks); stopping at any ESC keeps the match short.
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+_COST_STATE = b'{"type":"cost-state"'
+_ASSISTANT = b'"type":"assistant"'
+USAGE_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
 TOOL_TEXT_LIMIT = 4000
 MAX_ITEMS = 3000
@@ -147,6 +153,16 @@ class Index:
         with self._lock:
             return self._by_id.get(session_id)
 
+    def usage(self) -> dict:
+        """Usage per chat id, and the cost of today (local time) over all chats."""
+        today = datetime.date.today().isoformat()
+        with self._lock:
+            by_id = {}
+            for info in self._files.values():
+                by_id.setdefault(info["id"], []).append(info)
+            cost_today = sum(info["cost_days"].get(today, 0) for info in self._files.values())
+        return {"chats": {sid: usage_of(infos) for sid, infos in by_id.items()}, "today": round(cost_today, 4)}
+
     def paths(self, session_id: str) -> list:
         """Every transcript of this session; resuming from another folder can leave a second one."""
         with self._lock:
@@ -160,7 +176,7 @@ class Index:
             info = {
                 "id": session_id, "path": key, "project": project, "offset": 0, "cwd": None,
                 "first_prompt": None, "created": None, "ai_title": None, "custom_title": None,
-                "summary": None, "last_prompt": None,
+                "summary": None, "last_prompt": None, **_empty_usage(),
             }
         try:
             with open(key, "rb") as f:
@@ -181,13 +197,19 @@ class Index:
             if not line:
                 continue
             is_meta = line.startswith(_META_PREFIXES)
+            is_usage = line.startswith(_COST_STATE) or (_ASSISTANT in line and not line.startswith(_SKIP_PREFIXES))
             need_head = info["first_prompt"] is None or info["cwd"] is None
-            if not is_meta and (not need_head or line.startswith(_SKIP_PREFIXES)):
+            if not is_meta and not is_usage and (not need_head or line.startswith(_SKIP_PREFIXES)):
                 continue
             entry = _loads(line)
             if entry is None:
                 continue
             kind = entry.get("type")
+            if kind in ("assistant", "cost-state"):
+                try:
+                    _count_usage(info, entry)
+                except (AttributeError, TypeError, ValueError):
+                    pass  # written by another program: skip what does not have the expected shape
             if kind == "ai-title":
                 info["ai_title"] = _str(entry.get("aiTitle")) or info["ai_title"]
             elif kind == "custom-title":
@@ -203,6 +225,61 @@ class Index:
                 if text:
                     info["first_prompt"] = text[:300]
                     info["created"] = _str(entry.get("timestamp"))
+
+
+def _empty_usage() -> dict:
+    # tokens: summed over the API messages of the chat; cost: the CLI's own figure (cost-state),
+    # also split by local day. cost_run, last_msg and last_day carry over between incremental reads.
+    return {"tokens": dict.fromkeys(USAGE_KEYS, 0), "cost": 0.0, "cost_days": {},
+            "cost_run": None, "last_msg": None, "last_day": None}
+
+
+def _local_day(timestamp) -> str:
+    when = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    return when.astimezone().date().isoformat()
+
+
+def _count_usage(info: dict, entry: dict):
+    if entry["type"] == "assistant":
+        if entry.get("isSidechain"):
+            return
+        if _str(entry.get("timestamp")):
+            info["last_day"] = _local_day(entry["timestamp"])
+        message = entry.get("message") or {}
+        usage = message.get("usage")
+        # The CLI writes one entry per content block of a message, each with the message's usage.
+        if not isinstance(usage, dict) or message.get("id") == info["last_msg"]:
+            return
+        info["last_msg"] = message.get("id")
+        for key in USAGE_KEYS:
+            value = usage.get(key)
+            if isinstance(value, int):
+                info["tokens"][key] += value
+        return
+    # cost-state: the running total of one CLI process, written now and then. A resumed chat gets a
+    # new process (startTime) whose total either starts at 0 or carries on from the last one.
+    total, start = entry.get("totalCostUSD"), entry.get("startTime")
+    if not isinstance(total, (int, float)):
+        return
+    run = info["cost_run"]
+    if run is None or (start != run[0] and total < run[1]):
+        delta = total
+    else:
+        delta = max(total - run[1], 0)
+    info["cost_run"] = [start, total]
+    if delta:
+        info["cost"] += delta
+        day = info["last_day"] or "?"
+        info["cost_days"][day] = info["cost_days"].get(day, 0) + delta
+
+
+def usage_of(infos: list) -> dict:
+    """Tokens and cost of one chat, over all its transcripts."""
+    tokens = dict.fromkeys(USAGE_KEYS, 0)
+    for info in infos:
+        for key in USAGE_KEYS:
+            tokens[key] += info["tokens"][key]
+    return {"tokens": tokens, "cost": round(sum(info["cost"] for info in infos), 4)}
 
 
 def delete_session_files(session_id: str, paths: list):
@@ -367,3 +444,72 @@ def render(path: str) -> dict:
                 continue  # written by another program: skip what does not have the expected shape
     truncated = len(items) > MAX_ITEMS
     return {"items": items[-MAX_ITEMS:], "truncated": truncated}
+
+
+DIFF_LINE_LIMIT = 400  # per tool call
+_EDIT_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
+
+
+def _diff_lines(old: str, new: str) -> list:
+    """The changed lines of one edit, unified-diff style without the file header."""
+    lines = list(difflib.unified_diff(old.splitlines(), new.splitlines(), n=2, lineterm=""))[2:]
+    if not lines:
+        return [" " + l for l in new.splitlines()]
+    # The @@ line numbers count within the edited snippet, not the file, so they would mislead.
+    return [l if not l.startswith("@@") else "⋯" for l in lines[1:]]
+
+
+def _edit_hunks(name: str, inp: dict) -> list:
+    if name == "Edit":
+        return [_diff_lines(_str(inp.get("old_string")) or "", _str(inp.get("new_string")) or "")]
+    if name == "MultiEdit":
+        edits = inp.get("edits") if isinstance(inp.get("edits"), list) else []
+        return [_diff_lines(_str(e.get("old_string")) or "", _str(e.get("new_string")) or "")
+                for e in edits if isinstance(e, dict)]
+    if name == "Write":
+        return [["+" + l for l in (_str(inp.get("content")) or "").splitlines()]]
+    return [["+" + l for l in (_str(inp.get("new_source")) or "").splitlines()]]  # NotebookEdit
+
+
+def changes(path: str) -> list:
+    """The files a chat changed with its edit tools, in the order first touched, each with its diffs.
+
+    Only tool calls that succeeded count; the diffs are what the tools did, not the file's state now.
+    """
+    files, calls = {}, {}
+    with open(path, "rb") as f:
+        for line in f:
+            if line.startswith(_SKIP_PREFIXES) or line.startswith(_META_PREFIXES):
+                continue
+            entry = _loads(line)
+            if entry is None or entry.get("isSidechain") or entry.get("type") not in ("user", "assistant"):
+                continue
+            content = (entry.get("message") or {}).get("content")
+            for block in content if isinstance(content, list) else ():
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and block.get("name") in _EDIT_TOOLS:
+                    inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+                    target = _str(inp.get("file_path")) or _str(inp.get("notebook_path"))
+                    if target:
+                        calls[block.get("id")] = (target, block["name"], inp, _str(entry.get("timestamp")))
+                elif block.get("type") == "tool_result" and block.get("tool_use_id") in calls:
+                    target, name, inp, ts = calls.pop(block["tool_use_id"])
+                    if block.get("is_error"):
+                        continue
+                    try:
+                        hunks = _edit_hunks(name, inp)
+                    except (AttributeError, TypeError):
+                        continue
+                    changed = files.setdefault(target, {"path": target, "edits": 0, "added": 0, "removed": 0,
+                                                       "created": False, "hunks": []})
+                    changed["edits"] += 1
+                    changed["created"] = changed["created"] or (name == "Write" and not changed["hunks"])
+                    for hunk in hunks:
+                        changed["added"] += sum(1 for l in hunk if l.startswith("+"))
+                        changed["removed"] += sum(1 for l in hunk if l.startswith("-"))
+                        cut = len(hunk) - DIFF_LINE_LIMIT
+                        if cut > 0:
+                            hunk = hunk[:DIFF_LINE_LIMIT] + ["… " + tr(f"({cut} Zeilen gekürzt)", f"({cut} lines cut)")]
+                        changed["hunks"].append({"tool": name, "ts": ts, "lines": hunk})
+    return list(files.values())

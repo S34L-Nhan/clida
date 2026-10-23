@@ -35,6 +35,7 @@ const ICONS = {
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M10.1 5.0L10.7 2.5L13.3 2.5L13.9 5.0L15.6 5.8L17.8 4.3L19.7 6.2L18.2 8.4L19.0 10.1L21.5 10.7L21.5 13.3L19.0 13.9L18.2 15.6L19.7 17.8L17.8 19.7L15.6 18.2L13.9 19.0L13.3 21.5L10.7 21.5L10.1 19.0L8.4 18.2L6.2 19.7L4.3 17.8L5.8 15.6L5.0 13.9L2.5 13.3L2.5 10.7L5.0 10.1L5.8 8.4L4.3 6.2L6.2 4.3L8.4 5.8z"/><circle cx="12" cy="12" r="3"/></svg>',
+  branch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-7 4-11.4 8.6"/></svg>',
   width: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16M20 4v16M8 12h8M10.5 9.5L8 12l2.5 2.5M13.5 9.5L16 12l-2.5 2.5"/></svg>',
 };
 const icon = (name) => {
@@ -61,6 +62,9 @@ function dates() {
   };
   return DATE_FORMATS[locale()];
 }
+
+const money = (usd) => new Intl.NumberFormat(locale(), { style: 'currency', currency: 'USD', maximumFractionDigits: usd < 1 ? 3 : 2 }).format(usd);
+const count = (n) => new Intl.NumberFormat(locale(), { notation: 'compact', maximumFractionDigits: 1 }).format(n);
 
 const quote = (text) => t('quoted', { text });
 
@@ -254,6 +258,7 @@ async function refreshStatus() {
     const tab = activeTab();
     if (tab && tab.view === 'history' && tab.loaded) loadHistory(tab, { quiet: true });
     for (const other of state.tabs) if (other !== tab && other.loaded) other.stale = true;  // reload when shown
+    for (const other of state.tabs) loadChanges(other);  // small, and the header and switch show its counts
   }
 }
 
@@ -288,6 +293,7 @@ async function refreshSessions() {
   state.sessions = data.sessions;
   state.byId = new Map(data.sessions.map((s) => [s.id, s]));
   state.folders = data.folders || [];
+  state.costToday = data.cost_today ?? null;
   applyStatus(data);
   if (!state.renaming && !state.dragging) renderSidebar();
   paint();
@@ -880,11 +886,12 @@ function openSession(sid) {
 
 function addTab(id, view, sid = id) {
   const tab = { id, sid, since: Date.now(), view, term: null, fit: null, ws: null, loaded: false, stale: false,
-    showAll: false, items: [], notes: { session: null, messages: [] } };
+    showAll: false, items: [], notes: { session: null, messages: [] }, changes: null, openFiles: new Set() };
   buildView(tab);
   state.tabs.push(tab);
   saveTabs();
   loadNotes(tab);
+  loadChanges(tab);  // the header shows the branch, the switch the number of changed files
   return tab;
 }
 
@@ -910,14 +917,16 @@ function buildView(tab) {
   const seg = el('div', 'seg');
   const histBtn = el('button');
   const termBtn = el('button');
+  const changesBtn = el('button');
   histBtn.onclick = () => setView(tab, 'history');
   termBtn.onclick = () => setView(tab, 'terminal');
-  seg.append(histBtn, termBtn);
+  changesBtn.onclick = () => setView(tab, 'changes');
+  seg.append(histBtn, termBtn, changesBtn);
 
   const actions = el('div', 'view-actions');
   const refresh = el('button', 'icon-btn');
   refresh.append(icon('refresh'));
-  refresh.onclick = () => loadHistory(tab);
+  refresh.onclick = () => (tab.view === 'changes' ? loadChanges(tab) : loadHistory(tab));
   const attach = el('button', 'icon-btn');
   attach.append(icon('paperclip'));
   attach.onclick = () => {
@@ -938,18 +947,21 @@ function buildView(tab) {
   const hist = el('div', 'history');
   const histInner = el('div', 'history-inner');
   hist.append(histInner);
+  const changesPane = el('div', 'history changes');
+  const changesInner = el('div', 'history-inner');
+  changesPane.append(changesInner);
   const termWrap = el('div', 'term-wrap');
   const termHost = el('div', 'term-host');
   const overlay = el('div', 'term-overlay');
   overlay.hidden = true;
   termWrap.append(termHost, overlay);
-  body.append(hist, termWrap);
+  body.append(hist, changesPane, termWrap);
   const sessionNote = el('div', 'session-note');
   sessionNote.hidden = true;
   root.append(head, sessionNote, body);
   $('#views').append(root);
-  Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, refresh, attach, noteBtn, resume, stop,
-    sessionNote, hist, histInner, termWrap, termHost, overlay });
+  Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, changesBtn, refresh, attach, noteBtn,
+    resume, stop, sessionNote, hist, histInner, changesPane, changesInner, termWrap, termHost, overlay });
   labelView(tab);
 }
 
@@ -960,7 +972,7 @@ function labelView(tab) {
   tab.widthRange.setAttribute('aria-label', t('width'));
   tab.histBtn.textContent = t('view.history');
   tab.termBtn.textContent = t('view.terminal');
-  tab.refresh.title = t('history.reload');
+  tab.refresh.title = t(tab.view === 'changes' ? 'changes.reload' : 'history.reload');
   tab.attach.title = t('attach.title');
   tab.noteBtn.title = t('note.session');
   tab.resume.textContent = t('resume');
@@ -987,6 +999,8 @@ function showView(tab) {
       fitTab(tab);
       tab.term?.focus();
     });
+  } else if (tab.view === 'changes') {
+    loadChanges(tab);
   } else if (!tab.loaded || tab.stale) {
     loadHistory(tab, { quiet: tab.loaded });
   }
@@ -997,6 +1011,7 @@ function setView(tab, view) {
   saveTabs();
   paint();
   if (view === 'history' && tab.loaded) loadHistory(tab, { quiet: true });
+  tab.refresh.title = t(view === 'changes' ? 'changes.reload' : 'history.reload');
   showView(tab);
 }
 
@@ -1198,13 +1213,25 @@ function paintView(tab) {
   const ext = state.external.get(sid);
   const live = row && row.status !== 'exited';
   const showTerm = tab.view === 'terminal' && !!row;
+  const showChanges = tab.view === 'changes';
   if (!tab.title.querySelector('input')) tab.title.textContent = titleOf(sid);
   const parts = [session?.cwd_label || row?.cwd || ''];
   if (row) parts.push(t(`status.${row.status}`));
   else if (ext) parts.push(t('status.elsewhere'));
+  const branch = tab.changes?.git?.branch;
+  if (branch) parts.push(t('view.branch', { branch }));
+  const usage = session?.usage;
+  if (usage?.cost) parts.push(`≈ ${money(usage.cost)}`);
   tab.meta.textContent = parts.filter(Boolean).join(' · ');
-  tab.histBtn.classList.toggle('on', !showTerm);
+  tab.meta.title = usage ? t('usage.tooltip', {
+    cost: money(usage.cost), input: count(usage.tokens.input_tokens), write: count(usage.tokens.cache_creation_input_tokens),
+    read: count(usage.tokens.cache_read_input_tokens), output: count(usage.tokens.output_tokens),
+  }) : '';
+  const files = tab.changes?.files.length || 0;
+  tab.changesBtn.textContent = files ? `${t('view.changes')} · ${files}` : t('view.changes');
+  tab.histBtn.classList.toggle('on', !showTerm && !showChanges);
   tab.termBtn.classList.toggle('on', showTerm);
+  tab.changesBtn.classList.toggle('on', showChanges);
   tab.termBtn.disabled = !row;
   tab.termBtn.title = row ? '' : t('view.resumeFirst');
   tab.resume.hidden = live;
@@ -1212,7 +1239,8 @@ function paintView(tab) {
   tab.refresh.hidden = showTerm;
   tab.attach.hidden = !(showTerm && live);
   tab.widthCtl.hidden = showTerm;
-  tab.hist.hidden = showTerm;
+  tab.hist.hidden = showTerm || showChanges;
+  tab.changesPane.hidden = !showChanges;
   tab.termWrap.hidden = !showTerm;
 }
 
@@ -1221,6 +1249,12 @@ function paint() {
   paintSidebar();
   for (const tab of state.tabs) paintView(tab);
   $('#empty').hidden = state.tabs.length > 0;
+  const today = $('#cost-today');
+  today.hidden = !state.costToday;
+  if (state.costToday) {
+    today.textContent = t('usage.today', { cost: money(state.costToday) });
+    today.title = t('usage.todayHint');
+  }
   const waiting = state.attention.size;
   document.title = waiting ? `(${waiting}) CLIDA` : 'CLIDA';
 }
@@ -1636,6 +1670,68 @@ function toolInput(item) {
     pre.append(el('span', cls, line + '\n'));
   }
   return pre;
+}
+
+// ---- changes ------------------------------------------------------------------------------
+// The files a chat changed, built from its Edit and Write calls: what Claude did, not a git diff,
+// so changes made by hand or by shell commands do not show up here.
+
+async function loadChanges(tab) {
+  let data;
+  try {
+    data = await api('GET', `/api/sessions/${tabSession(tab)}/changes`);
+  } catch (e) {
+    if (tab.view === 'changes') tab.changesInner.replaceChildren(el('div', 'empty-note', e.message));
+    return;
+  }
+  const signature = JSON.stringify([language(), data]);
+  if (signature === tab.changesSignature) return;
+  tab.changesSignature = signature;
+  tab.changes = data;
+  renderChanges(tab);
+  paintView(tab);
+}
+
+function renderChanges(tab) {
+  const { files, git } = tab.changes;
+  const nodes = [];
+  const head = el('div', 'changes-head');
+  if (git) {
+    const where = el('span', 'changes-branch');
+    where.append(icon('branch'), git.branch || t('changes.detached'));
+    head.append(where, el('span', '', t('changes.dirty', { n: git.dirty })));
+  }
+  head.append(el('span', '', t('changes.count', { n: files.length })));
+  nodes.push(head, el('p', 'changes-hint', t('changes.hint')));
+  if (!files.length) nodes.push(el('div', 'empty-note', t('changes.none')));
+  for (const file of files) nodes.push(changedFile(tab, file));
+  tab.changesInner.replaceChildren(...nodes);
+}
+
+function changedFile(tab, file) {
+  const node = el('details', 'change');
+  node.open = tab.openFiles.has(file.path);
+  node.addEventListener('toggle', () => {
+    if (node.open) tab.openFiles.add(file.path); else tab.openFiles.delete(file.path);
+  });
+  const summary = el('summary');
+  summary.title = file.path;
+  summary.append(el('span', 'change-path', file.label));
+  if (file.created) summary.append(el('span', 'badge new', t('changes.new')));
+  summary.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `−${file.removed}`),
+    el('span', 'change-edits', t('changes.edits', { n: file.edits })));
+  node.append(summary);
+  for (const hunk of file.hunks) {
+    const when = hunk.ts ? dates().clock.format(new Date(hunk.ts)) : '';
+    node.append(el('div', 'hunk-head', [hunk.tool, when].filter(Boolean).join(' · ')));
+    const pre = el('pre', 'diff');
+    for (const line of hunk.lines) {
+      const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : line === '⋯' ? 'diff-gap' : '';
+      pre.append(el('span', cls, line + '\n'));
+    }
+    node.append(pre);
+  }
+  return node;
 }
 
 // ---- attachments --------------------------------------------------------------------------
@@ -2312,8 +2408,9 @@ async function start() {
   for (const saved of store.get('tabs', [])) {
     if (!saved || findTab(saved.id)) continue;
     const sid = saved.sid || saved.id;
-    if (state.terminals.has(saved.id)) addTab(saved.id, saved.view === 'terminal' ? 'terminal' : 'history', sid);
-    else if (state.byId.has(sid) && !state.tabs.some((tab) => tabSession(tab) === sid)) addTab(sid, 'history', sid);
+    const view = ['terminal', 'changes'].includes(saved.view) ? saved.view : 'history';
+    if (state.terminals.has(saved.id)) addTab(saved.id, view, sid);
+    else if (state.byId.has(sid) && !state.tabs.some((tab) => tabSession(tab) === sid)) addTab(sid, view === 'terminal' ? 'history' : view, sid);
   }
   const linked = location.hash.slice(1);
   // A terminal gone with a restart: its chat now sits in a history tab of its own id.

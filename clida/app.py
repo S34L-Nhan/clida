@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -75,6 +76,23 @@ def _upload_name(name) -> str:
     base = re.sub(r"[^\w.-]+", "-", base).strip(".-") or "datei"
     stem, ext = os.path.splitext(base)
     return f"{time.strftime('%Y%m%d-%H%M%S')}-{stem[:60]}{ext[:12].lower()}"
+
+
+def _git_state(cwd):
+    """Branch and number of changed files of the repository cwd is in; None outside one."""
+    try:
+        out = subprocess.run(["git", "-C", cwd, "status", "--porcelain=v1", "--branch"],
+                             capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = out.stdout.splitlines()
+    if out.returncode or not lines or not lines[0].startswith("## "):
+        return None
+    head = lines[0][3:]
+    for prefix in ("No commits yet on ", "Initial commit on "):
+        head = head[len(prefix):] if head.startswith(prefix) else head
+    branch = head.split("...")[0].split(" ")[0]
+    return {"branch": None if branch == "HEAD" else branch, "dirty": len(lines) - 1}
 
 
 def _first_line(text: str, limit: int = 80) -> str:
@@ -162,6 +180,7 @@ class Desk:
         infos = self.index.scan()
         library = self.library.snapshot()
         notes = self.notes.session_previews()
+        usage = self.index.usage()
         out = []
         for info in infos:
             out.append({
@@ -169,7 +188,7 @@ class Desk:
                 "cwd_label": _home_label(info["cwd"]) or info["project"], "mtime": info["mtime"],
                 "first_prompt": info["first_prompt"], "last_prompt": info["last_prompt"],
                 "folder": library["folder_of"].get(info["id"]), "archived": info["id"] in library["archived"],
-                "note": notes.get(info["id"]),
+                "note": notes.get(info["id"]), "usage": usage["chats"].get(info["id"]),
             })
         known = {s["id"] for s in out}
         for term in self.terminals.all():
@@ -181,10 +200,11 @@ class Desk:
                     "first_prompt": None, "last_prompt": None,
                     "folder": library["folder_of"].get(term.session_id),
                     "archived": term.session_id in library["archived"],
-                    "note": notes.get(term.session_id),
+                    "note": notes.get(term.session_id), "usage": None,
                 })
         out.sort(key=lambda s: s["mtime"], reverse=True)
-        return {"sessions": out, "folders": library["folders"], "home": str(Path.home()), **self.status()}
+        return {"sessions": out, "folders": library["folders"], "home": str(Path.home()),
+                "cost_today": usage["today"], **self.status()}
 
     def messages(self, session_id: str) -> dict:
         info = self.index.get(session_id)
@@ -196,6 +216,22 @@ class Desk:
                 return {"items": [], "truncated": False}
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
         return transcripts.render(info["path"])
+
+    def changes(self, session_id: str) -> dict:
+        """The files the chat changed with its edit tools, and the git branch of its folder."""
+        info = self.index.get(session_id)
+        if info is None:
+            self.index.scan()
+            info = self.index.get(session_id)
+        cwd = info["cwd"] if info else next((t.cwd for t in self.terminals.all() if t.session_id == session_id), None)
+        if info is None and cwd is None:
+            raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
+        files = transcripts.changes(info["path"]) if info else []
+        for changed in files:
+            changed["label"] = (os.path.relpath(changed["path"], cwd)
+                                if cwd and changed["path"].startswith(cwd.rstrip("/") + "/") else _home_label(changed["path"]))
+        git = _git_state(cwd) if cwd and os.path.isdir(cwd) else None
+        return {"files": files, "git": git}
 
     def rename(self, session_id: str, title) -> dict:
         title = _clean_name(title, 200, tr("Titel darf nicht leer sein", "The title must not be empty"))
