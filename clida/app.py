@@ -3,11 +3,12 @@
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 from pathlib import Path
 
-from . import STATE_DIR, registry, storage, transcripts
+from . import STATE_DIR, locate, registry, storage, transcripts
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .settings import Settings, tr
@@ -300,6 +301,23 @@ class Desk:
         finally:
             part.unlink(missing_ok=True)
         return {"path": str(target)}
+
+    def locate_folder(self, body: dict) -> dict:
+        """The path of a folder dropped into a tab; the browser gives only its name and contents."""
+        name, entries = body.get("name"), body.get("entries")
+        if not isinstance(name, str) or name in ("", ".", "..") or "/" in name or "\0" in name or len(name) > 255:
+            raise HttpError(400, tr("Ungültiger Ordnername", "Invalid folder name"))
+        if not isinstance(entries, list) or len(entries) > 1000 or not all(isinstance(e, str) for e in entries):
+            raise HttpError(400, tr("Ungültige Ordnerliste", "Invalid folder listing"))
+        path = locate.find(name, entries)
+        if path is None:
+            windows = ("Explorer" if locate.on_wsl() else "Finder" if sys.platform == "darwin" else None)
+            where = tr(f"den offenen {windows}-Fenstern sowie in ", f"the open {windows} windows and in ") if windows else ""
+            raise HttpError(404, tr(f"Ordner „{name}“ nicht gefunden. CLIDA sucht in {where}Desktop, Downloads und "
+                                    "Dokumente – den Pfad sonst bitte selbst einfügen.",
+                                    f"Folder “{name}” not found. CLIDA looks in {where}Desktop, Downloads and Documents; "
+                                    "otherwise paste its path yourself."))
+        return {"path": path}
 
     # -- notes (private: never written to a terminal or a transcript) ------------------------
 

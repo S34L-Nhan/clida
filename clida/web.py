@@ -58,6 +58,7 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("PUT", r"/api/settings", "update_settings"),
     ("POST", r"/api/terminals", "start_terminal"),
     ("POST", rf"/api/terminals/{SID}/upload", "upload"),
+    ("POST", r"/api/locate-folder", "locate_folder"),
     ("POST", r"/api/login-ticket", "login_ticket"),
     ("DELETE", rf"/api/terminals/{SID}", "stop_terminal"),
     ("GET", rf"/ws/terminals/{SID}", "attach"),
@@ -300,6 +301,9 @@ class Handler(BaseHTTPRequestHandler):
         saved = self.desk.save_upload(sid, name, length, self.rfile)
         self._body_read = True  # an error above leaves it unread, and _send closes the connection
         self._send_json(200, saved)
+
+    def route_locate_folder(self):
+        self._send_json(200, self.desk.locate_folder(self._body()))
 
     def route_login_ticket(self):
         ticket = secrets.token_urlsafe(24)

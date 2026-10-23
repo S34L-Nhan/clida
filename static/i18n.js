@@ -101,13 +101,14 @@ const TEXTS = {
     'note.deleteText': 'Die Notiz wird dauerhaft gelöscht.',
     'note.orphans': 'Notizen zu Nachrichten, die nicht mehr im Verlauf stehen',
 
-    'attach.title': 'Datei anhängen (oder einfach ins Terminal ziehen)',
+    'attach.title': 'Datei anhängen (oder Dateien und Ordner einfach ins Terminal ziehen)',
     'attach.noSession': 'Anhänge gehen nur in eine laufende Session: erst im Terminal öffnen.',
     'attach.one': 'Hänge {name} an …',
     'attach.many': 'Hänge {n} Dateien an …',
     'attach.tooLarge': '{name} ist größer als 50 MB.',
     'attach.failed': '{name} konnte nicht angehängt werden: {error}',
-    'attach.folder': 'Ordner lassen sich nicht anhängen, nur einzelne Dateien.',
+    'attach.locating': 'Suche Ordner {name} …',
+    'attach.locatingMany': 'Suche {n} Ordner …',
     'attach.drop': 'Zum Anhängen loslassen',
     'attach.dropNoSession': 'Anhänge gehen nur in eine laufende Session im Terminal',
 
@@ -222,13 +223,14 @@ const TEXTS = {
     'note.deleteText': 'The note will be permanently deleted.',
     'note.orphans': 'Notes on messages that are no longer in the history',
 
-    'attach.title': 'Attach a file (or just drag it into the terminal)',
+    'attach.title': 'Attach a file (or just drag files and folders into the terminal)',
     'attach.noSession': 'Attachments only go into a running session: open it in the terminal first.',
     'attach.one': 'Attaching {name} …',
     'attach.many': 'Attaching {n} files …',
     'attach.tooLarge': '{name} is larger than 50 MB.',
     'attach.failed': 'Could not attach {name}: {error}',
-    'attach.folder': 'Folders cannot be attached, only single files.',
+    'attach.locating': 'Looking for folder {name} …',
+    'attach.locatingMany': 'Looking for {n} folders …',
     'attach.drop': 'Drop to attach',
     'attach.dropNoSession': 'Attachments only go into a running session in the terminal',
 

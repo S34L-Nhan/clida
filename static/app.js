@@ -1548,7 +1548,8 @@ function toolInput(item) {
 // A browser never tells where a dropped or picked file lives on disk. So these files are copied
 // into the session's upload folder (the CLI may read it via --add-dir) and that path is pasted,
 // just as a terminal pastes a dragged file's path. Ctrl+V needs none of this: on an empty paste
-// the CLI reads the clipboard itself, original paths included.
+// the CLI reads the clipboard itself, original paths included. A dropped folder is not copied:
+// the server finds it by name and contents (see clida/locate.py), and its real path is pasted.
 
 const UPLOAD_LIMIT = 50 * 1024 * 1024;
 
@@ -1560,14 +1561,16 @@ function liveTerminalTab() {
 
 const hasFiles = (ev) => [...(ev.dataTransfer?.types || [])].includes('Files');
 
-async function attachFiles(tab, files) {
+// folders: directory entries from a drop (see droppedFiles).
+async function attachFiles(tab, files, folders = []) {
   const list = [...files];
-  if (!list.length) return;
+  if (!list.length && !folders.length) return;
   if (!tab) {
     toast(t('attach.noSession'));
     return;
   }
-  toast(list.length === 1 ? t('attach.one', { name: quote(list[0].name) }) : t('attach.many', { n: list.length }));
+  if (list.length) toast(list.length === 1 ? t('attach.one', { name: quote(list[0].name) }) : t('attach.many', { n: list.length }));
+  else toast(folders.length === 1 ? t('attach.locating', { name: quote(folders[0].name) }) : t('attach.locatingMany', { n: folders.length }));
   const paths = [];
   for (const file of list) {
     if (file.size > UPLOAD_LIMIT) {
@@ -1588,24 +1591,52 @@ async function attachFiles(tab, files) {
       return;
     }
   }
+  let missing = false;
+  for (const folder of folders) {
+    try {
+      paths.push((await api('POST', '/api/locate-folder', { name: folder.name, entries: await folderNames(folder) })).path);
+    } catch (e) {
+      toast(e.message);  // the others still come through
+      missing = true;
+    }
+  }
   if (!paths.length) return;
-  $('#toast').hidden = true;
-  tab.term.paste(paths.join(' '));  // a bracketed paste, so the CLI turns image paths into [Image #n]
+  if (!missing) $('#toast').hidden = true;
+  tab.term.paste(paths.map(pastedPath).join(' '));  // a bracketed paste, so the CLI turns image paths into [Image #n]
   tab.term.focus();
 }
 
+// A path with spaces in quotes, as a terminal pastes a dragged one; the CLI splits pasted paths at spaces.
+const pastedPath = (path) => (/[\s"'\\]/.test(path) ? `"${path.replace(/(["\\$`])/g, '\\$1')}"` : path);
+
+// The names in a dropped folder, so the server can tell it from other folders of the same name.
+async function folderNames(folder) {
+  const reader = folder.createReader();
+  const names = [];
+  for (;;) {  // readEntries gives at most 100 at a time
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject)).catch(() => []);
+    if (!batch.length || names.length >= 1000) break;
+    names.push(...batch.map((entry) => entry.name));
+  }
+  return names.slice(0, 1000);
+}
+
+// What was dropped: files, and folders as directory entries. Read during the drop event: after it,
+// the browser no longer hands them out.
 function droppedFiles(ev) {
   const files = [];
+  const folders = [];
   for (const item of ev.dataTransfer.items) {
     if (item.kind !== 'file') continue;
-    if (item.webkitGetAsEntry?.()?.isDirectory) {
-      toast(t('attach.folder'));
+    const entry = item.webkitGetAsEntry?.();
+    if (entry?.isDirectory) {
+      folders.push(entry);
       continue;
     }
     const file = item.getAsFile();
     if (file) files.push(file);
   }
-  return files;
+  return { files, folders };
 }
 
 function showDropHint(on) {
@@ -1996,7 +2027,8 @@ function wire() {
     ev.preventDefault();
     ev.stopPropagation();
     showDropHint(false);
-    attachFiles(liveTerminalTab(), droppedFiles(ev));
+    const { files, folders } = droppedFiles(ev);
+    attachFiles(liveTerminalTab(), files, folders);
   });
   $('#attach-input').addEventListener('change', (ev) => {
     attachFiles(state.attachTarget, ev.target.files);
