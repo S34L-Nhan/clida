@@ -225,6 +225,8 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .rail { display: none; align-self: center; gap: 2px; margin-right: 4px; }
 .app.collapsed .rail { display: flex; }
 .tabs { display: flex; align-items: flex-end; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+/* Right after the last tab, like a browser's new-tab button; stays in view when the tabs scroll. */
+.tab-new { align-self: flex-end; width: 28px; height: 28px; margin-bottom: 4px; border-radius: 50%; }
 .tab {
   display: flex;
   align-items: center;
