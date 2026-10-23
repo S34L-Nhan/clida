@@ -1,5 +1,7 @@
 /* Color themes. Each block sets every color; <html data-theme> picks one (static/theme.js, before
-   the first paint). Text contrast is at least 7:1, muted text 4.5:1, syntax colors 4.5:1 (comments 3:1). */
+   the first paint). Text contrast is at least 7:1 (6:1 on panels), muted text 4.5:1, syntax colors 3.5:1
+   (comments 2.8:1). Light themes have a light terminal with its own 16 ANSI colors, each at least 3:1;
+   dark themes use the terminal's default ones. */
 
 :root, [data-theme="light"] {
   --bg: #faf9f5;
@@ -20,10 +22,26 @@
   --danger: #c0392b;
   --danger-text: #ffffff;
   --shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
-  --term-bg: #1d1c1a;
-  --term-fg: #e8e6e1;
-  --term-cursor: #d97757;
-  --term-selection: rgba(217, 119, 87, 0.35);
+  --term-bg: #faf9f5;
+  --term-fg: #29261b;
+  --term-cursor: #c96442;
+  --term-selection: rgba(201, 100, 66, 0.22);
+  --term-black: #29261b;
+  --term-red: #c0392b;
+  --term-green: #2f7d3d;
+  --term-yellow: #8a6100;
+  --term-blue: #2f63c4;
+  --term-magenta: #9b2f9a;
+  --term-cyan: #0b6f78;
+  --term-white: #6f6c65;
+  --term-bright-black: #74716a;
+  --term-bright-red: #d0452f;
+  --term-bright-green: #3a8f4b;
+  --term-bright-yellow: #9e7200;
+  --term-bright-blue: #3f75d6;
+  --term-bright-magenta: #b03aae;
+  --term-bright-cyan: #0f8490;
+  --term-bright-white: #55524b;
   --hl-keyword: #a626a4;
   --hl-string: #50a14f;
   --hl-number: #986801;
@@ -86,10 +104,26 @@
   --danger: #c32b29;
   --danger-text: #fdf6e3;
   --shadow: 0 10px 40px rgba(0, 43, 54, 0.18);
-  --term-bg: #002b36;
-  --term-fg: #93a1a1;
-  --term-cursor: #93a1a1;
-  --term-selection: rgba(147, 161, 161, 0.25);
+  --term-bg: #fdf6e3;
+  --term-fg: #3f5359;
+  --term-cursor: #586e75;
+  --term-selection: rgba(7, 54, 66, 0.14);
+  --term-black: #073642;
+  --term-red: #c32b29;
+  --term-green: #5f6e00;
+  --term-yellow: #8a6800;
+  --term-blue: #1f73ad;
+  --term-magenta: #bb2f73;
+  --term-cyan: #1b7d76;
+  --term-white: #657b83;
+  --term-bright-black: #586e75;
+  --term-bright-red: #c2420f;
+  --term-bright-green: #6c7d00;
+  --term-bright-yellow: #9b7500;
+  --term-bright-blue: #2f80c0;
+  --term-bright-magenta: #5b60b8;
+  --term-bright-cyan: #1d847c;
+  --term-bright-white: #52676e;
   --hl-keyword: #6c7d00;
   --hl-string: #1d847c;
   --hl-number: #c02c73;
@@ -152,10 +186,26 @@
   --danger: #d20f39;
   --danger-text: #ffffff;
   --shadow: 0 10px 40px rgba(76, 79, 105, 0.2);
-  --term-bg: #1e1e2e;
-  --term-fg: #cdd6f4;
-  --term-cursor: #f5e0dc;
-  --term-selection: rgba(88, 91, 112, 0.6);
+  --term-bg: #eff1f5;
+  --term-fg: #4c4f69;
+  --term-cursor: #dc8a78;
+  --term-selection: rgba(124, 127, 147, 0.25);
+  --term-black: #5c5f77;
+  --term-red: #d20f39;
+  --term-green: #348524;
+  --term-yellow: #9a5f0a;
+  --term-blue: #1e66f5;
+  --term-magenta: #c43aa2;
+  --term-cyan: #14857f;
+  --term-white: #6c6f85;
+  --term-bright-black: #6c6f85;
+  --term-bright-red: #d20f39;
+  --term-bright-green: #348524;
+  --term-bright-yellow: #a3620c;
+  --term-bright-blue: #1e66f5;
+  --term-bright-magenta: #c43aa2;
+  --term-bright-cyan: #14857f;
+  --term-bright-white: #5c5f77;
   --hl-keyword: #8839ef;
   --hl-string: #348524;
   --hl-number: #c24d08;

@@ -1950,14 +1950,23 @@ function applyTheme(name) {
   window.clidaTheme(name);  // fires "clida-theme", which recolors the terminals
 }
 
-// xterm needs real colors, not CSS variables: take the theme's from the page.
+const ANSI_COLORS = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'];
+
+// xterm needs real colors, not CSS variables: take the theme's from the page. Light themes bring
+// their own 16 ANSI colors (xterm's defaults are made for a dark background); dark ones keep those.
 function terminalTheme() {
   const css = getComputedStyle(document.documentElement);
   const color = (name) => css.getPropertyValue(name).trim();
-  return {
+  const theme = {
     background: color('--term-bg'), foreground: color('--term-fg'), cursor: color('--term-cursor'),
     cursorAccent: color('--term-bg'), selectionBackground: color('--term-selection'),
   };
+  for (const name of ANSI_COLORS) {
+    const bright = `bright${name[0].toUpperCase()}${name.slice(1)}`;
+    if (color(`--term-${name}`)) theme[name] = color(`--term-${name}`);
+    if (color(`--term-bright-${name}`)) theme[bright] = color(`--term-bright-${name}`);
+  }
+  return theme;
 }
 
 // Take over what the server has stored. Until it answers, the window uses what it remembers.
