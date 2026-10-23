@@ -63,7 +63,18 @@ function dates() {
   return DATE_FORMATS[locale()];
 }
 
-const money = (usd) => new Intl.NumberFormat(locale(), { style: 'currency', currency: 'USD', maximumFractionDigits: usd < 1 ? 3 : 2 }).format(usd);
+// The CLI reports cost in US dollars; shown in euros at the ECB rate the server keeps (clida/rates.py).
+const euros = (usd) => usd * (state.rate?.eur_per_usd ?? 0.89);
+const money = (usd) => {
+  const eur = euros(usd);
+  return new Intl.NumberFormat(locale(), { style: 'currency', currency: 'EUR', maximumFractionDigits: eur < 1 ? 3 : 2 }).format(eur);
+};
+const rateNote = () => {
+  const rate = new Intl.NumberFormat(locale(), { maximumFractionDigits: 4 }).format(state.rate?.eur_per_usd ?? 0.89);
+  return state.rate?.date
+    ? t('usage.rate', { rate, date: dates().short.format(new Date(`${state.rate.date}T12:00`)) })
+    : t('usage.rateFallback', { rate });
+};
 const count = (n) => new Intl.NumberFormat(locale(), { notation: 'compact', maximumFractionDigits: 1 }).format(n);
 
 const quote = (text) => t('quoted', { text });
@@ -294,6 +305,7 @@ async function refreshSessions() {
   state.byId = new Map(data.sessions.map((s) => [s.id, s]));
   state.folders = data.folders || [];
   state.costToday = data.cost_today ?? null;
+  state.rate = data.rate || state.rate;
   applyStatus(data);
   if (!state.renaming && !state.dragging) renderSidebar();
   paint();
@@ -1225,7 +1237,7 @@ function paintView(tab) {
   tab.meta.textContent = parts.filter(Boolean).join(' · ');
   tab.meta.title = usage ? t('usage.tooltip', {
     cost: money(usage.cost), input: count(usage.tokens.input_tokens), write: count(usage.tokens.cache_creation_input_tokens),
-    read: count(usage.tokens.cache_read_input_tokens), output: count(usage.tokens.output_tokens),
+    read: count(usage.tokens.cache_read_input_tokens), output: count(usage.tokens.output_tokens), rate: rateNote(),
   }) : '';
   const files = tab.changes?.files.length || 0;
   tab.changesBtn.textContent = files ? `${t('view.changes')} · ${files}` : t('view.changes');
@@ -1253,7 +1265,7 @@ function paint() {
   today.hidden = !state.costToday;
   if (state.costToday) {
     today.textContent = t('usage.today', { cost: money(state.costToday) });
-    today.title = t('usage.todayHint');
+    today.title = `${t('usage.todayHint')}\n${rateNote()}`;
   }
   const waiting = state.attention.size;
   document.title = waiting ? `(${waiting}) CLIDA` : 'CLIDA';

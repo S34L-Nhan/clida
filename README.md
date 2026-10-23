@@ -23,7 +23,7 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on 
   - *Verlauf* (history): the chat as a rendered conversation (Markdown, tool calls collapsed). Code blocks are syntax-highlighted (SQL, PHP, JS, Bash, JSON …) and have a copy button. A slider in the header sets the text width; the middle is the default width, and a double-click resets it.
   - *Terminal*: the real `claude` CLI in an embedded terminal (xterm.js). Everything works as usual: permission prompts, slash commands, plan and auto mode.
 - **Changes** per chat: the third switch in the header lists the files the chat changed with its Edit and Write calls, each with its diffs, and shows the git branch of the chat's folder and how many files there are not committed. The branch is also in the header. It shows what Claude's edit tools did, not the files as they are now: changes by hand or by shell commands (`sed`, a script) are not in it.
-- **Cost and tokens**: the header shows what the chat cost so far, as the CLI reports it (it writes its running total into the transcript now and then, so a running chat's figure lags a little). Hover it for the tokens: input, cache written, cache read, output. The bottom of the sidebar shows the cost of all chats today.
+- **Cost and tokens**: the header shows what the chat cost so far, as the CLI reports it (it writes its running total into the transcript now and then, so a running chat's figure lags a little). The CLI counts in US dollars; CLIDA shows euros, converted at the ECB's daily reference rate. The server fetches it in the background at most twice a day from ecb.europa.eu and keeps it in `~/.clida/rate.json`; offline, it keeps using the last rate it got (or an estimate before the first fetch). Hover it for the tokens: input, cache written, cache read, output. The bottom of the sidebar shows the cost of all chats today.
 - **Parallel sessions**: each session has its own tab and keeps working in the background, even when its tab is closed. The dots show the state:
   - pulsing orange = working
   - yellow = waiting for you (e.g. a permission prompt)
@@ -158,6 +158,7 @@ One limit comes from the browser: cookies do not distinguish ports, so other loc
 | `~/.clida/notes.json` | Session and message notes |
 | `~/.clida/settings.json` | Settings (language) |
 | `~/.clida/uploads/` | Copies of attached files, one folder per session (removed when the chat is deleted) |
+| `~/.clida/rate.json` | Last ECB euro rate for the cost figures |
 | `~/.clida/token` | Login token of the window |
 
 If one of these files cannot be read, CLIDA moves it aside as `<name>.corrupt-<time>` and starts that part empty, so the next save does not overwrite it.

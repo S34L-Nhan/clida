@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from . import STATE_DIR, browser, locate, registry, storage, transcripts
+from .rates import Rates
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .settings import Settings, tr
@@ -111,6 +112,7 @@ class Desk:
         self.settings = Settings()
         self.terminals = Terminals(claude)
         self.changes_cache = transcripts.ChangesCache()
+        self.rates = Rates()
         # New on every start: an open window that sees it change reloads, with the new code.
         self.boot = secrets.token_hex(6)
         self._windows = {}  # window id -> time of its last request (monotonic)
@@ -207,7 +209,7 @@ class Desk:
                 })
         out.sort(key=lambda s: s["mtime"], reverse=True)
         return {"sessions": out, "folders": library["folders"], "home": str(Path.home()),
-                "cost_today": usage["today"], **self.status()}
+                "cost_today": usage["today"], "rate": self.rates.current(), **self.status()}
 
     def messages(self, session_id: str) -> dict:
         info = self.index.get(session_id)
