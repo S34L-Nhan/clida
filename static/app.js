@@ -2156,6 +2156,21 @@ function wire() {
   $('#session-list').addEventListener('scroll', closeMenu);
   $('#search').addEventListener('input', renderSidebar);
 
+  // No developer tools from the keyboard: F12, Ctrl+Shift+I/J/C and Ctrl+U (view source); on a Mac
+  // Cmd+Option+I/J/C/U. The browser checks with the page before it acts on these. Its own menu in
+  // the window's title bar still offers them; no page can reach that.
+  window.addEventListener('keydown', (ev) => {
+    const letter = /^Key([A-Z])$/.exec(ev.code)?.[1].toLowerCase() || ev.key.toLowerCase();
+    const devtools = ev.key === 'F12' || (MAC
+      ? ev.metaKey && ev.altKey && 'ijcu'.includes(letter) && letter.length === 1
+      : ev.ctrlKey && ((ev.shiftKey && 'ijc'.includes(letter) && letter.length === 1) || (!ev.shiftKey && !ev.altKey && letter === 'u')));
+    if (!devtools) return;
+    ev.preventDefault();
+    // The terminal still gets these two: Ctrl+Shift+C copies there, Ctrl+U clears the input line.
+    const terminalToo = !MAC && ev.ctrlKey && (letter === 'u' || (ev.shiftKey && letter === 'c'));
+    if (!terminalToo) ev.stopPropagation();
+  }, true);
+
   // Capture phase, so the terminal never sees the app's own shortcuts.
   window.addEventListener('keydown', (ev) => {
     const key = ev.key.toLowerCase();

@@ -95,6 +95,8 @@ WSL shuts down once no `wsl.exe` is left on the Windows side, and takes the serv
 
 The tooltips and the start page show the keys of the platform in use.
 
+The developer tools do not open from the keyboard: F12, Ctrl+Shift+I/J/C and Ctrl+U (on macOS ⌘⌥I/J/C/U) do nothing in the window. In the terminal, Ctrl+Shift+C still copies and Ctrl+U still clears the CLI's input line. The browser's own menu in the title bar still offers the developer tools; a page cannot block that.
+
 - **New chat**: pick a working directory (recently used ones are suggested), and optionally a title and a folder. The title goes to the CLI via `--name`; the folder list only shows up once you have folders.
 - **Open an earlier chat**: shows the history first. *Fortsetzen* (resume) runs `claude --resume <id>` in the original working directory. If the chat already runs in another terminal, CLIDA asks first.
 - **Closing a tab** does not end the session. Use *Beenden* (stop) for that. The history is kept.
