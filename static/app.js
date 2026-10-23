@@ -308,12 +308,76 @@ async function change(method, path, body) {
 async function serverRestarted() {
   if (state.reloading) return;
   state.reloading = true;
+  await settleWriting();
+  location.reload();
+}
+
+// Before the page goes: open notes are saved, a rename keeps the old name, and an open new chat
+// dialog starts nothing (it goes with the page).
+async function settleWriting() {
   for (const input of document.querySelectorAll('.rename-input')) {
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
   }
   const notes = [...document.querySelectorAll('#views .note-editor')];
   await Promise.all(notes.map((editor) => Promise.resolve(editor.flush?.()).catch(() => {})));
+}
+
+// ---- one window ---------------------------------------------------------------------------
+// CLIDA runs in one window per browser. `clida` brings an open window to the front instead of
+// opening another; a second page that comes up anyway (a link from `clida url`, the address typed
+// into a tab) finds the first one on this channel and steps aside. "Use it here" turns that round.
+
+const peers = 'BroadcastChannel' in window ? new BroadcastChannel('clida') : null;
+
+// True when no other CLIDA page answers: this window is the one.
+function claimWindow() {
+  if (!peers) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const heard = (ev) => {
+      if (ev.data?.type !== 'here') return;
+      clearTimeout(timer);
+      peers.removeEventListener('message', heard);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      peers.removeEventListener('message', heard);
+      resolve(true);
+    }, 250);
+    peers.addEventListener('message', heard);
+    peers.postMessage({ type: 'hello' });
+  });
+}
+
+peers?.addEventListener('message', (ev) => {
+  if (!state.claimed) return;
+  if (ev.data?.type === 'hello') {
+    peers.postMessage({ type: 'here' });
+    window.focus();  // may or may not raise the window; the browser decides
+  } else if (ev.data?.type === 'take-over') {
+    giveWay();
+  }
+});
+
+// Another page took over: settle what is being written, then close. A browser keeps a tab open
+// that the user opened by hand; reloaded, it finds the new one and shows the notice instead.
+async function giveWay() {
+  state.claimed = false;
+  await settleWriting();
+  window.close();
+  await new Promise((resolve) => setTimeout(resolve, 1000));  // the taker claims first, or both would
   location.reload();
+}
+
+function stepAside() {
+  window.close();  // a window that `clida` opened closes; a tab opened by hand stays
+  const here = el('button', 'btn primary', t('single.useHere'));
+  here.onclick = () => {
+    peers.postMessage({ type: 'take-over' });
+    location.reload();
+  };
+  const notice = el('div', 'single-notice');
+  notice.append(el('h1', '', t('single.elsewhere')), el('p', '', t('single.hint')), here);
+  document.body.replaceChildren(notice);
 }
 
 function setOnline(online, status) {
@@ -2226,6 +2290,11 @@ function wire() {
 async function start() {
   setLanguage(store.get('language', 'de'));
   translatePage();
+  if (!(await claimWindow())) {
+    stepAside();
+    return;
+  }
+  state.claimed = true;
   wire();
   if (store.get('collapsed', false)) {
     $('#app').classList.add('collapsed');

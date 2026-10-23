@@ -23,7 +23,7 @@ usage() {
   cat <<EOF
 Usage: clida [open|start|stop|restart|status|serve|url|shortcut]
 
-  open     (default) start the server if needed and open the window
+  open     (default) start the server if needed and open the window, or bring the open one to the front
   app      like open; on WSL it then keeps WSL alive while the server runs (desktop shortcut target)
   start    start the server in the background only
   stop     stop the server; asks first if sessions are running (--force: don't ask)
@@ -111,6 +111,46 @@ open_window_linux() {
   command -v xdg-open >/dev/null || return 1
   xdg-open "$1" >/dev/null 2>&1 &
 }
+
+# Windows the server counts as open: 0 when it does not run, or runs code that does not count them.
+windows_open() {
+  is_server "$(cat "$STATE/server.pid" 2>/dev/null || true)" || { echo 0; return; }
+  local_api GET /api/status 2>/dev/null |
+    python3 -c 'import json, sys; print(json.load(sys.stdin).get("windows", 0))' 2>/dev/null || echo 0
+}
+
+# CLIDA only once: an open window comes to the front; only without one does a new one open.
+show_window() {
+  if (( $(windows_open) > 0 )) && "focus_window_$PLATFORM"; then
+    echo "CLIDA is already open; its window is in front now."
+  else
+    open_window
+  fi
+}
+
+# Found by class (a Chromium window) and exact title, so an Explorer window of a folder named
+# clida is never taken. Windows may refuse the focus to a background program; then the window
+# flashes in the taskbar instead.
+focus_window_wsl() {
+  local script
+  script='Add-Type -AssemblyName UIAutomationClient
+$auto = [System.Windows.Automation.AutomationElement]
+$chromium = New-Object System.Windows.Automation.PropertyCondition($auto::ClassNameProperty, "Chrome_WidgetWin_1")
+foreach ($w in $auto::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $chromium)) {
+  if ($w.Current.Name -cnotmatch "^(\(\d+\) )?CLIDA$") { continue }
+  $window = $w.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+  if ($window.Current.WindowVisualState -eq "Minimized") { $window.SetWindowVisualState("Normal") }
+  $w.SetFocus()
+  exit 0
+}
+exit 1'
+  (cd /mnt/c && "$WIN32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -EncodedCommand \
+    "$(python3 -c 'import base64, sys; print(base64.b64encode(sys.stdin.read().encode("utf-16-le")).decode())' <<<"$script")") >/dev/null 2>&1
+}
+
+# Not built for macOS and Linux yet: there a second window opens and the page steps aside (app.js).
+focus_window_mac() { return 1; }
+focus_window_linux() { return 1; }
 
 open_window() {
   local url
@@ -274,16 +314,14 @@ FORCE=0
 [[ "${2:-}" == "--force" ]] && FORCE=1
 
 case "${1:-open}" in
-  open) start_server; open_window; ensure_keepalive ;;
-  app) start_server; open_window; keepalive ;;
+  open) start_server; show_window; ensure_keepalive ;;
+  app) start_server; show_window; keepalive ;;
   keepalive) keepalive ;;
   start) start_server; ensure_keepalive; echo "clida runs on http://localhost:$PORT" ;;
   stop) stop_server ;;
   restart)
     # An open window reloads by itself once the new server is up; a second one would only be in the way.
-    windows=0
-    is_server "$(cat "$STATE/server.pid" 2>/dev/null || true)" && windows="$(local_api GET /api/status 2>/dev/null |
-      python3 -c 'import json, sys; print(json.load(sys.stdin).get("windows", 0))' 2>/dev/null || echo 0)"
+    windows="$(windows_open)"
     stop_server; start_server
     if (( windows > 0 )); then echo "clida restarted; the open window reloads by itself."; else open_window; fi
     ensure_keepalive ;;

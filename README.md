@@ -60,7 +60,7 @@ clida                                        # first start runs npm install
 ## Usage
 
 ```bash
-clida            # start the server if needed and open the window
+clida            # start the server if needed and open the window, or bring the open one to the front
 clida status     # is the server running, which sessions are running
 clida stop       # stop the server; asks first if sessions are running (--force: no question)
 clida restart    # stop + start; an open window reloads by itself, otherwise a new one opens
@@ -69,7 +69,7 @@ clida url        # one-time login URL (valid for 60 s), e.g. for another browser
 clida shortcut   # create/update the shortcut (WSL: Windows desktop, macOS: ~/Applications/CLIDA.app)
 ```
 
-The window is a browser app window (`--app=…`): no address bar, and its own taskbar or Dock entry. After a server restart an open window reloads by itself, so it runs the new code too. Notes being written are saved first, a rename in progress keeps the old name, and an open new chat dialog starts nothing. On WSL, Edge comes first and Chrome second; on macOS, Chrome, Edge, Brave and Chromium in that order.
+The window is a browser app window (`--app=…`): no address bar, and its own taskbar or Dock entry. CLIDA has one window. Started again (the shortcut, `clida`), it brings the open window to the front instead of opening a second one; on macOS and Linux this is not built yet, so a second window opens there and closes itself again. A second page that comes up anyway in the same browser (a `clida url` link, the address typed into a tab) steps aside with a notice, and *Hier verwenden* (use it here) moves CLIDA into it: the other window saves open notes and closes. After a server restart an open window reloads by itself, so it runs the new code too. Notes being written are saved first, a rename in progress keeps the old name, and an open new chat dialog starts nothing. On WSL, Edge comes first and Chrome second; on macOS, Chrome, Edge, Brave and Chromium in that order.
 
 On WSL, the desktop shortcut runs `clida app` via `conhost.exe --headless wsl.exe …`, so no console window appears. Its icon lives in `%LOCALAPPDATA%\clida\clida.ico`. On macOS, `clida shortcut` builds a small AppleScript app in `~/Applications` with the icon from `static/icon-1024.png`. `tools/make_icon.py` renders both icons from the same motif as `static/icon.svg`.
 
