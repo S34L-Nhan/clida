@@ -32,17 +32,17 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on 
 
 ## Requirements and setup
 
-Common to both: Python 3.9 or newer (stdlib only, no pip), Node.js/npm (only to fetch the frontend libraries on the first start; if npm is missing, `clida` installs it with apt on Ubuntu/Debian/WSL or Homebrew on macOS), and the `claude` CLI.
+`install.sh` links the launcher into `~/.local/bin`, fetches the frontend libraries and offers to create the shortcut (WSL: Windows desktop, macOS: `~/Applications/CLIDA.app` for Launchpad, Spotlight and the Dock). It is safe to run again; `clida shortcut` recreates the shortcut later.
+
+Common to both: Python 3.9 or newer (stdlib only, no pip), Node.js/npm (only to fetch the frontend libraries during install; if npm is missing, `install.sh` installs it with apt on Ubuntu/Debian/WSL or Homebrew on macOS), and the `claude` CLI.
 
 ### Windows (WSL)
 
 - WSL 2, plus Microsoft Edge or Google Chrome on the Windows side
 
 ```bash
-git clone https://github.com/S34L-Nhan/clida.git ~/clida
-mkdir -p ~/.local/bin && ln -s ~/clida/bin/clida ~/.local/bin/clida   # put the launcher on PATH
-clida shortcut                               # optional: Windows desktop shortcut
-clida                                        # first start runs npm install
+git clone https://github.com/S34L-Nhan/clida.git ~/clida && ~/clida/install.sh
+clida
 ```
 
 ### macOS
@@ -51,10 +51,8 @@ clida                                        # first start runs npm install
 - Google Chrome, Microsoft Edge, Brave or Chromium for an app window. Without one of them, CLIDA opens in a normal tab of the default browser (Safari has no app windows).
 
 ```bash
-git clone https://github.com/S34L-Nhan/clida.git ~/clida
-mkdir -p ~/.local/bin && ln -s ~/clida/bin/clida ~/.local/bin/clida   # the claude installer puts ~/.local/bin on PATH
-clida shortcut                               # optional: ~/Applications/CLIDA.app (Launchpad, Spotlight, Dock)
-clida                                        # first start runs npm install
+git clone https://github.com/S34L-Nhan/clida.git ~/clida && ~/clida/install.sh
+clida
 ```
 
 ## Usage

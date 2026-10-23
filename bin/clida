@@ -346,6 +346,7 @@ case "${1:-open}" in
   open) start_server; show_window; ensure_keepalive ;;
   app) start_server; show_window; keepalive ;;
   keepalive) keepalive ;;
+  deps) ensure_deps ;;  # used by install.sh
   start) start_server; ensure_keepalive; echo "clida runs on http://localhost:$PORT" ;;
   stop) stop_server ;;
   restart)
