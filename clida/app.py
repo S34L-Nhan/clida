@@ -2,6 +2,7 @@
 
 import os
 import re
+import secrets
 import shutil
 import sys
 import threading
@@ -15,6 +16,7 @@ from .settings import Settings, tr
 from .terminals import UPLOADS, Terminals
 
 UPLOAD_LIMIT = 50 * 1024 * 1024
+WINDOW_TTL = 90  # seconds a window counts as open after its last request; a hidden one polls once a minute
 
 TITLES_FILE = STATE_DIR / "titles.json"
 
@@ -88,6 +90,10 @@ class Desk:
         self.notes = Notes()
         self.settings = Settings()
         self.terminals = Terminals(claude)
+        # New on every start: an open window that sees it change reloads, with the new code.
+        self.boot = secrets.token_hex(6)
+        self._windows = {}  # window id -> time of its last request (monotonic)
+        self._windows_lock = threading.Lock()
 
     def _require_session(self, session_id: str) -> dict:
         info = self.index.get(session_id)
@@ -132,7 +138,25 @@ class Desk:
                 continue
             external.append({"session_id": sid, "pid": pid, "status": registry.cli_status(entry),
                              "kind": entry.get("kind"), "cwd": entry.get("cwd")})
-        return {"terminals": terminals, "external": external}
+        return {"terminals": terminals, "external": external, "boot": self.boot, "windows": self.windows_open()}
+
+    # -- windows: `clida restart` opens one only when none is open --------------------------
+
+    def window_seen(self, window_id: str):
+        with self._windows_lock:
+            self._windows[window_id] = time.monotonic()
+
+    def window_closed(self, window_id: str) -> dict:
+        with self._windows_lock:
+            self._windows.pop(window_id, None)
+        return {"ok": True}
+
+    def windows_open(self) -> int:
+        now = time.monotonic()
+        with self._windows_lock:
+            for window_id in [w for w, seen in self._windows.items() if now - seen > WINDOW_TTL]:
+                del self._windows[window_id]
+            return len(self._windows)
 
     def sessions(self) -> dict:
         infos = self.index.scan()

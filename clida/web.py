@@ -34,6 +34,8 @@ _TICKET_LOCK = threading.Lock()
 SID = r"(?P<sid>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
 FID = r"(?P<fid>f[0-9a-f]{12})"
 NID = r"(?P<nid>n[0-9a-f]{12})"
+WID = r"(?P<wid>[0-9a-f]{16})"
+WINDOW_HEADER = re.compile(r"[0-9a-f]{16}")
 ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name in [
     ("GET", r"/", "index"),
     ("GET", r"/static/(?P<name>[\w.-]+)", "static"),
@@ -60,6 +62,7 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("POST", rf"/api/terminals/{SID}/upload", "upload"),
     ("POST", r"/api/locate-folder", "locate_folder"),
     ("POST", r"/api/open-url", "open_url"),
+    ("POST", rf"/api/windows/{WID}/closed", "window_closed"),
     ("POST", r"/api/login-ticket", "login_ticket"),
     ("DELETE", rf"/api/terminals/{SID}", "stop_terminal"),
     ("GET", rf"/ws/terminals/{SID}", "attach"),
@@ -127,6 +130,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._login(query["ticket"][0])
             if not self._authed():
                 return self._send(403, _locked_page(), "text/html; charset=utf-8")
+            window = self.headers.get("X-Clida-Window") or ""  # every request of a page is a sign of life
+            if WINDOW_HEADER.fullmatch(window):
+                self.desk.window_seen(window)
             for route_method, pattern, name in ROUTES:
                 match = pattern.match(url.path)
                 if match and route_method == method:
@@ -302,6 +308,9 @@ class Handler(BaseHTTPRequestHandler):
         saved = self.desk.save_upload(sid, name, length, self.rfile)
         self._body_read = True  # an error above leaves it unread, and _send closes the connection
         self._send_json(200, saved)
+
+    def route_window_closed(self, wid):
+        self._send_json(200, self.desk.window_closed(wid))
 
     def route_open_url(self):
         self._send_json(200, self.desk.open_url(self._body().get("url")))

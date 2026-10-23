@@ -27,7 +27,7 @@ Usage: clida [open|start|stop|restart|status|serve|url|shortcut]
   app      like open; on WSL it then keeps WSL alive while the server runs (desktop shortcut target)
   start    start the server in the background only
   stop     stop the server; asks first if sessions are running (--force: don't ask)
-  restart  stop + open (same question, same --force)
+  restart  stop + start (same question, same --force); an open window reloads by itself, else one opens
   status   show whether the server runs and how many sessions it hosts
   serve    run the server in the foreground (logs to the terminal)
   url      print a one-time login URL (valid 60 s), e.g. for another browser
@@ -279,7 +279,14 @@ case "${1:-open}" in
   keepalive) keepalive ;;
   start) start_server; ensure_keepalive; echo "clida runs on http://localhost:$PORT" ;;
   stop) stop_server ;;
-  restart) stop_server; start_server; open_window; ensure_keepalive ;;
+  restart)
+    # An open window reloads by itself once the new server is up; a second one would only be in the way.
+    windows=0
+    is_server "$(cat "$STATE/server.pid" 2>/dev/null || true)" && windows="$(local_api GET /api/status 2>/dev/null |
+      python3 -c 'import json, sys; print(json.load(sys.stdin).get("windows", 0))' 2>/dev/null || echo 0)"
+    stop_server; start_server
+    if (( windows > 0 )); then echo "clida restarted; the open window reloads by itself."; else open_window; fi
+    ensure_keepalive ;;
   status)
     if healthy; then
       echo "clida runs on http://localhost:$PORT (pid $(cat "$STATE/server.pid" 2>/dev/null || echo '?'))"

@@ -178,10 +178,14 @@ function setHistoryWidth(value) {
 // language setting send only this German text.
 const staleServer = (status, data) => status === 404 && (data?.code === 'no_route' || data?.error === 'Nicht gefunden');
 
+// This window, for the server: an open window reloads by itself after a restart, so `clida restart`
+// opens a new one only when none is open. Closing the window says so (see wire).
+const WINDOW_ID = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
+
 async function api(method, path, body) {
   const res = await fetch(path, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
+    headers: { 'X-Clida-Window': WINDOW_ID, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   let data = null;
@@ -206,6 +210,10 @@ function toast(message) {
 // ---- data ---------------------------------------------------------------------------------
 
 function applyStatus(data) {
+  if (data.boot) {
+    state.boot ||= data.boot;
+    if (data.boot !== state.boot) serverRestarted();
+  }
   state.terminals = new Map(data.terminals.map((row) => [row.id, row]));
   state.bySession = new Map(data.terminals.filter((row) => row.status !== 'exited').map((row) => [row.session_id, row]));
   state.external = new Map(data.external.map((e) => [e.session_id, e]));
@@ -292,6 +300,20 @@ async function change(method, path, body) {
   const result = await api(method, path, body);
   refreshSessions();
   return result;
+}
+
+// The server restarted, perhaps with new code: reload, so the page matches it. What is being
+// written is settled first: open notes are saved, a rename keeps the old name, and an open new
+// chat dialog starts nothing (the reload just drops it).
+async function serverRestarted() {
+  if (state.reloading) return;
+  state.reloading = true;
+  for (const input of document.querySelectorAll('.rename-input')) {
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  }
+  const notes = [...document.querySelectorAll('#views .note-editor')];
+  await Promise.all(notes.map((editor) => Promise.resolve(editor.flush?.()).catch(() => {})));
+  location.reload();
 }
 
 function setOnline(online, status) {
@@ -1284,9 +1306,15 @@ function pasteAsMarkdown(ev) {
   area.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function noteEditor({ initial = '', onSave, onCancel, onDelete }) {
+// flush(text): save the text as it stands, without touching the page; used before a reload
+// (see serverRestarted). It skips empty text, so a cleared editor never deletes a stored note.
+function noteEditor({ initial = '', onSave, onCancel, onDelete, flush }) {
   const box = el('div', 'note-editor');
   const area = el('textarea');
+  box.flush = () => {
+    const text = area.value.trim();
+    return flush && text && text !== initial.trim() ? flush(text) : null;
+  };
   area.maxLength = NOTE_MAX;
   area.value = initial;
   area.rows = initial ? 6 : 4;
@@ -1355,6 +1383,7 @@ function editSessionNote(tab) {
     onSave: save,
     onCancel: () => renderSessionNote(tab),
     onDelete: tab.notes.session ? () => save('') : null,
+    flush: (body) => api('PUT', `/api/sessions/${tabSession(tab)}/notes/session`, { body }),
   }));
 }
 
@@ -1388,6 +1417,9 @@ function withNotes(tab, item) {
         rerenderHistory(tab);
       },
       onCancel: () => editor.remove(),
+      flush: (body) => api('POST', `/api/sessions/${tabSession(tab)}/notes`, {
+        anchor: item.uid, role: item.k, preview: item.text.slice(0, 300), body,
+      }),
     });
     editor.dataset.anchor = item.uid;
     wrap.after(editor);
@@ -1443,6 +1475,7 @@ function noteCard(tab, note, withPreview = false) {
         rerenderHistory(tab);
       },
       onDelete: remove,
+      flush: (text) => api('PUT', `/api/sessions/${tabSession(tab)}/notes/${note.id}`, { body: text }),
     });
     editor.dataset.note = note.id;
     card.replaceWith(editor);
@@ -2042,6 +2075,7 @@ function translatePage() {
 }
 
 function wire() {
+  window.addEventListener('pagehide', () => navigator.sendBeacon(`/api/windows/${WINDOW_ID}/closed`));
   window.addEventListener('clida-theme', () => {  // also when "system" follows the OS
     for (const tab of state.tabs) if (tab.term) tab.term.options.theme = terminalTheme();
   });
@@ -2175,10 +2209,13 @@ async function start() {
     else if (state.byId.has(sid) && !state.tabs.some((tab) => tabSession(tab) === sid)) addTab(sid, 'history', sid);
   }
   const linked = location.hash.slice(1);
+  // A terminal gone with a restart: its chat now sits in a history tab of its own id.
+  const wantedSid = store.get('tabs', []).find((saved) => saved?.id === wanted)?.sid;
   if (state.byId.has(linked) || state.bySession.has(linked)) {
     history.replaceState(null, '', location.pathname);
     openSession(linked);
   } else if (findTab(wanted)) activate(wanted);
+  else if (wantedSid && findTab(wantedSid)) activate(wantedSid);
   else if (state.tabs.length) activate(state.tabs[0].id);
   paint();
   setInterval(refreshStatus, 2000);
