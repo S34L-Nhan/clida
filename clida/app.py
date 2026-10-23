@@ -243,8 +243,10 @@ class Desk:
                 mine = tool.get(os.path.realpath(found["path"]))
                 if mine is None:
                     files.append(found)
-                elif not mine["known"]:
+                elif not mine["backup"]:
                     # No CLI backup of it, but git knows how it was: its diff, with the chat's steps.
+                    # Also for a file counted as created without one (an older transcript's Write
+                    # may have replaced a file that git has).
                     mine.update({k: found[k] for k in ("status", "note", "known", "net", "added", "removed")})
             files.sort(key=lambda f: f["path"])
         out = []
