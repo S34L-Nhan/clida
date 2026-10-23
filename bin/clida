@@ -21,7 +21,7 @@ else PLATFORM=linux; fi
 
 usage() {
   cat <<EOF
-Usage: clida [open|start|stop|restart|status|serve|url|shortcut]
+Usage: clida [open|start|stop|restart|status|update|serve|url|shortcut]
 
   open     (default) start the server if needed and open the window, or bring the open one to the front
   app      like open; on WSL it then keeps WSL alive while the server runs (desktop shortcut target)
@@ -29,6 +29,7 @@ Usage: clida [open|start|stop|restart|status|serve|url|shortcut]
   stop     stop the server; asks first if sessions are running (--force: don't ask)
   restart  stop + start (same question, same --force); an open window reloads by itself, else one opens
   status   show whether the server runs and how many sessions it hosts
+  update   pull the newest version of the current branch, then restart (same question, same --force)
   serve    run the server in the foreground (logs to the terminal)
   url      print a one-time login URL (valid 60 s), e.g. for another browser
   shortcut create or update the CLIDA shortcut (WSL: Windows desktop, macOS: ~/Applications)
@@ -71,12 +72,14 @@ ensure_npm() {
   exit 1
 }
 
+install_deps() {
+  ensure_npm
+  echo "clida: installing frontend libraries (npm install) ..." >&2
+  (cd "$ROOT" && npm install --no-audit --no-fund --silent)
+}
+
 ensure_deps() {
-  if [[ ! -f "$ROOT/node_modules/@xterm/xterm/lib/xterm.mjs" ]]; then
-    ensure_npm
-    echo "clida: installing frontend libraries (one-time npm install) ..." >&2
-    (cd "$ROOT" && npm install --no-audit --no-fund --silent)
-  fi
+  [[ -f "$ROOT/node_modules/@xterm/xterm/lib/xterm.mjs" ]] || install_deps
 }
 
 start_server() {
@@ -326,7 +329,7 @@ print(sum(t["status"] != "exited" for t in json.load(sys.stdin)["terminals"]))' 
       read -r -p "$running session(s) still running in clida and will be ended. Stop anyway? [y/N] " answer
       [[ "$answer" =~ ^[yYjJ] ]] || { echo "Aborted."; return 1; }
     else
-      echo "clida: $running session(s) still running; use 'clida stop --force'." >&2
+      echo "clida: $running session(s) still running; add --force to end them." >&2
       return 1
     fi
   fi
@@ -339,7 +342,54 @@ print(sum(t["status"] != "exited" for t in json.load(sys.stdin)["terminals"]))' 
   return 1
 }
 
-FORCE=0
+# Pull the current branch. The pull may replace this very script, so the rest runs in the new
+# one (after_update), which knows what the new version needs.
+update() {
+  local branch before after
+  if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "clida: $ROOT is not a git checkout; update it by hand." >&2
+    exit 1
+  fi
+  branch="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
+  before="$(git -C "$ROOT" rev-parse HEAD)"
+  echo "clida: fetching updates for branch $branch ..."
+  if ! git -C "$ROOT" pull --ff-only --quiet; then
+    echo "clida: update failed: local changes or commits in the way? See: git -C $ROOT status" >&2
+    exit 1
+  fi
+  after="$(git -C "$ROOT" rev-parse HEAD)"
+  if [[ "$before" == "$after" ]]; then
+    echo "clida is up to date ($branch, $(git -C "$ROOT" rev-parse --short HEAD))."
+    return 0
+  fi
+  echo "clida: updated $branch ${before:0:7}..${after:0:7}:"
+  git -C "$ROOT" log --format='  %h %s' "$before..$after" | head -n 20
+  CLIDA_FORCE="$FORCE" exec "$ROOT/bin/clida" after-update "$before"
+}
+
+after_update() {
+  if ! git -C "$ROOT" diff --quiet "$1" HEAD -- package.json package-lock.json; then
+    install_deps
+  else
+    ensure_deps
+  fi
+  if ! healthy; then
+    echo "clida: done; the next start runs the new version."
+    return 0
+  fi
+  # Restarting ends the sessions hosted here; stop_server asks first, and a no keeps them.
+  local windows
+  windows="$(windows_open)"
+  if ! stop_server; then
+    echo "clida: the server keeps running the old version until 'clida restart'."
+    return 0
+  fi
+  start_server
+  if (( windows > 0 )); then echo "clida restarted; the open window reloads by itself."; else echo "clida restarted."; fi
+  ensure_keepalive
+}
+
+FORCE="${CLIDA_FORCE:-0}"
 [[ "${2:-}" == "--force" ]] && FORCE=1
 
 case "${1:-open}" in
@@ -347,6 +397,8 @@ case "${1:-open}" in
   app) start_server; show_window; keepalive ;;
   keepalive) keepalive ;;
   deps) ensure_deps ;;  # used by install.sh
+  update) update ;;
+  after-update) after_update "$2" ;;  # run by update, in the newly pulled script
   start) start_server; ensure_keepalive; echo "clida runs on http://localhost:$PORT" ;;
   stop) stop_server ;;
   restart)
