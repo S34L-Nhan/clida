@@ -36,6 +36,7 @@
       </div>
       <div id="banner" class="banner" hidden>Server nicht erreichbar – läuft <code>clida</code> noch?</div>
       <div id="views" class="views">
+        <div id="drop-hint" class="drop-hint" hidden></div>
         <div id="empty" class="empty">
           <h1>Womit legen wir los?</h1>
           <p>Starte einen neuen Chat oder öffne links einen früheren.<br>Laufende Sessions arbeiten im Hintergrund weiter, auch wenn ihr Tab geschlossen ist.</p>
@@ -81,6 +82,7 @@
     </div>
   </dialog>
 
+  <input id="attach-input" type="file" multiple hidden>
   <div id="toast" class="toast" role="status" hidden></div>
   <script type="module" src="/static/app.js"></script>
 </body>

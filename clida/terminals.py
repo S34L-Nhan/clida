@@ -12,9 +12,10 @@ import threading
 import time
 import uuid
 
-from . import registry
+from . import STATE_DIR, registry
 
 SCROLLBACK_BYTES = 2 * 1024 * 1024
+UPLOADS = STATE_DIR / "uploads"  # files dropped into a session, one folder per session
 VIEWER_BACKLOG_BYTES = 8 * 1024 * 1024  # a tab further behind than this is dropped and reconnects
 EXITED_TTL = 600  # seconds an exited terminal waits for a tab that has not seen its end yet
 
@@ -239,6 +240,10 @@ class Terminals:
             else:
                 session_id = str(uuid.uuid4())
                 argv = ["--session-id", session_id] + (["--name", name] if name else [])
+            # The CLI only reads pasted file paths inside its directories; this one gets the uploads.
+            uploads = UPLOADS / session_id
+            uploads.mkdir(mode=0o700, parents=True, exist_ok=True)
+            argv += ["--add-dir", str(uploads)]
             term = Terminal(self.claude, cwd, session_id, argv)
             self._by_id[session_id] = term
             return term

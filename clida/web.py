@@ -49,6 +49,7 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("PUT", rf"/api/folders/{FID}", "rename_folder"),
     ("DELETE", rf"/api/folders/{FID}", "delete_folder"),
     ("POST", r"/api/terminals", "start_terminal"),
+    ("POST", rf"/api/terminals/{SID}/upload", "upload"),
     ("POST", r"/api/login-ticket", "login_ticket"),
     ("DELETE", rf"/api/terminals/{SID}", "stop_terminal"),
     ("GET", rf"/ws/terminals/{SID}", "attach"),
@@ -231,6 +232,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_start_terminal(self):
         self._send_json(200, self.desk.start_terminal(self._body()))
+
+    def route_upload(self, sid):
+        name = parse_qs(urlsplit(self.path).query).get("name", [""])[0]
+        try:
+            length = int(self.headers.get("Content-Length") or -1)
+        except ValueError:
+            length = -1
+        if not 0 <= length <= 50 * 1024 * 1024:
+            self.close_connection = True  # the body stays unread, so this connection cannot be reused
+        self._send_json(200, self.desk.save_upload(sid, name, length, self.rfile))
 
     def route_login_ticket(self):
         ticket = secrets.token_urlsafe(24)

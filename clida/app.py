@@ -2,12 +2,17 @@
 
 import json
 import os
+import re
+import shutil
 import threading
+import time
 from pathlib import Path
 
 from . import STATE_DIR, registry, transcripts
 from .library import Library
-from .terminals import Terminals
+from .terminals import UPLOADS, Terminals
+
+UPLOAD_LIMIT = 50 * 1024 * 1024
 
 TITLES_FILE = STATE_DIR / "titles.json"
 
@@ -60,6 +65,14 @@ def _clean_name(value, limit: int, what: str) -> str:
     if not name:
         raise HttpError(400, f"{what} darf nicht leer sein")
     return name
+
+
+def _upload_name(name) -> str:
+    """A safe, unique-ish file name: no directories, no spaces (the CLI splits pasted paths there)."""
+    base = os.path.basename(str(name or "").replace("\\", "/"))
+    base = re.sub(r"[^\w.-]+", "-", base).strip(".-") or "datei"
+    stem, ext = os.path.splitext(base)
+    return f"{time.strftime('%Y%m%d-%H%M%S')}-{stem[:60]}{ext[:12].lower()}"
 
 
 def _first_line(text: str, limit: int = 80) -> str:
@@ -239,11 +252,43 @@ class Desk:
             raise HttpError(500, f"Löschen fehlgeschlagen: {e}")
         self.library.forget(session_id)
         self.titles.set(session_id, None)
+        shutil.rmtree(UPLOADS / session_id, ignore_errors=True)
         term = self.terminals.get(session_id)
         if term is not None and not term.alive:
             self.terminals.stop(session_id)
         self.index.scan()
         return {"ok": True}
+
+    def save_upload(self, terminal_id: str, name, length: int, stream) -> dict:
+        """Store a file dropped into a running session; the browser never reveals the original path."""
+        term = self.terminals.get(terminal_id)
+        if term is None or not term.alive:
+            raise HttpError(404, "Diese Session läuft nicht.")
+        if length < 0:
+            raise HttpError(411, "Dateigröße fehlt")
+        if length > UPLOAD_LIMIT:
+            raise HttpError(413, "Datei ist größer als 50 MB")
+        folder = UPLOADS / terminal_id
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        first = target = folder / _upload_name(name)
+        n = 2
+        while target.exists():  # same name within the same second
+            target = first.with_name(f"{first.stem}-{n}{first.suffix}")
+            n += 1
+        part = target.with_name(target.name + ".part")
+        try:
+            with open(part, "wb") as f:
+                left = length
+                while left:
+                    chunk = stream.read(min(65536, left))
+                    if not chunk:
+                        raise HttpError(400, "Upload abgebrochen")
+                    f.write(chunk)
+                    left -= len(chunk)
+            os.replace(part, target)
+        finally:
+            part.unlink(missing_ok=True)
+        return {"path": str(target)}
 
     def stop_terminal(self, terminal_id: str) -> dict:
         if not self.terminals.stop(terminal_id):

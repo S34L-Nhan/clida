@@ -26,6 +26,7 @@ const ICONS = {
   restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 5v5h5"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  paperclip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
@@ -71,6 +72,7 @@ const state = {
   sessionsSeq: 0,   // numbers sidebar loads, so a late answer cannot undo a newer state
   tabPress: null,   // pressed or dragged tab (see tabPointerDown)
   tabSettle: null,  // a dropped tab still gliding into its slot
+  attachTarget: null, // tab whose paperclip opened the file picker
   online: true,
 };
 
@@ -759,11 +761,18 @@ function buildView(tab) {
   refresh.title = 'Verlauf neu laden';
   refresh.append(icon('refresh'));
   refresh.onclick = () => loadHistory(tab);
+  const attach = el('button', 'icon-btn');
+  attach.title = 'Datei anhängen (oder einfach ins Terminal ziehen)';
+  attach.append(icon('paperclip'));
+  attach.onclick = () => {
+    state.attachTarget = tab;
+    $('#attach-input').click();
+  };
   const resume = el('button', 'btn primary', 'Fortsetzen');
   resume.onclick = () => resumeTab(tab);
   const stop = el('button', 'btn danger', 'Beenden');
   stop.onclick = () => stopTab(tab);
-  actions.append(refresh, resume, stop);
+  actions.append(refresh, attach, resume, stop);
   head.append(titleBox, widthCtl, seg, actions);
 
   const body = el('div', 'view-body');
@@ -778,7 +787,7 @@ function buildView(tab) {
   body.append(hist, termWrap);
   root.append(head, body);
   $('#views').append(root);
-  Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, refresh, resume, stop, hist, histInner, termWrap, termHost, overlay });
+  Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, refresh, attach, resume, stop, hist, histInner, termWrap, termHost, overlay });
 }
 
 function activate(id) {
@@ -1022,6 +1031,7 @@ function paintView(tab) {
   tab.resume.hidden = live;
   tab.stop.hidden = !live;
   tab.refresh.hidden = showTerm;
+  tab.attach.hidden = !(showTerm && live);
   tab.widthCtl.hidden = showTerm;
   tab.hist.hidden = showTerm;
   tab.termWrap.hidden = !showTerm;
@@ -1177,6 +1187,77 @@ function toolInput(item) {
     pre.append(el('span', cls, line + '\n'));
   }
   return pre;
+}
+
+// ---- attachments --------------------------------------------------------------------------
+// A browser never tells where a dropped or picked file lives on disk. So these files are copied
+// into the session's upload folder (the CLI may read it via --add-dir) and that path is pasted,
+// just as a terminal pastes a dragged file's path. Ctrl+V needs none of this: on an empty paste
+// the CLI reads the clipboard itself, original paths included.
+
+const UPLOAD_LIMIT = 50 * 1024 * 1024;
+
+function liveTerminalTab() {
+  const tab = activeTab();
+  const row = tab && state.terminals.get(tab.id);
+  return tab && tab.term && tab.view === 'terminal' && row && row.status !== 'exited' ? tab : null;
+}
+
+const hasFiles = (ev) => [...(ev.dataTransfer?.types || [])].includes('Files');
+
+async function attachFiles(tab, files) {
+  const list = [...files];
+  if (!list.length) return;
+  if (!tab) {
+    toast('Anhänge gehen nur in eine laufende Session: erst im Terminal öffnen.');
+    return;
+  }
+  toast(list.length === 1 ? `Hänge „${list[0].name}“ an …` : `Hänge ${list.length} Dateien an …`);
+  const paths = [];
+  for (const file of list) {
+    if (file.size > UPLOAD_LIMIT) {
+      toast(`„${file.name}“ ist größer als 50 MB.`);
+      continue;
+    }
+    try {
+      const res = await fetch(`/api/terminals/${tab.id}/upload?name=${encodeURIComponent(file.name)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+      });
+      const data = await res.json().catch(() => ({}));
+      // An unknown route means the server still runs the code from before attachments existed.
+      if (!res.ok) throw new Error(data.error === 'Nicht gefunden' ? 'CLIDA bitte einmal neu starten (clida restart).' : data.error || `HTTP ${res.status}`);
+      paths.push(data.path);
+    } catch (e) {
+      toast(`„${file.name}“ konnte nicht angehängt werden: ${e.message}`);
+      return;
+    }
+  }
+  if (!paths.length) return;
+  $('#toast').hidden = true;
+  tab.term.paste(paths.join(' '));  // a bracketed paste, so the CLI turns image paths into [Image #n]
+  tab.term.focus();
+}
+
+function droppedFiles(ev) {
+  const files = [];
+  for (const item of ev.dataTransfer.items) {
+    if (item.kind !== 'file') continue;
+    if (item.webkitGetAsEntry?.()?.isDirectory) {
+      toast('Ordner lassen sich nicht anhängen, nur einzelne Dateien.');
+      continue;
+    }
+    const file = item.getAsFile();
+    if (file) files.push(file);
+  }
+  return files;
+}
+
+function showDropHint(on) {
+  const hint = $('#drop-hint');
+  hint.hidden = !on;
+  if (on) hint.textContent = liveTerminalTab() ? 'Zum Anhängen loslassen' : 'Anhänge gehen nur in eine laufende Session im Terminal';
 }
 
 // ---- terminals ----------------------------------------------------------------------------
@@ -1412,6 +1493,32 @@ function wire() {
   $('#delete-cancel').onclick = () => $('#delete-dialog').close('cancel');
   $('#delete-confirm').onclick = () => $('#delete-dialog').close('delete');
   dropZone($('#session-list'), null);
+  // A file dropped anywhere must not make the window open it and leave CLIDA; onto a running
+  // terminal it becomes an attachment.
+  window.addEventListener('dragover', (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = ev.target.closest?.('#views') && liveTerminalTab() ? 'copy' : 'none';
+  });
+  window.addEventListener('drop', (ev) => {
+    if (hasFiles(ev)) ev.preventDefault();
+    showDropHint(false);
+  });
+  $('#views').addEventListener('dragenter', (ev) => { if (hasFiles(ev)) showDropHint(true); });
+  $('#views').addEventListener('dragleave', (ev) => {
+    if (!$('#views').contains(ev.relatedTarget)) showDropHint(false);
+  });
+  $('#views').addEventListener('drop', (ev) => {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    showDropHint(false);
+    attachFiles(liveTerminalTab(), droppedFiles(ev));
+  });
+  $('#attach-input').addEventListener('change', (ev) => {
+    attachFiles(state.attachTarget, ev.target.files);
+    ev.target.value = '';
+  });
   window.addEventListener('pointermove', tabPointerMove);
   window.addEventListener('pointerup', tabPointerUp);
   window.addEventListener('pointercancel', tabPointerUp);

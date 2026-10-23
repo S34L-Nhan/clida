@@ -6,6 +6,9 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on 
 - **Rename chats**: pencil icon, double-click the title in the list or on a tab, or click the heading.
 - **Folders**: the folder icon at the top of the sidebar creates a folder. Drag chats into it, and drag them out again to put them back in the main list. Right-click a folder to rename or delete it. Deleting a folder moves its chats back to the main list.
 - **Right-click on a chat**: *Archivieren* (archive) takes it out of the list but keeps its history. It can be restored from the *Archiv* section at the bottom. *Löschen* (delete) asks first, then removes the chat from disk for good: transcript, tool output, file backups and env snapshot. A running session must be stopped first. Nothing else has a right-click menu, except text fields (paste, spelling).
+- **Attachments** in the terminal:
+  - *Ctrl+V* (⌘V on a Mac) pastes a screenshot or a copied image file just as in the plain CLI: the CLI reads the clipboard itself, with the file's real path.
+  - *Drag a file onto the terminal* or use the *paperclip* in the header. A browser never reveals where a file lives on disk, so CLIDA copies it into `~/.clida/uploads/<session>/` and pastes that path; images become `[Image #n]`.
 - **Hybrid view** per chat:
   - *Verlauf* (history): the chat as a rendered conversation (Markdown, tool calls collapsed). Code blocks are syntax-highlighted (SQL, PHP, JS, Bash, JSON …) and have a copy button. A slider in the header sets the text width; the middle is the default width, and a double-click resets it.
   - *Terminal*: the real `claude` CLI in an embedded terminal (xterm.js). Everything works as usual: permission prompts, slash commands, plan and auto mode.
@@ -89,7 +92,7 @@ The tooltips and the start page show the keys of the platform in use.
 ## How it works
 
 - `clida/` is a small server built on the Python stdlib only (no pip). It listens on `127.0.0.1:47321`.
-  - `terminals.py` starts each session with `pty.fork()` as the real `claude` CLI. Up to 2 MB of output is buffered, so a newly opened tab can rebuild the screen. Each tab gets its own send queue, so a slow tab never stalls a session.
+  - `terminals.py` starts each session with `pty.fork()` as the real `claude` CLI, with `--add-dir` on the session's upload folder so the CLI may read attached files. Up to 2 MB of output is buffered, so a newly opened tab can rebuild the screen. Each tab gets its own send queue, so a slow tab never stalls a session.
   - `transcripts.py` reads the transcripts in `~/.claude/projects/*/*.jsonl`. Files are read incrementally; the index is cached in `~/.clida/index.json`.
   - `registry.py` reads `~/.claude/sessions/<pid>.json`, where every running CLI reports its state (busy/idle/waiting). It checks that the process still lives via `/proc` on Linux and WSL, and via `ps` on macOS.
   - `library.py` stores folders and the archive.
@@ -122,6 +125,7 @@ One limit comes from the browser: cookies do not distinguish ports, so other loc
 | `~/.clida/index.json` | Chat index cache (safe to delete) |
 | `~/.clida/titles.json` | Titles set in CLIDA |
 | `~/.clida/library.json` | Folders and archived chats |
+| `~/.clida/uploads/` | Copies of attached files, one folder per session (removed when the chat is deleted) |
 | `~/.clida/token` | Login token of the window |
 
 Port and paths can be changed with `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE` (path to the CLI).
@@ -130,5 +134,5 @@ Port and paths can be changed with `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE`
 
 - Sessions live in the server process. `clida stop`, `wsl --shutdown` or a Windows restart ends them. The history is kept, and *Fortsetzen* brings them back.
 - If you switch sessions inside the CLI with `/clear` or `/resume`, the tab follows the new session id from the CLI's registry. This is not tested much yet.
-- On WSL, pasting images from the clipboard does not work directly, as in any WSL terminal.
+- Dragged or picked files are copies: Claude sees the copy's path, and its edits do not reach the original. For files of your project, use `@` in the CLI instead. Up to 50 MB per file.
 - macOS support is new and has not run on a real Mac yet. Start, window, shortcut, stop, status detection and the Mac shortcuts were checked in a simulation on Linux.
