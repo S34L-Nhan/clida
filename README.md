@@ -32,7 +32,7 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on 
 
 ## Requirements and setup
 
-Common to both: Python 3.9 or newer (stdlib only, no pip), Node.js/npm (only to fetch the frontend libraries on the first start), and the `claude` CLI.
+Common to both: Python 3.9 or newer (stdlib only, no pip), Node.js/npm (only to fetch the frontend libraries on the first start; if npm is missing, `clida` installs it with apt on Ubuntu/Debian/WSL or Homebrew on macOS), and the `claude` CLI.
 
 ### Windows (WSL)
 
@@ -40,7 +40,7 @@ Common to both: Python 3.9 or newer (stdlib only, no pip), Node.js/npm (only to 
 
 ```bash
 git clone https://github.com/S34L-Nhan/clida.git ~/clida
-ln -s ~/clida/bin/clida ~/.local/bin/clida   # put the launcher on PATH
+mkdir -p ~/.local/bin && ln -s ~/clida/bin/clida ~/.local/bin/clida   # put the launcher on PATH
 clida shortcut                               # optional: Windows desktop shortcut
 clida                                        # first start runs npm install
 ```

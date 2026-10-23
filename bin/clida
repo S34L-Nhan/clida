@@ -43,8 +43,37 @@ local_api() {
     curl -fsS --max-time 2 -K - -X "$1" -H "Host: localhost:$PORT" "http://127.0.0.1:$PORT$2"
 }
 
+# npm is only needed for the one-time install below; fetch it with the system's package manager
+# if it is missing (a fresh Ubuntu/WSL has no npm).
+ensure_npm() {
+  command -v npm >/dev/null && return 0
+  local sudo=""
+  if [[ "$PLATFORM" == mac ]]; then
+    if command -v brew >/dev/null; then
+      echo "clida: npm not found, installing Node.js with Homebrew ..." >&2
+      brew install node
+    fi
+  elif command -v apt-get >/dev/null; then
+    if (( $(id -u) != 0 )); then
+      sudo=sudo
+      # The desktop shortcut has no terminal to ask for the sudo password.
+      if [[ ! -t 0 ]] && ! sudo -n true 2>/dev/null; then
+        echo "clida: npm not found; run 'sudo apt-get update && sudo apt-get install -y npm' in a terminal." >&2
+        exit 1
+      fi
+    fi
+    echo "clida: npm not found, installing it with apt (sudo may ask for your password) ..." >&2
+    $sudo apt-get update
+    $sudo apt-get install -y npm
+  fi
+  command -v npm >/dev/null && return 0
+  echo "clida: npm not found; install Node.js/npm (https://nodejs.org) and run clida again." >&2
+  exit 1
+}
+
 ensure_deps() {
   if [[ ! -f "$ROOT/node_modules/@xterm/xterm/lib/xterm.mjs" ]]; then
+    ensure_npm
     echo "clida: installing frontend libraries (one-time npm install) ..." >&2
     (cd "$ROOT" && npm install --no-audit --no-fund --silent)
   fi
