@@ -414,7 +414,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
 .dialog h2 { margin: 0 0 16px; font: 500 20px/1.2 Georgia, serif; }
 .dialog label { display: block; margin: 12px 0 6px; font-weight: 600; font-size: 13px; }
-.dialog input {
+.dialog input, .dialog select {
   width: 100%;
   height: 36px;
   padding: 0 10px;
@@ -424,7 +424,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
   color: var(--text);
   font: inherit;
 }
-.dialog input:focus { outline: none; border-color: var(--accent); }
+.dialog input:focus, .dialog select:focus { outline: none; border-color: var(--accent); }
 #new-cwd { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; font-size: 13px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .chip {

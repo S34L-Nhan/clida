@@ -81,7 +81,7 @@ WSL shuts down once no `wsl.exe` is left on the Windows side, and takes the serv
 
 The tooltips and the start page show the keys of the platform in use.
 
-- **New chat**: pick a working directory (recently used ones are suggested) and optionally a title. The title goes to the CLI via `--name`.
+- **New chat**: pick a working directory (recently used ones are suggested), and optionally a title and a folder. The title goes to the CLI via `--name`; the folder list only shows up once you have folders.
 - **Open an earlier chat**: shows the history first. *Fortsetzen* (resume) runs `claude --resume <id>` in the original working directory. If the chat already runs in another terminal, CLIDA asks first.
 - **Closing a tab** does not end the session. Use *Beenden* (stop) for that. The history is kept.
 

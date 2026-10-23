@@ -1218,6 +1218,14 @@ async function openNewDialog() {
   $('#new-error').textContent = '';
   $('#new-title').value = '';
   cwdInput.value = store.get('lastCwd', state.home || '~');
+  const none = el('option', '', 'Kein Ordner');
+  none.value = '';
+  $('#new-folder').replaceChildren(none, ...state.folders.map((folder) => {
+    const option = el('option', '', folder.name);
+    option.value = folder.id;
+    return option;
+  }));
+  $('#new-folder-row').hidden = !state.folders.length;
   dialog.showModal();
   cwdInput.focus();
   cwdInput.select();
@@ -1242,11 +1250,13 @@ async function submitNewChat(ev) {
   ev.preventDefault();
   const cwd = $('#new-cwd').value.trim();
   const title = $('#new-title').value.trim();
+  const folder = $('#new-folder').value || null;
   try {
     const started = await api('POST', '/api/terminals', { cwd, title });
     store.set('lastCwd', started.cwd);
     $('#new-dialog').close();
     await refreshSessions();
+    if (folder) await moveToFolder(started.session_id, folder);
     if (!findTab(started.id)) addTab(started.id, 'terminal');
     activate(started.id);
   } catch (e) {
