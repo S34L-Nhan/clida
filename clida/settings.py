@@ -12,6 +12,8 @@ from . import STATE_DIR, storage
 SETTINGS_FILE = STATE_DIR / "settings.json"
 SCHEMA = {
     "language": {"choices": ("de", "en"), "default": "de"},
+    "theme": {"choices": ("system", "light", "dark", "solarized-light", "solarized-dark", "catppuccin-latte",
+                          "catppuccin-mocha", "nord", "dracula", "gruvbox-dark", "tokyo-night"), "default": "system"},
 }
 
 _language = "de"  # what tr() answers in; read by every request thread

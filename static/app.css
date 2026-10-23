@@ -1,49 +1,4 @@
-:root {
-  --bg: #faf9f5;
-  --sidebar: #f2f0e8;
-  --panel: #ffffff;
-  --text: #29261b;
-  --muted: #74716a;
-  --border: #e3e0d6;
-  --hover: rgba(40, 30, 10, 0.06);
-  --active: rgba(40, 30, 10, 0.1);
-  --accent: #c96442;
-  --accent-hover: #b5573a;
-  --accent-text: #ffffff;
-  --bubble: #efece3;
-  --code-bg: #f3f1ea;
-  --ok: #3f9a5b;
-  --warn: #d4a017;
-  --danger: #c0392b;
-  --term-bg: #1d1c1a;
-  --shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
-  --sidebar-w: 280px;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #262624;
-    --sidebar: #1f1e1d;
-    --panel: #30302e;
-    --text: #ecebe6;
-    --muted: #a19e96;
-    --border: #3a3936;
-    --hover: rgba(255, 255, 255, 0.05);
-    --active: rgba(255, 255, 255, 0.09);
-    --accent: #d97757;
-    --accent-hover: #e3896b;
-    --accent-text: #1f1e1d;
-    --bubble: #393835;
-    --code-bg: #1f1e1d;
-    --ok: #5cb87a;
-    --warn: #e6b94a;
-    --danger: #e06c5a;
-    --term-bg: #1a1918;
-    --shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-    color-scheme: dark;
-  }
-}
+:root { --sidebar-w: 280px; }  /* colors: themes.css */
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -505,29 +460,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .codeblock-copy svg { width: 14px; height: 14px; }
 .md .codeblock pre { margin: 0; border: none; border-radius: 0; background: transparent; }
 
-/* Syntax colors (One Light / One Dark), used by highlight.js token classes. */
-:root {
-  --hl-keyword: #a626a4;
-  --hl-string: #50a14f;
-  --hl-number: #986801;
-  --hl-comment: #a0a1a7;
-  --hl-function: #4078f2;
-  --hl-type: #c18401;
-  --hl-variable: #e45649;
-  --hl-meta: #0184bc;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --hl-keyword: #c678dd;
-    --hl-string: #98c379;
-    --hl-number: #d19a66;
-    --hl-comment: #7f848e;
-    --hl-function: #61afef;
-    --hl-type: #e5c07b;
-    --hl-variable: #e06c75;
-    --hl-meta: #56b6c2;
-  }
-}
+/* Syntax colors of the theme (themes.css), used by highlight.js token classes. */
 .hljs-keyword, .hljs-selector-tag, .hljs-doctag, .hljs-section { color: var(--hl-keyword); }
 .hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color: var(--hl-string); }
 .hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: var(--hl-number); }
@@ -601,7 +534,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .dialog.small { width: min(420px, calc(100vw - 32px)); }
 #ask-text code { word-break: break-all; }
 .dialog p { margin: 0; line-height: 1.5; }
-.btn.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+.btn.danger-solid { background: var(--danger); border-color: var(--danger); color: var(--danger-text); font-weight: 600; }
 .btn.danger-solid:hover { filter: brightness(1.08); }
 
 /* ---- attachments ------------------------------------------------------------------------ */

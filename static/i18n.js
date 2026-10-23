@@ -127,6 +127,12 @@ const TEXTS = {
     'settings.general': 'Allgemein',
     'settings.language': 'Sprache',
     'settings.languageHint': 'Sprache der Oberfläche. Claude antwortet weiter in der Sprache, in der du schreibst.',
+    'settings.appearance': 'Darstellung',
+    'settings.theme': 'Farbschema',
+    'settings.themeHint': '„System“ folgt Hell oder Dunkel des Betriebssystems. Bei hellen Schemata bleibt das Terminal dunkel, weil die CLI für einen dunklen Hintergrund zeichnet.',
+    'theme.system': 'System',
+    'theme.light': 'Hell',
+    'theme.dark': 'Dunkel',
   },
 
   en: {
@@ -249,6 +255,12 @@ const TEXTS = {
     'settings.general': 'General',
     'settings.language': 'Language',
     'settings.languageHint': 'Language of the interface. Claude still answers in the language you write in.',
+    'settings.appearance': 'Appearance',
+    'settings.theme': 'Color theme',
+    'settings.themeHint': '“System” follows the light or dark mode of the OS. With light themes the terminal stays dark, because the CLI draws for a dark background.',
+    'theme.system': 'System',
+    'theme.light': 'Light',
+    'theme.dark': 'Dark',
   },
 };
 

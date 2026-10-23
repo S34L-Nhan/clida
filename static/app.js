@@ -49,10 +49,6 @@ const MONO = '"Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, Mona
 const HISTORY_WINDOW = 400;
 // Text width slider 0..100: 0 = narrowest, 50 = the classic 800px column, 100 = full width.
 const HISTORY_WIDTH = { min: 480, normal: 800, start: 50 };
-const TERM_THEME = {
-  background: '#1d1c1a', foreground: '#e8e6e1', cursor: '#d97757', cursorAccent: '#1d1c1a',
-  selectionBackground: 'rgba(217, 119, 87, 0.35)',
-};
 const DAY = 864e5;
 const DATE_FORMATS = {};
 
@@ -1659,7 +1655,7 @@ function ensureTerminal(tab) {
     lineHeight: 1.15,
     cursorBlink: true,
     scrollback: 10000,
-    theme: TERM_THEME,
+    theme: terminalTheme(),
     allowProposedApi: true,
     linkHandler: { activate: (ev, uri) => openTerminalLink(uri) },
   });
@@ -1897,7 +1893,39 @@ const SETTINGS = [
         choices: () => Object.entries(LANGUAGES), value: language, apply: applyLanguage },
     ],
   },
+  {
+    section: 'settings.appearance',
+    items: [
+      { key: 'theme', label: 'settings.theme', hint: 'settings.themeHint',
+        choices: () => [['system', t('theme.system')], ['light', t('theme.light')], ['dark', t('theme.dark')], ...THEMES],
+        value: () => theme, apply: applyTheme },
+    ],
+  },
 ];
+
+// The color schemes beyond CLIDA's own light and dark, by their usual names (see themes.css).
+const THEMES = [
+  ['solarized-light', 'Solarized Light'], ['solarized-dark', 'Solarized Dark'],
+  ['catppuccin-latte', 'Catppuccin Latte'], ['catppuccin-mocha', 'Catppuccin Mocha'],
+  ['nord', 'Nord'], ['dracula', 'Dracula'], ['gruvbox-dark', 'Gruvbox Dark'], ['tokyo-night', 'Tokyo Night'],
+];
+let theme = store.get('theme', 'system');  // theme.js has already put it on the page
+
+function applyTheme(name) {
+  theme = name;
+  store.set('theme', name);
+  window.clidaTheme(name);  // fires "clida-theme", which recolors the terminals
+}
+
+// xterm needs real colors, not CSS variables: take the theme's from the page.
+function terminalTheme() {
+  const css = getComputedStyle(document.documentElement);
+  const color = (name) => css.getPropertyValue(name).trim();
+  return {
+    background: color('--term-bg'), foreground: color('--term-fg'), cursor: color('--term-cursor'),
+    cursorAccent: color('--term-bg'), selectionBackground: color('--term-selection'),
+  };
+}
 
 // Take over what the server has stored. Until it answers, the window uses what it remembers.
 async function loadSettings() {
@@ -1907,6 +1935,7 @@ async function loadSettings() {
   } catch {
     return;  // a server from before the settings: the window keeps what it remembers
   }
+  state.serverSettings = stored;
   for (const item of SETTINGS.flatMap((group) => group.items)) {
     if (stored[item.key] !== undefined && stored[item.key] !== item.value()) item.apply(stored[item.key]);
   }
@@ -1947,18 +1976,30 @@ function renderSettings(focusKey = null) {
   if (focusKey) $(`#setting-${focusKey}`)?.focus();
 }
 
-async function saveSetting(item, select) {
+// One save at a time, in order: arrow keys in a select fire a change per step, and answers that
+// overtook each other would leave the window and the server on different choices.
+let settingsSaving = Promise.resolve();
+function saveSetting(item, select) {
   const value = select.value;
+  item.latest = value;
+  settingsSaving = settingsSaving.then(() => storeSetting(item, value));
+  return settingsSaving;
+}
+
+async function storeSetting(item, value) {
   try {
     await api('PUT', '/api/settings', { [item.key]: value });
   } catch (e) {
-    select.value = item.value();
-    $('#settings-error').textContent = e.message;
+    const select = $(`#setting-${item.key}`);
+    if (select && item.latest === value) select.value = item.value();
+    // A setting the server did not list is one it does not know yet: it runs older code.
+    const known = !state.serverSettings || item.key in state.serverSettings;
+    $('#settings-error').textContent = known ? e.message : t('restartNeeded');
     return;
   }
   $('#settings-error').textContent = '';
   item.apply(value);
-  renderSettings(item.key);  // the dialog's own texts may have changed
+  if (item.latest === value) renderSettings(item.key);  // its texts may have changed (language)
 }
 
 // Switch the interface language. Texts the server makes (titles like "New chat", errors, dividers
@@ -2001,6 +2042,9 @@ function translatePage() {
 }
 
 function wire() {
+  window.addEventListener('clida-theme', () => {  // also when "system" follows the OS
+    for (const tab of state.tabs) if (tab.term) tab.term.options.theme = terminalTheme();
+  });
   for (const node of document.querySelectorAll('[data-icon]')) node.append(icon(node.dataset.icon));
   document.addEventListener('click', (ev) => {
     const action = ev.target.closest('[data-action]')?.dataset.action;

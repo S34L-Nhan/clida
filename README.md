@@ -16,7 +16,9 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on 
   - *Drag a file onto the terminal* or use the *paperclip* in the header. A browser never reveals where a file lives on disk, so CLIDA copies it into `~/.clida/uploads/<session>/` and pastes that path; images become `[Image #n]`.
   - *Drag a folder onto the terminal* and CLIDA pastes the folder's own path (on WSL as `/mnt/c/...`), no copy. The browser gives only the folder's name and contents, so CLIDA looks for it in the open Explorer windows (Finder windows on macOS; the first time, macOS asks whether CLIDA may control Finder), then in Desktop, Downloads and Documents, and matches it by its contents. A folder dragged from elsewhere is not found; CLIDA says so, and you paste the path yourself.
 - **Links** in the history, in notes and in the terminal open in your default browser, not in the browser that runs the app window. CLIDA opens only http, https and mailto links; other schemes can start programs.
-- **Settings**: *Einstellungen* (settings) at the bottom of the sidebar. For now it holds the interface language, German or English. A switch applies at once, without a reload, and texts the server makes (error messages, the title of a new chat) follow it. Claude itself keeps answering in the language you write in.
+- **Settings**: *Einstellungen* (settings) at the bottom of the sidebar. Every change applies at once, without a reload.
+  - *Sprache* (language): German or English. Texts the server makes (error messages, the title of a new chat) follow it. Claude itself keeps answering in the language you write in.
+  - *Farbschema* (color theme): *System* (follows the light or dark mode of the OS), *Hell*, *Dunkel*, Solarized Light, Solarized Dark, Catppuccin Latte, Catppuccin Mocha, Nord, Dracula, Gruvbox Dark and Tokyo Night. It colors the interface, the syntax highlighting and the terminal. With a light theme the terminal stays dark, because the CLI draws for a dark background.
 - **Hybrid view** per chat:
   - *Verlauf* (history): the chat as a rendered conversation (Markdown, tool calls collapsed). Code blocks are syntax-highlighted (SQL, PHP, JS, Bash, JSON …) and have a copy button. A slider in the header sets the text width; the middle is the default width, and a double-click resets it.
   - *Terminal*: the real `claude` CLI in an embedded terminal (xterm.js). Everything works as usual: permission prompts, slash commands, plan and auto mode.
@@ -121,6 +123,8 @@ A new setting needs three entries:
 - Its texts go into `static/i18n.js`.
 
 The settings dialog builds itself from `SETTINGS`.
+
+A new color theme is one block in `static/themes.css` that sets every color variable, its name in `THEMES` in `static/app.js`, and its id in the `theme` choices of `SCHEMA`.
 
 ### Security
 
