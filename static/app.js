@@ -2439,8 +2439,19 @@ function wire() {
     if (!terminalToo) ev.stopPropagation();
   }, true);
 
+  // F5 reloads, but saves open notes first, as after a server restart; the browser's own reload
+  // would drop what is being written.
+  window.addEventListener('keydown', (ev) => {
+    if (!['F5', 'BrowserRefresh'].includes(ev.key) || ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (state.reloading) return;
+    state.reloading = true;
+    settleWriting().finally(() => location.reload());
+  }, true);
+
   // Nor the browser's own shortcuts that make no sense in an app: print, save or open a page,
-  // bookmarks, history, downloads, reload, caret browsing, Edge's reader and read aloud, back and
+  // bookmarks, history, downloads, Ctrl+R reload, caret browsing, Edge's reader and read aloud, back and
   // forward. Only preventDefault: the terminal still gets these keys (Ctrl+R searches the CLI's
   // history, Ctrl+O shows its transcript, Ctrl+G opens the editor). Find (Ctrl+F) and zoom stay.
   // Ctrl+W, Ctrl+N and Ctrl+T cannot be taken from the browser by any page.
@@ -2449,7 +2460,7 @@ function wire() {
     // a German keyboard is a Y, and Ctrl+Shift+Z (redo) would be taken for Edge's Ctrl+Shift+Y.
     const letter = /^[a-z]$/i.test(ev.key) ? ev.key.toLowerCase() : '';
     const mod = MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
-    const browserKey = ['F1', 'F5', 'F6', 'F7', 'F9', 'BrowserBack', 'BrowserForward', 'BrowserRefresh', 'BrowserHome'].includes(ev.key)
+    const browserKey = ['F1', 'F5', 'F6', 'F7', 'F9', 'BrowserBack', 'BrowserForward', 'BrowserRefresh', 'BrowserHome'].includes(ev.key)  // F5 with a modifier: hard reload
       || (mod && !ev.altKey && !ev.shiftKey && 'psodhjr'.includes(letter) && letter)
       || (mod && !ev.altKey && ev.shiftKey && 'drsuy'.includes(letter) && letter)  // bookmark all, hard reload, web capture, read aloud, collections
       || (!MAC && ev.ctrlKey && ev.shiftKey && ev.key === 'Delete')  // clear browsing data
