@@ -1952,6 +1952,9 @@ function applyTheme(name) {
 
 const ANSI_COLORS = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'];
 
+// Light or dark: each theme in themes.css says which, as its color-scheme.
+const colorMode = () => (getComputedStyle(document.documentElement).colorScheme.includes('dark') ? 'dark' : 'light');
+
 // xterm needs real colors, not CSS variables: take the theme's from the page. Light themes bring
 // their own 16 ANSI colors (xterm's defaults are made for a dark background); dark ones keep those.
 function terminalTheme() {
@@ -2087,7 +2090,13 @@ function wire() {
   window.addEventListener('pagehide', () => navigator.sendBeacon(`/api/windows/${WINDOW_ID}/closed`));
   window.addEventListener('clida-theme', () => {  // also when "system" follows the OS
     for (const tab of state.tabs) if (tab.term) tab.term.options.theme = terminalTheme();
+    // Light to dark or back: the running CLIs redraw to match (see push_theme in clida/app.py).
+    const mode = colorMode();
+    if (mode === state.colorMode) return;
+    state.colorMode = mode;
+    api('POST', '/api/terminals/theme', { mode }).catch(() => {});  // a server from before this: nothing to tell
   });
+  state.colorMode = colorMode();  // what the running CLIs saw when they started
   for (const node of document.querySelectorAll('[data-icon]')) node.append(icon(node.dataset.icon));
   document.addEventListener('click', (ev) => {
     const action = ev.target.closest('[data-action]')?.dataset.action;

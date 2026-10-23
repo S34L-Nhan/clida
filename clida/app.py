@@ -392,6 +392,22 @@ class Desk:
             raise HttpError(404, tr("Notiz nicht gefunden", "Note not found"))
         return {"ok": True}
 
+    def push_theme(self, mode) -> dict:
+        """Tell every running CLI that the terminal went light or dark.
+
+        The CLI asks for the terminal's background (OSC 11) when it starts. A theme switch in the
+        window later reaches it as the color scheme report of DEC mode 2031, CSI ? 997 ; 1 n (dark)
+        or ; 2 n (light), which it reads even without having asked; with its theme on "auto" it
+        redraws at once.
+        """
+        if mode not in ("dark", "light"):
+            raise HttpError(400, tr("Ungültiger Modus", "Invalid mode"))
+        report = b"\x1b[?997;1n" if mode == "dark" else b"\x1b[?997;2n"
+        terms = [term for term in self.terminals.all() if term.alive]
+        for term in terms:
+            term.write(report)
+        return {"sent": len(terms)}
+
     def stop_terminal(self, terminal_id: str) -> dict:
         if not self.terminals.stop(terminal_id):
             raise HttpError(404, tr("Terminal nicht gefunden", "Terminal not found"))

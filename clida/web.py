@@ -59,6 +59,7 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("GET", r"/api/settings", "settings"),
     ("PUT", r"/api/settings", "update_settings"),
     ("POST", r"/api/terminals", "start_terminal"),
+    ("POST", r"/api/terminals/theme", "push_theme"),
     ("POST", rf"/api/terminals/{SID}/upload", "upload"),
     ("POST", r"/api/locate-folder", "locate_folder"),
     ("POST", r"/api/open-url", "open_url"),
@@ -298,6 +299,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_update_settings(self):
         self._send_json(200, self.desk.update_settings(self._body()))
+
+    def route_push_theme(self):
+        self._send_json(200, self.desk.push_theme(self._body().get("mode")))
 
     def route_start_terminal(self):
         self._send_json(200, self.desk.start_terminal(self._body()))
