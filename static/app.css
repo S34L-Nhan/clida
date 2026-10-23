@@ -681,3 +681,42 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .note-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .note-hint { margin-right: auto; color: var(--muted); font-size: 12px; }
 .note-mark svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; color: var(--warn); }
+
+/* ---- settings --------------------------------------------------------------------------- */
+
+.side-foot { padding: 6px 8px 10px; border-top: 1px solid var(--border); }
+.side-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.side-btn:hover { background: var(--hover); color: var(--text); }
+.settings-section h3 {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.settings-section + .settings-section { margin-top: 18px; }
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-text { flex: 1; min-width: 0; }
+.dialog .settings-text label { margin: 0; font-size: 14px; }
+.dialog .settings-hint { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.dialog .settings-row select { width: auto; min-width: 140px; flex: none; }

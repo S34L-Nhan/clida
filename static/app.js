@@ -5,6 +5,7 @@ import { marked } from '/vendor/marked.esm.js';
 import DOMPurify from '/vendor/purify.es.mjs';
 import hljs from '/vendor/highlight.mjs';
 import { htmlToMarkdown } from '/static/paste.js';
+import { LANGUAGES, language, locale, setLanguage, t } from '/static/i18n.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -32,6 +33,7 @@ const ICONS = {
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M10.1 5.0L10.7 2.5L13.3 2.5L13.9 5.0L15.6 5.8L17.8 4.3L19.7 6.2L18.2 8.4L19.0 10.1L21.5 10.7L21.5 13.3L19.0 13.9L18.2 15.6L19.7 17.8L17.8 19.7L15.6 18.2L13.9 19.0L13.3 21.5L10.7 21.5L10.1 19.0L8.4 18.2L6.2 19.7L4.3 17.8L5.8 15.6L5.0 13.9L2.5 13.3L2.5 10.7L5.0 10.1L5.8 8.4L4.3 6.2L6.2 4.3L8.4 5.8z"/><circle cx="12" cy="12" r="3"/></svg>',
   width: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16M20 4v16M8 12h8M10.5 9.5L8 12l2.5 2.5M13.5 9.5L16 12l-2.5 2.5"/></svg>',
 };
 const icon = (name) => {
@@ -43,7 +45,6 @@ const icon = (name) => {
 // On a Mac the app shortcuts use Cmd, and Ctrl+C / Ctrl+V belong to the CLI (interrupt, image paste).
 const MAC = /Mac|iPhone|iPad/.test(navigator.userAgentData?.platform || navigator.platform || '');
 const MONO = '"Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, Monaco, "DejaVu Sans Mono", monospace';
-const STATUS_LABEL = { busy: 'arbeitet', waiting: 'wartet auf dich', idle: 'bereit', starting: 'startet', exited: 'beendet' };
 const HISTORY_WINDOW = 400;
 // Text width slider 0..100: 0 = narrowest, 50 = the classic 800px column, 100 = full width.
 const HISTORY_WIDTH = { min: 480, normal: 800, start: 50 };
@@ -52,9 +53,25 @@ const TERM_THEME = {
   selectionBackground: 'rgba(217, 119, 87, 0.35)',
 };
 const DAY = 864e5;
-const MONTH = new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' });
-const SHORT_DATE = new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'short' });
-const CLOCK = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
+const DATE_FORMATS = {};
+
+// Date formats of the current language, made once per language.
+function dates() {
+  DATE_FORMATS[locale()] ||= {
+    month: new Intl.DateTimeFormat(locale(), { month: 'long', year: 'numeric' }),
+    short: new Intl.DateTimeFormat(locale(), { day: 'numeric', month: 'short' }),
+    clock: new Intl.DateTimeFormat(locale(), { hour: '2-digit', minute: '2-digit' }),
+  };
+  return DATE_FORMATS[locale()];
+}
+
+const quote = (text) => t('quoted', { text });
+
+// t() for a text with elements in it: each {placeholder} named in nodes is put in as that node.
+function textWith(key, nodes) {
+  return t(key).split(/(\{\w+\})/).filter(Boolean)
+    .map((part) => (/^\{\w+\}$/.test(part) && nodes[part.slice(1, -1)]) || part);
+}
 
 const state = {
   sessions: [],
@@ -115,8 +132,8 @@ function enhanceCodeBlock(pre) {
   const bar = el('div', 'codeblock-bar');
   const copy = el('button', 'codeblock-copy');
   copy.type = 'button';
-  copy.title = 'In die Zwischenablage kopieren';
-  copy.append(icon('copy'), el('span', '', 'Kopieren'));
+  copy.title = t('copy.title');
+  copy.append(icon('copy'), el('span', '', t('copy')));
   copy.onclick = () => copyText(code.textContent.replace(/\n$/, ''), copy);
   bar.append(el('span', 'codeblock-lang', lang || 'code'), copy);
   pre.replaceWith(box);
@@ -134,11 +151,11 @@ async function copyText(text, button) {
     document.execCommand('copy');
     area.remove();
   }
-  button.replaceChildren(icon('check'), el('span', '', 'Kopiert'));
+  button.replaceChildren(icon('check'), el('span', '', t('copied')));
   button.classList.add('done');
   clearTimeout(button.resetTimer);
   button.resetTimer = setTimeout(() => {
-    button.replaceChildren(icon('copy'), el('span', '', 'Kopieren'));
+    button.replaceChildren(icon('copy'), el('span', '', t('copy')));
     button.classList.remove('done');
   }, 1500);
 }
@@ -155,6 +172,10 @@ function setHistoryWidth(value) {
   for (const tab of state.tabs) tab.widthRange.value = String(value);
 }
 
+// A 404 for an unknown route: the server runs older code than this page. Servers from before the
+// language setting send only this German text.
+const staleServer = (status, data) => status === 404 && (data?.code === 'no_route' || data?.error === 'Nicht gefunden');
+
 async function api(method, path, body) {
   const res = await fetch(path, {
     method,
@@ -164,9 +185,7 @@ async function api(method, path, body) {
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
-    // Exactly this text comes only for an unknown route: the server runs older code than the page.
-    const stale = res.status === 404 && data?.error === 'Nicht gefunden';
-    const err = new Error(stale ? 'Diese Funktion braucht einen Neustart: clida restart' : data?.error || `HTTP ${res.status}`);
+    const err = new Error(staleServer(res.status, data) ? t('restartNeeded') : data?.error || `HTTP ${res.status}`);
     err.status = res.status;
     throw err;
   }
@@ -185,18 +204,18 @@ function toast(message) {
 // ---- data ---------------------------------------------------------------------------------
 
 function applyStatus(data) {
-  state.terminals = new Map(data.terminals.map((t) => [t.id, t]));
-  state.bySession = new Map(data.terminals.filter((t) => t.status !== 'exited').map((t) => [t.session_id, t]));
+  state.terminals = new Map(data.terminals.map((row) => [row.id, row]));
+  state.bySession = new Map(data.terminals.filter((row) => row.status !== 'exited').map((row) => [row.session_id, row]));
   state.external = new Map(data.external.map((e) => [e.session_id, e]));
   let finished = false;
-  for (const t of data.terminals) {
-    const prev = state.lastStatus.get(t.id);
-    if (prev && prev !== t.status) {
-      const done = t.status === 'waiting' || t.status === 'exited' || (prev === 'busy' && t.status === 'idle');
-      if (done && (state.active !== t.id || document.hidden)) state.attention.add(t.id);
+  for (const row of data.terminals) {
+    const prev = state.lastStatus.get(row.id);
+    if (prev && prev !== row.status) {
+      const done = row.status === 'waiting' || row.status === 'exited' || (prev === 'busy' && row.status === 'idle');
+      if (done && (state.active !== row.id || document.hidden)) state.attention.add(row.id);
       if (done) finished = true;
     }
-    state.lastStatus.set(t.id, t.status);
+    state.lastStatus.set(row.id, row.status);
   }
   return finished;
 }
@@ -260,22 +279,21 @@ function setOnline(online, status) {
   banner.hidden = online;
   if (online) return;
   // 403: the server runs but no longer knows this window (new token), so a reload cannot help.
-  banner.replaceChildren(...(status === 403
-    ? ['Anmeldung abgelaufen – bitte CLIDA über die Verknüpfung oder ', el('code', '', 'clida'), ' neu öffnen.']
-    : ['Server nicht erreichbar – läuft ', el('code', '', 'clida'), ' noch?']));
+  banner.replaceChildren(...textWith(status === 403 ? 'banner.expired' : 'banner.offline', { cmd: el('code', '', 'clida') }));
 }
 
 const tabSession = (tab) => state.terminals.get(tab.id)?.session_id || tab.id;
-const titleOf = (sid) => state.byId.get(sid)?.title || 'Neuer Chat';
-const activeTab = () => state.tabs.find((t) => t.id === state.active) || null;
-const findTab = (id) => state.tabs.find((t) => t.id === id) || null;
+const titleOf = (sid) => state.byId.get(sid)?.title || t('chat.new');
+const activeTab = () => state.tabs.find((tab) => tab.id === state.active) || null;
+const findTab = (id) => state.tabs.find((tab) => tab.id === id) || null;
 
 function statusFor(sid) {
   const term = state.bySession.get(sid);
-  if (term) return { cls: term.status, label: STATUS_LABEL[term.status], attention: state.attention.has(term.id) };
+  if (term) return { cls: term.status, label: t(`status.${term.status}`), attention: state.attention.has(term.id) };
   const ext = state.external.get(sid);
   if (ext) {
-    return { cls: `external ${ext.status === 'busy' ? 'busy' : ''}`, label: `läuft in anderem Terminal (${STATUS_LABEL[ext.status]})`, attention: false };
+    const label = t('status.external', { status: t(`status.${ext.status}`) });
+    return { cls: `external ${ext.status === 'busy' ? 'busy' : ''}`, label, attention: false };
   }
   return { cls: '', label: '', attention: false };
 }
@@ -285,17 +303,17 @@ function statusFor(sid) {
 function groupLabel(mtime) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const t = mtime * 1000;
-  if (t >= today) return 'Heute';
-  if (t >= today - DAY) return 'Gestern';
-  if (t >= today - 6 * DAY) return 'Letzte 7 Tage';
-  if (t >= today - 29 * DAY) return 'Letzte 30 Tage';
-  return MONTH.format(new Date(t));
+  const time = mtime * 1000;
+  if (time >= today) return t('group.today');
+  if (time >= today - DAY) return t('group.yesterday');
+  if (time >= today - 6 * DAY) return t('group.week');
+  if (time >= today - 29 * DAY) return t('group.month');
+  return dates().month.format(new Date(time));
 }
 
 function timeLabel(mtime) {
   const d = new Date(mtime * 1000);
-  return d.toDateString() === new Date().toDateString() ? CLOCK.format(d) : SHORT_DATE.format(d);
+  return d.toDateString() === new Date().toDateString() ? dates().clock.format(d) : dates().short.format(d);
 }
 
 function matchesSearch(s, query) {
@@ -331,7 +349,7 @@ function renderSidebar() {
     nodes.push(sessionItem(s));
   }
   if (archived.length) nodes.push(archiveNode(archived, query ? true : store.get('archiveOpen', false)));
-  if (!nodes.length) nodes.push(el('div', 'list-empty', query ? 'Keine Treffer' : 'Noch keine Chats'));
+  if (!nodes.length) nodes.push(el('div', 'list-empty', t(query ? 'list.noMatches' : 'list.empty')));
   const focused = document.activeElement?.closest('#session-list .item, #session-list .folder-head, #session-list .archive-head');
   const focusKey = focused && (focused.dataset.id || focused.dataset.folder || 'archive');
   list.replaceChildren(...nodes);
@@ -350,7 +368,7 @@ function focusSidebar(key) {
 function sessionItem(s) {
   const item = el('div', 'item');
   item.dataset.id = s.id;
-  item.title = [s.note && `Notiz: ${s.note}`, s.first_prompt?.slice(0, 300)].filter(Boolean).join('\n\n');
+  item.title = [s.note && t('note.tooltip', { note: s.note }), s.first_prompt?.slice(0, 300)].filter(Boolean).join('\n\n');
   const text = el('div', 'item-text');
   const title = el('div', 'item-title', s.title);
   const meta = el('div', 'item-meta', [s.cwd_label, timeLabel(s.mtime)].filter(Boolean).join(' · '));
@@ -361,7 +379,7 @@ function sessionItem(s) {
   }
   text.append(title, meta);
   const rename = el('button', 'icon-btn');
-  rename.title = 'Umbenennen';
+  rename.title = t('rename');
   rename.append(icon('pencil'));
   rename.onclick = (ev) => { ev.stopPropagation(); startRename(title, s.id); };
   title.ondblclick = (ev) => { ev.stopPropagation(); startRename(title, s.id); };
@@ -392,7 +410,7 @@ function folderNode(folder, chats, open) {
   box.append(head);
   if (open) {
     const body = el('div', 'folder-body');
-    body.append(...(chats.length ? chats.map(sessionItem) : [el('div', 'folder-empty', 'Chats hierher ziehen')]));
+    body.append(...(chats.length ? chats.map(sessionItem) : [el('div', 'folder-empty', t('folder.dropHere'))]));
     box.append(body);
   }
   dropZone(box, folder.id);
@@ -406,7 +424,7 @@ function archiveNode(chats, open) {
   head.setAttribute('role', 'button');
   head.setAttribute('aria-expanded', String(open));
   head.append(icon(open ? 'chevronDown' : 'chevronRight'), icon('archive'),
-    el('span', 'folder-name', 'Archiv'), el('span', 'folder-count', String(chats.length)));
+    el('span', 'folder-name', t('archive.title')), el('span', 'folder-count', String(chats.length)));
   const toggle = () => {
     store.set('archiveOpen', !open);
     renderSidebar();
@@ -511,7 +529,7 @@ function startRename(target, sid) {
 async function newFolder() {
   let folder;
   try {
-    folder = await change('POST', '/api/folders', { name: 'Neuer Ordner' });
+    folder = await change('POST', '/api/folders', { name: t('folder.new') });
   } catch (e) {
     toast(e.message);
     return;
@@ -580,7 +598,7 @@ async function setArchived(sid, archived) {
 
 function confirmDelete(name) {
   const dialog = $('#delete-dialog');
-  $('#delete-name').textContent = `„${name}“`;
+  $('#delete-text').replaceChildren(...textWith('delete.text', { name: el('strong', '', quote(name)) }));
   dialog.returnValue = '';
   dialog.showModal();
   $('#delete-cancel').focus();
@@ -647,9 +665,9 @@ function chatMenu(sid, ev, anchor) {
   if (!s) return;
   showMenu(ev, anchor, [
     s.archived
-      ? { label: 'Wiederherstellen', icon: 'restore', action: () => setArchived(sid, false) }
-      : { label: 'Archivieren', icon: 'archive', action: () => setArchived(sid, true) },
-    { label: 'Löschen', icon: 'trash', danger: true, action: () => deleteChat(sid) },
+      ? { label: t('restore'), icon: 'restore', action: () => setArchived(sid, false) }
+      : { label: t('archive'), icon: 'archive', action: () => setArchived(sid, true) },
+    { label: t('delete'), icon: 'trash', danger: true, action: () => deleteChat(sid) },
   ]);
 }
 
@@ -657,8 +675,8 @@ function folderMenu(folderId, ev, anchor) {
   const folder = state.folders.find((f) => f.id === folderId);
   if (!folder) return;
   showMenu(ev, anchor, [
-    { label: 'Umbenennen', icon: 'pencil', action: () => renameFolder(folder.id) },
-    { label: 'Ordner löschen', icon: 'trash', danger: true, action: () => deleteFolder(folder) },
+    { label: t('rename'), icon: 'pencil', action: () => renameFolder(folder.id) },
+    { label: t('folder.delete'), icon: 'trash', danger: true, action: () => deleteFolder(folder) },
   ]);
 }
 
@@ -717,7 +735,7 @@ function setCollapsed(collapsed) {
 // ---- tabs ---------------------------------------------------------------------------------
 
 function saveTabs() {
-  store.set('tabs', state.tabs.map((t) => ({ id: t.id, view: t.view })));
+  store.set('tabs', state.tabs.map((tab) => ({ id: tab.id, view: tab.view })));
   store.set('active', state.active);
 }
 
@@ -743,49 +761,43 @@ function buildView(tab) {
   const head = el('header', 'view-head');
   const titleBox = el('div', 'view-titlebox');
   const title = el('h1', 'view-title');
-  title.title = 'Klicken zum Umbenennen';
   title.onclick = () => startRename(title, tabSession(tab));
   const meta = el('div', 'view-meta');
   titleBox.append(title, meta);
 
   const widthCtl = el('label', 'width-ctl');
-  widthCtl.title = 'Textbreite (Doppelklick: Standard)';
   const widthRange = el('input');
   widthRange.type = 'range';
   widthRange.min = '0';
   widthRange.max = '100';
   widthRange.value = String(store.get('historyWidth', HISTORY_WIDTH.start));
-  widthRange.setAttribute('aria-label', 'Textbreite');
   widthRange.oninput = () => setHistoryWidth(Number(widthRange.value));
   widthRange.ondblclick = () => setHistoryWidth(HISTORY_WIDTH.start);
   widthCtl.append(icon('width'), widthRange);
 
   const seg = el('div', 'seg');
-  const histBtn = el('button', '', 'Verlauf');
-  const termBtn = el('button', '', 'Terminal');
+  const histBtn = el('button');
+  const termBtn = el('button');
   histBtn.onclick = () => setView(tab, 'history');
   termBtn.onclick = () => setView(tab, 'terminal');
   seg.append(histBtn, termBtn);
 
   const actions = el('div', 'view-actions');
   const refresh = el('button', 'icon-btn');
-  refresh.title = 'Verlauf neu laden';
   refresh.append(icon('refresh'));
   refresh.onclick = () => loadHistory(tab);
   const attach = el('button', 'icon-btn');
-  attach.title = 'Datei anhängen (oder einfach ins Terminal ziehen)';
   attach.append(icon('paperclip'));
   attach.onclick = () => {
     state.attachTarget = tab;
     $('#attach-input').click();
   };
   const noteBtn = el('button', 'icon-btn');
-  noteBtn.title = 'Notiz zu dieser Session (nur für dich, Claude sieht sie nie)';
   noteBtn.append(icon('note'));
   noteBtn.onclick = () => editSessionNote(tab);
-  const resume = el('button', 'btn primary', 'Fortsetzen');
+  const resume = el('button', 'btn primary');
   resume.onclick = () => resumeTab(tab);
-  const stop = el('button', 'btn danger', 'Beenden');
+  const stop = el('button', 'btn danger');
   stop.onclick = () => stopTab(tab);
   actions.append(refresh, noteBtn, attach, resume, stop);
   head.append(titleBox, widthCtl, seg, actions);
@@ -804,7 +816,24 @@ function buildView(tab) {
   sessionNote.hidden = true;
   root.append(head, sessionNote, body);
   $('#views').append(root);
-  Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, refresh, attach, resume, stop, sessionNote, hist, histInner, termWrap, termHost, overlay });
+  Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, refresh, attach, noteBtn, resume, stop,
+    sessionNote, hist, histInner, termWrap, termHost, overlay });
+  labelView(tab);
+}
+
+// The view's fixed texts, set again after a language switch.
+function labelView(tab) {
+  tab.title.title = t('view.clickToRename');
+  tab.widthCtl.title = t('width.title');
+  tab.widthRange.setAttribute('aria-label', t('width'));
+  tab.histBtn.textContent = t('view.history');
+  tab.termBtn.textContent = t('view.terminal');
+  tab.refresh.title = t('history.reload');
+  tab.attach.title = t('attach.title');
+  tab.noteBtn.title = t('note.session');
+  tab.resume.textContent = t('resume');
+  tab.stop.textContent = t('stop');
+  if (!tab.overlay.hidden && tab.overlayText) showOverlay(tab, ...tab.overlayText);
 }
 
 function activate(id) {
@@ -812,7 +841,7 @@ function activate(id) {
   if (!tab) return;
   state.active = id;
   if (!document.hidden) state.attention.delete(id);
-  for (const t of state.tabs) t.root.classList.toggle('active', t === tab);
+  for (const other of state.tabs) other.root.classList.toggle('active', other === tab);
   saveTabs();
   paint();
   showView(tab);
@@ -859,7 +888,7 @@ function closeTab(tab) {
 
 function cycleTab(step) {
   if (!state.tabs.length) return;
-  const index = state.tabs.findIndex((t) => t.id === state.active);
+  const index = state.tabs.findIndex((tab) => tab.id === state.active);
   const next = state.tabs[(index + step + state.tabs.length) % state.tabs.length];
   activate(next.id);
 }
@@ -872,7 +901,7 @@ function renderTabs() {
     return;
   }
   // Polling repaints every 2 s; rebuilding unchanged tabs would only throw away focus and hover.
-  const signature = JSON.stringify(state.tabs.map((tab) => {
+  const signature = language() + JSON.stringify(state.tabs.map((tab) => {
     const sid = tabSession(tab);
     return [tab.id, sid, titleOf(sid), state.terminals.get(tab.id)?.status, statusFor(sid).cls,
       state.attention.has(tab.id), tab.id === state.active, state.byId.get(sid)?.note];
@@ -894,12 +923,12 @@ function renderTabs() {
     node.dataset.id = tab.id;
     node.tabIndex = 0;
     const note = state.byId.get(sid)?.note;
-    node.title = titleOf(sid) + (st.label ? ` – ${st.label}` : '') + (note ? `\nNotiz: ${note}` : '');
+    node.title = titleOf(sid) + (st.label ? ` – ${st.label}` : '') + (note ? `\n${t('note.tooltip', { note })}` : '');
     const dot = el('span', `dot ${row ? row.status : st.cls} ${state.attention.has(tab.id) ? 'attention' : ''}`);
     const label = el('span', 'tab-label', titleOf(sid));
     label.ondblclick = (ev) => { ev.stopPropagation(); startRename(label, sid); };
     const close = el('button', 'icon-btn');
-    close.title = row && row.status !== 'exited' ? 'Tab schließen (Session läuft im Hintergrund weiter)' : 'Tab schließen';
+    close.title = t(row && row.status !== 'exited' ? 'tab.closeRunning' : 'tab.close');
     close.append(icon('x'));
     close.onclick = (ev) => { ev.stopPropagation(); closeTab(tab); };
     node.onclick = () => activate(tab.id);
@@ -1039,13 +1068,13 @@ function paintView(tab) {
   const showTerm = tab.view === 'terminal' && !!row;
   if (!tab.title.querySelector('input')) tab.title.textContent = titleOf(sid);
   const parts = [session?.cwd_label || row?.cwd || ''];
-  if (row) parts.push(STATUS_LABEL[row.status]);
-  else if (ext) parts.push('läuft in einem anderen Terminal');
+  if (row) parts.push(t(`status.${row.status}`));
+  else if (ext) parts.push(t('status.elsewhere'));
   tab.meta.textContent = parts.filter(Boolean).join(' · ');
   tab.histBtn.classList.toggle('on', !showTerm);
   tab.termBtn.classList.toggle('on', showTerm);
   tab.termBtn.disabled = !row;
-  tab.termBtn.title = row ? '' : 'Erst „Fortsetzen“, dann läuft die Session hier im Terminal';
+  tab.termBtn.title = row ? '' : t('view.resumeFirst');
   tab.resume.hidden = live;
   tab.stop.hidden = !live;
   tab.refresh.hidden = showTerm;
@@ -1069,8 +1098,10 @@ function paint() {
 async function loadHistory(tab, { quiet = false } = {}) {
   const sid = tabSession(tab);
   const box = tab.hist;
+  // A background refresh would throw away a note being written; a later one catches up.
+  if (quiet && tab.histInner.querySelector('.note-editor')) return;
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
-  if (!quiet) tab.histInner.replaceChildren(el('div', 'loading', 'Lade Verlauf …'));
+  if (!quiet) tab.histInner.replaceChildren(el('div', 'loading', t('history.loading')));
   let data;
   try {
     [data] = await Promise.all([api('GET', `/api/sessions/${sid}/messages`), loadNotes(tab, { render: false })]);
@@ -1090,7 +1121,7 @@ function renderHistory(tab) {
   const start = tab.showAll ? 0 : Math.max(0, items.length - HISTORY_WINDOW);
   const nodes = [];
   if (start > 0) {
-    const more = el('button', 'btn more', `Frühere Einträge anzeigen (${start})`);
+    const more = el('button', 'btn more', t('history.more', { n: start }));
     more.onclick = () => {
       const fromBottom = tab.hist.scrollHeight - tab.hist.scrollTop;
       tab.showAll = true;
@@ -1099,11 +1130,11 @@ function renderHistory(tab) {
     };
     nodes.push(more);
   } else if (tab.truncated) {
-    nodes.push(el('div', 'note', 'Sehr lange Unterhaltung – nur die letzten Einträge werden angezeigt.'));
+    nodes.push(el('div', 'note', t('history.truncated')));
   }
   if (!items.length) {
     const live = state.terminals.has(tab.id);
-    nodes.push(el('div', 'empty-note', live ? 'Noch keine Nachrichten – schreib im Terminal los.' : 'Keine Nachrichten.'));
+    nodes.push(el('div', 'empty-note', t(live ? 'history.emptyLive' : 'history.empty')));
   }
   let steps = null;
   for (const item of items.slice(start)) {
@@ -1122,7 +1153,7 @@ function renderHistory(tab) {
   const shown = new Set(items.map((item) => item.uid));
   const orphans = tab.notes.messages.filter((note) => !shown.has(note.anchor));
   if (orphans.length && items.length) {
-    nodes.push(el('div', 'divider', 'Notizen zu Nachrichten, die nicht mehr im Verlauf stehen'));
+    nodes.push(el('div', 'divider', t('note.orphans')));
     for (const note of orphans) nodes.push(noteCard(tab, note, true));
   }
   tab.histInner.replaceChildren(...nodes);
@@ -1168,17 +1199,17 @@ function noteEditor({ initial = '', onSave, onCancel, onDelete }) {
   area.maxLength = NOTE_MAX;
   area.value = initial;
   area.rows = initial ? 6 : 4;
-  area.placeholder = 'Notiz in Markdown – nur für dich, Claude sieht sie nie';
+  area.placeholder = t('note.placeholder');
   area.addEventListener('paste', pasteAsMarkdown);
   const actions = el('div', 'note-actions');
-  actions.append(el('span', 'note-hint', `${MAC ? '⌘' : 'Strg'}+Enter speichert · Esc verwirft`));
+  actions.append(el('span', 'note-hint', t('note.keys', { mod: MAC ? '⌘' : t('key.ctrl') })));
   if (onDelete) {
-    const del = el('button', 'btn danger', 'Löschen');
+    const del = el('button', 'btn danger', t('delete'));
     del.onclick = onDelete;
     actions.append(del);
   }
-  const cancel = el('button', 'btn', 'Abbrechen');
-  const save = el('button', 'btn primary', 'Speichern');
+  const cancel = el('button', 'btn', t('cancel'));
+  const save = el('button', 'btn primary', t('save'));
   cancel.onclick = onCancel;
   save.onclick = () => onSave(area.value.trim());
   actions.append(cancel, save);
@@ -1205,7 +1236,7 @@ function renderSessionNote(tab) {
   const body = el('div', 'md');
   renderMarkdown(body, note.body);
   bar.replaceChildren(icon('note'), body);
-  bar.title = 'Klicken zum Bearbeiten';
+  bar.title = t('note.clickToEdit');
   bar.onclick = (ev) => { if (!ev.target.closest('a, button')) editSessionNote(tab); };
 }
 
@@ -1239,7 +1270,7 @@ function withNotes(tab, item) {
   if (!item.uid || (item.k !== 'user' && item.k !== 'assistant')) return [node];
   const wrap = el('div', `msg-wrap ${item.k}`);
   const add = el('button', 'icon-btn note-add');
-  add.title = 'Notiz zu dieser Nachricht';
+  add.title = t('note.message');
   add.append(icon('note'));
   add.onclick = () => {
     if (wrap.nextElementSibling?.classList.contains('note-editor')) return;
@@ -1272,17 +1303,17 @@ function withNotes(tab, item) {
 function noteCard(tab, note, withPreview = false) {
   const card = el('div', 'note-card');
   const head = el('div', 'note-head');
-  head.append(icon('note'), el('span', '', 'Notiz'), el('span', 'note-time', timeLabel(note.updated)));
+  head.append(icon('note'), el('span', '', t('note')), el('span', 'note-time', timeLabel(note.updated)));
   const edit = el('button', 'icon-btn');
-  edit.title = 'Bearbeiten';
+  edit.title = t('edit');
   edit.append(icon('pencil'));
   head.append(edit);
   const body = el('div', 'md note-body');
   renderMarkdown(body, note.body);
-  if (withPreview && note.preview) card.append(el('div', 'note-preview', `„${note.preview}“`));
+  if (withPreview && note.preview) card.append(el('div', 'note-preview', quote(note.preview)));
   card.append(head, body);
   const remove = async () => {
-    if (!confirm('Notiz löschen?')) return;
+    if (!confirm(t('note.confirmDelete'))) return;
     try {
       await change('DELETE', `/api/sessions/${tabSession(tab)}/notes/${note.id}`);
     } catch (e) {
@@ -1363,10 +1394,10 @@ function stepsGroup() {
         thoughts += 1;
       }
       const label = tools
-        ? `${tools} ${tools === 1 ? 'Schritt' : 'Schritte'} · ${names.slice(0, 4).join(', ')}${names.length > 4 ? ' …' : ''}`
-        : 'Gedankengang';
+        ? `${t('steps', { n: tools })} · ${names.slice(0, 4).join(', ')}${names.length > 4 ? ' …' : ''}`
+        : t('thinking');
       summary.replaceChildren(el('span', '', label));
-      if (errors) summary.append(el('span', 'badge', `${errors} Fehler`));
+      if (errors) summary.append(el('span', 'badge', t('errors', { n: errors })));
     },
   };
 }
@@ -1380,7 +1411,7 @@ function renderStep(item) {
   const node = el('details', 'tool');
   const summary = el('summary');
   summary.append(el('span', 'tool-name', item.name), el('span', 'tool-sum', item.summary));
-  if (item.error) summary.append(el('span', 'badge', 'Fehler'));
+  if (item.error) summary.append(el('span', 'badge', t('error')));
   node.append(summary);
   node.addEventListener('toggle', () => {
     if (!node.open || node.dataset.filled) return;
@@ -1421,14 +1452,14 @@ async function attachFiles(tab, files) {
   const list = [...files];
   if (!list.length) return;
   if (!tab) {
-    toast('Anhänge gehen nur in eine laufende Session: erst im Terminal öffnen.');
+    toast(t('attach.noSession'));
     return;
   }
-  toast(list.length === 1 ? `Hänge „${list[0].name}“ an …` : `Hänge ${list.length} Dateien an …`);
+  toast(list.length === 1 ? t('attach.one', { name: quote(list[0].name) }) : t('attach.many', { n: list.length }));
   const paths = [];
   for (const file of list) {
     if (file.size > UPLOAD_LIMIT) {
-      toast(`„${file.name}“ ist größer als 50 MB.`);
+      toast(t('attach.tooLarge', { name: quote(file.name) }));
       continue;
     }
     try {
@@ -1438,11 +1469,10 @@ async function attachFiles(tab, files) {
         body: file,
       });
       const data = await res.json().catch(() => ({}));
-      // An unknown route means the server still runs the code from before attachments existed.
-      if (!res.ok) throw new Error(data.error === 'Nicht gefunden' ? 'CLIDA bitte einmal neu starten (clida restart).' : data.error || `HTTP ${res.status}`);
+      if (!res.ok) throw new Error(staleServer(res.status, data) ? t('restartNeeded') : data.error || `HTTP ${res.status}`);
       paths.push(data.path);
     } catch (e) {
-      toast(`„${file.name}“ konnte nicht angehängt werden: ${e.message}`);
+      toast(t('attach.failed', { name: quote(file.name), error: e.message }));
       return;
     }
   }
@@ -1457,7 +1487,7 @@ function droppedFiles(ev) {
   for (const item of ev.dataTransfer.items) {
     if (item.kind !== 'file') continue;
     if (item.webkitGetAsEntry?.()?.isDirectory) {
-      toast('Ordner lassen sich nicht anhängen, nur einzelne Dateien.');
+      toast(t('attach.folder'));
       continue;
     }
     const file = item.getAsFile();
@@ -1469,7 +1499,7 @@ function droppedFiles(ev) {
 function showDropHint(on) {
   const hint = $('#drop-hint');
   hint.hidden = !on;
-  if (on) hint.textContent = liveTerminalTab() ? 'Zum Anhängen loslassen' : 'Anhänge gehen nur in eine laufende Session im Terminal';
+  if (on) hint.textContent = t(liveTerminalTab() ? 'attach.drop' : 'attach.dropNoSession');
 }
 
 // ---- terminals ----------------------------------------------------------------------------
@@ -1521,9 +1551,9 @@ function connect(tab) {
     const msg = JSON.parse(ev.data);
     if (msg.t === 'exit') {
       tab.exited = true;
-      // 129 = the CLI's answer to our SIGHUP from "Beenden", not an error.
-      const code = msg.code === 0 || msg.code === 129 ? '' : ` (Code ${msg.code})`;
-      showOverlay(tab, `Session beendet${code}. Der Verlauf ist gespeichert.`);
+      // 129 = the CLI's answer to our SIGHUP from "Stop", not an error.
+      const clean = msg.code === 0 || msg.code === 129;
+      showOverlay(tab, clean ? 'terminal.ended' : 'terminal.endedCode', { code: msg.code });
       refreshStatus();
     }
   };
@@ -1531,7 +1561,7 @@ function connect(tab) {
     if (tab.ws !== ws) return;
     tab.ws = null;
     if (tab.exited || !state.tabs.includes(tab) || !tab.term) return;
-    showOverlay(tab, 'Verbindung getrennt – verbinde neu …');
+    showOverlay(tab, 'terminal.reconnecting');
     tab.retries = (tab.retries || 0) + 1;
     setTimeout(() => {
       if (tab.term && state.tabs.includes(tab) && state.terminals.has(tab.id)) connect(tab);
@@ -1539,10 +1569,11 @@ function connect(tab) {
   };
 }
 
-function showOverlay(tab, message) {
-  const resume = el('button', 'btn primary', 'Fortsetzen');
+function showOverlay(tab, key, params = {}) {
+  tab.overlayText = [key, params];
+  const resume = el('button', 'btn primary', t('resume'));
   resume.onclick = () => resumeTab(tab);
-  tab.overlay.replaceChildren(el('span', '', message));
+  tab.overlay.replaceChildren(el('span', '', t(key, params)));
   if (tab.exited) tab.overlay.append(resume);
   tab.overlay.hidden = false;
 }
@@ -1608,7 +1639,7 @@ async function resumeTab(tab, force = false) {
     activate(tab.id);
   } catch (e) {
     if (e.status === 409 && !force) {
-      const ok = confirm(`${e.message}\n\nTrotzdem hier fortsetzen? Dann schreiben zwei Prozesse in denselben Verlauf.`);
+      const ok = confirm(t('resume.anyway', { error: e.message }));
       if (ok) return resumeTab(tab, true);
       return;
     }
@@ -1617,7 +1648,7 @@ async function resumeTab(tab, force = false) {
 }
 
 async function stopTab(tab) {
-  if (!confirm('Session beenden?\n\nDer Verlauf bleibt erhalten und kann jederzeit fortgesetzt werden.')) return;
+  if (!confirm(t('stop.confirm'))) return;
   try {
     await api('DELETE', `/api/terminals/${tab.id}`);
   } catch (e) {
@@ -1635,7 +1666,7 @@ async function openNewDialog() {
   $('#new-error').textContent = '';
   $('#new-title').value = '';
   cwdInput.value = store.get('lastCwd', state.home || '~');
-  const none = el('option', '', 'Kein Ordner');
+  const none = el('option', '', t('new.noFolder'));
   none.value = '';
   $('#new-folder').replaceChildren(none, ...state.folders.map((folder) => {
     const option = el('option', '', folder.name);
@@ -1681,29 +1712,136 @@ async function submitNewChat(ev) {
   }
 }
 
+// ---- settings -----------------------------------------------------------------------------
+// What the settings dialog offers. A new customization is one entry here, its texts in i18n.js
+// and its allowed values in SCHEMA in clida/settings.py, which checks everything it stores.
+// value() is what this window uses right now, apply() switches it.
+
+const SETTINGS = [
+  {
+    section: 'settings.general',
+    items: [
+      { key: 'language', label: 'settings.language', hint: 'settings.languageHint',
+        choices: () => Object.entries(LANGUAGES), value: language, apply: applyLanguage },
+    ],
+  },
+];
+
+// Take over what the server has stored. Until it answers, the window uses what it remembers.
+async function loadSettings() {
+  let stored;
+  try {
+    ({ settings: stored } = await api('GET', '/api/settings'));
+  } catch {
+    return;  // a server from before the settings: the window keeps what it remembers
+  }
+  for (const item of SETTINGS.flatMap((group) => group.items)) {
+    if (stored[item.key] !== undefined && stored[item.key] !== item.value()) item.apply(stored[item.key]);
+  }
+}
+
+function openSettings() {
+  $('#settings-error').textContent = '';
+  renderSettings();
+  $('#settings-dialog').showModal();
+  $('#settings-body select')?.focus();
+}
+
+function renderSettings(focusKey = null) {
+  $('#settings-body').replaceChildren(...SETTINGS.map((group) => {
+    const section = el('section', 'settings-section');
+    section.append(el('h3', '', t(group.section)));
+    for (const item of group.items) {
+      const text = el('div', 'settings-text');
+      const label = el('label', '', t(item.label));
+      label.htmlFor = `setting-${item.key}`;
+      text.append(label);
+      if (item.hint) text.append(el('p', 'settings-hint', t(item.hint)));
+      const select = el('select');
+      select.id = `setting-${item.key}`;
+      for (const [value, name] of item.choices()) {
+        const option = el('option', '', name);
+        option.value = value;
+        select.append(option);
+      }
+      select.value = item.value();
+      select.onchange = () => saveSetting(item, select);
+      const row = el('div', 'settings-row');
+      row.append(text, select);
+      section.append(row);
+    }
+    return section;
+  }));
+  if (focusKey) $(`#setting-${focusKey}`)?.focus();
+}
+
+async function saveSetting(item, select) {
+  const value = select.value;
+  try {
+    await api('PUT', '/api/settings', { [item.key]: value });
+  } catch (e) {
+    select.value = item.value();
+    $('#settings-error').textContent = e.message;
+    return;
+  }
+  $('#settings-error').textContent = '';
+  item.apply(value);
+  renderSettings(item.key);  // the dialog's own texts may have changed
+}
+
+// Switch the interface language. Texts the server makes (titles like "New chat", errors, dividers
+// in the history) come along with the reloads started here.
+function applyLanguage(lang) {
+  setLanguage(lang);
+  store.set('language', language());
+  translatePage();
+  for (const tab of state.tabs) {
+    labelView(tab);
+    if (!tab.sessionNote.querySelector('.note-editor')) renderSessionNote(tab);
+    if (tab.loaded) loadHistory(tab, { quiet: true });
+  }
+  if (!state.renaming) renderSidebar();
+  paint();
+  refreshSessions();
+}
+
 // ---- wiring -------------------------------------------------------------------------------
 
-// Show the Mac key names in tooltips and in the key list of the start page.
-function macKeyLabels() {
-  const swap = (text) => text.replace(/Strg\+Umschalt\+/g, '⌘⇧').replace('Strg+Bild↑/↓', '⌘⌥←/→')
-    .replace('Umschalt+Enter', '⇧↩');
-  for (const node of document.querySelectorAll('[title]')) node.title = swap(node.title);
-  for (const node of document.querySelectorAll('.keys dt')) node.textContent = swap(node.textContent);
+// An app shortcut: Ctrl+Shift (on a Mac Cmd+Shift) and the given key.
+const appKey = (key) => (MAC ? `⌘⇧${key}` : `${t('key.ctrl')}+${t('key.shift')}+${key}`);
+
+// The texts of the page itself (index.html), with the key names of this platform.
+function translatePage() {
+  for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n);
+  for (const node of document.querySelectorAll('[data-i18n-placeholder]')) node.placeholder = t(node.dataset.i18nPlaceholder);
+  for (const node of document.querySelectorAll('[data-i18n-label]')) {
+    const label = t(node.dataset.i18nLabel);
+    node.setAttribute('aria-label', label);
+    node.title = node.dataset.keys ? `${label} (${appKey(node.dataset.keys)})` : label;
+  }
+  const keys = [
+    [appKey('O'), t('chat.new')],
+    [appKey('B'), t('keys.sidebar')],
+    [MAC ? '⌘⌥←/→' : `${t('key.ctrl')}+${t('key.pages')}`, t('keys.tabs')],
+    [MAC ? '⇧↩' : `${t('key.shift')}+Enter`, t('keys.newline')],
+  ];
+  $('#keys').replaceChildren(...keys.flatMap(([combo, what]) => [el('dt', '', combo), el('dd', '', what)]));
 }
 
 function wire() {
-  if (MAC) macKeyLabels();
   for (const node of document.querySelectorAll('[data-icon]')) node.append(icon(node.dataset.icon));
   document.addEventListener('click', (ev) => {
     const action = ev.target.closest('[data-action]')?.dataset.action;
     if (action === 'toggle-sidebar') setCollapsed(!$('#app').classList.contains('collapsed'));
     else if (action === 'new-chat') openNewDialog();
     else if (action === 'new-folder') newFolder();
+    else if (action === 'settings') openSettings();
     else if (action === 'close-dialog') $('#new-dialog').close();
   });
   $('#new-form').addEventListener('submit', submitNewChat);
   $('#delete-cancel').onclick = () => $('#delete-dialog').close('cancel');
   $('#delete-confirm').onclick = () => $('#delete-dialog').close('delete');
+  $('#settings-done').onclick = () => $('#settings-dialog').close();
   dropZone($('#session-list'), null);
   // A file dropped anywhere must not make the window open it and leave CLIDA; onto a running
   // terminal it becomes an attachment.
@@ -1788,9 +1926,12 @@ function wire() {
 }
 
 async function start() {
+  setLanguage(store.get('language', 'de'));
+  translatePage();
   wire();
   if (store.get('collapsed', false)) $('#app').classList.add('collapsed');
   setHistoryWidth(store.get('historyWidth', HISTORY_WIDTH.start));
+  await loadSettings();
   await refreshSessions();
   for (const saved of store.get('tabs', [])) {
     if (!saved || findTab(saved.id)) continue;

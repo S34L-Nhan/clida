@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import ROOT, ws
 from .app import HttpError
+from .settings import tr
 
 STATIC = ROOT / "static"
 MODULES = ROOT / "node_modules"
@@ -54,6 +55,8 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("POST", r"/api/folders", "create_folder"),
     ("PUT", rf"/api/folders/{FID}", "rename_folder"),
     ("DELETE", rf"/api/folders/{FID}", "delete_folder"),
+    ("GET", r"/api/settings", "settings"),
+    ("PUT", r"/api/settings", "update_settings"),
     ("POST", r"/api/terminals", "start_terminal"),
     ("POST", rf"/api/terminals/{SID}/upload", "upload"),
     ("POST", r"/api/login-ticket", "login_ticket"),
@@ -64,7 +67,12 @@ mimetypes.add_type("text/javascript", ".mjs")
 
 LOCKED_PAGE = """<!doctype html><meta charset="utf-8"><title>CLIDA</title>
 <body style="font:15px system-ui;padding:40px;background:#262624;color:#ecebe6">
-<h2>CLIDA</h2><p>Bitte über <code>clida</code> öffnen, damit das Fenster angemeldet wird.</p>"""
+<h2>CLIDA</h2><p>{}</p>"""
+
+
+def _locked_page() -> bytes:
+    return LOCKED_PAGE.format(tr("Bitte über <code>clida</code> öffnen, damit das Fenster angemeldet wird.",
+                                 "Please open it with <code>clida</code>, so the window gets signed in.")).encode()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -110,12 +118,13 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and url.path == "/" and "ticket" in query:
                 return self._login(query["ticket"][0])
             if not self._authed():
-                return self._send(403, LOCKED_PAGE.encode(), "text/html; charset=utf-8")
+                return self._send(403, _locked_page(), "text/html; charset=utf-8")
             for route_method, pattern, name in ROUTES:
                 match = pattern.match(url.path)
                 if match and route_method == method:
                     return getattr(self, "route_" + name)(**match.groupdict())
-            self._send_json(404, {"error": "Nicht gefunden"})
+            # The code tells the page that this server runs older code than the page itself.
+            self._send_json(404, {"error": tr("Nicht gefunden", "Not found"), "code": "no_route"})
         except HttpError as e:
             self._send_json(e.status, {"error": e.message})
         except (BrokenPipeError, ConnectionResetError):
@@ -123,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             traceback.print_exc()
             try:
-                self._send_json(500, {"error": "Interner Fehler, siehe server.log"})
+                self._send_json(500, {"error": tr("Interner Fehler, siehe server.log", "Internal error, see server.log")})
             except OSError:
                 pass
 
@@ -142,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
             expiry = _TICKETS.pop(ticket, 0)
         valid = expiry > time.monotonic()
         if not valid and not self._authed():
-            return self._send(403, LOCKED_PAGE.encode(), "text/html; charset=utf-8")
+            return self._send(403, _locked_page(), "text/html; charset=utf-8")
         self.send_response(303)
         self.send_header("Location", "/")
         if valid:
@@ -169,20 +178,20 @@ class Handler(BaseHTTPRequestHandler):
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
         if length > 1024 * 1024:
-            raise HttpError(413, "Anfrage zu groß")
+            raise HttpError(413, tr("Anfrage zu groß", "Request too large"))
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
-            raise HttpError(400, "Ungültiges JSON")
+            body = None
         if not isinstance(body, dict):
-            raise HttpError(400, "Ungültiges JSON")
+            raise HttpError(400, tr("Ungültiges JSON", "Invalid JSON"))
         return body
 
     def _file(self, path, cache=False):
         try:
             body = path.read_bytes()
         except OSError:
-            raise HttpError(404, "Nicht gefunden")
+            raise HttpError(404, tr("Nicht gefunden", "Not found"))
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if ctype.startswith("text/"):
             ctype += "; charset=utf-8"
@@ -195,12 +204,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_static(self, name):
         if name.startswith("."):
-            raise HttpError(404, "Nicht gefunden")
+            raise HttpError(404, tr("Nicht gefunden", "Not found"))
         self._file(STATIC / name)
 
     def route_vendor(self, name):
         if name not in VENDOR:
-            raise HttpError(404, "Nicht gefunden")
+            raise HttpError(404, tr("Nicht gefunden", "Not found"))
         self._file(MODULES / VENDOR[name], cache=True)
 
     def route_sessions(self):
@@ -251,6 +260,12 @@ class Handler(BaseHTTPRequestHandler):
     def route_delete_folder(self, fid):
         self._send_json(200, self.desk.delete_folder(fid))
 
+    def route_settings(self):
+        self._send_json(200, self.desk.get_settings())
+
+    def route_update_settings(self):
+        self._send_json(200, self.desk.update_settings(self._body()))
+
     def route_start_terminal(self):
         self._send_json(200, self.desk.start_terminal(self._body()))
 
@@ -280,11 +295,11 @@ class Handler(BaseHTTPRequestHandler):
         term = self.desk.terminals.get(sid)
         key = self.headers.get("Sec-WebSocket-Key")
         if self.headers.get("Upgrade", "").lower() != "websocket" or not key:
-            raise HttpError(400, "WebSocket erwartet")
+            raise HttpError(400, tr("WebSocket erwartet", "WebSocket expected"))
         if self.headers.get("Origin") is None:
-            raise HttpError(403, "Origin fehlt")
+            raise HttpError(403, tr("Origin fehlt", "Origin missing"))
         if term is None:
-            raise HttpError(404, "Terminal läuft nicht")
+            raise HttpError(404, tr("Terminal läuft nicht", "Terminal is not running"))
         self.send_response(101, "Switching Protocols")
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")

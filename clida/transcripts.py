@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 from . import CLAUDE_HOME, STATE_DIR
+from .settings import tr
 
 PROJECTS = CLAUDE_HOME / "projects"
 INDEX_FILE = STATE_DIR / "index.json"
@@ -51,7 +52,8 @@ def _loads(line: bytes):
 def _clip(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
-    return text[:limit] + f"\n… ({len(text) - limit} Zeichen gekürzt)"
+    cut = len(text) - limit
+    return text[:limit] + "\n… " + tr(f"({cut} Zeichen gekürzt)", f"({cut} characters cut)")
 
 
 def _tag(text: str, name: str):
@@ -294,14 +296,14 @@ def render(path: str) -> dict:
             kind, ts = entry.get("type"), entry.get("timestamp")
             uuid = entry.get("uuid")
             if kind == "system" and entry.get("subtype") == "compact_boundary":
-                items.append({"k": "divider", "text": "Kontext komprimiert", "ts": ts})
+                items.append({"k": "divider", "text": tr("Kontext komprimiert", "Context compacted"), "ts": ts})
                 continue
             if kind not in ("user", "assistant"):
                 continue
             content = (entry.get("message") or {}).get("content")
             if kind == "user":
                 if entry.get("isCompactSummary"):
-                    items.append({"k": "divider", "text": "Kontext komprimiert", "ts": ts})
+                    items.append({"k": "divider", "text": tr("Kontext komprimiert", "Context compacted"), "ts": ts})
                     continue
                 if entry.get("isMeta"):
                     continue

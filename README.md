@@ -1,6 +1,6 @@
 # CLIDA
 
-A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on Windows (WSL) and macOS. The UI is in German; UI labels below are quoted as they appear.
+A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on Windows (WSL) and macOS. The UI speaks German (the default) and English; UI labels below are quoted in German, with the English meaning.
 
 - **Sidebar** with all past chats from `~/.claude/projects`, grouped by date (today, yesterday, last 7 days …), with search. It collapses and expands.
 - **Rename chats**: pencil icon, double-click the title in the list or on a tab, or click the heading.
@@ -14,6 +14,7 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on 
 - **Attachments** in the terminal:
   - *Ctrl+V* (⌘V on a Mac) pastes a screenshot or a copied image file just as in the plain CLI: the CLI reads the clipboard itself, with the file's real path.
   - *Drag a file onto the terminal* or use the *paperclip* in the header. A browser never reveals where a file lives on disk, so CLIDA copies it into `~/.clida/uploads/<session>/` and pastes that path; images become `[Image #n]`.
+- **Settings**: *Einstellungen* (settings) at the bottom of the sidebar. For now it holds the interface language, German or English. A switch applies at once, without a reload, and texts the server makes (error messages, the title of a new chat) follow it. Claude itself keeps answering in the language you write in.
 - **Hybrid view** per chat:
   - *Verlauf* (history): the chat as a rendered conversation (Markdown, tool calls collapsed). Code blocks are syntax-highlighted (SQL, PHP, JS, Bash, JSON …) and have a copy button. A slider in the header sets the text width; the middle is the default width, and a double-click resets it.
   - *Terminal*: the real `claude` CLI in an embedded terminal (xterm.js). Everything works as usual: permission prompts, slash commands, plan and auto mode.
@@ -101,12 +102,23 @@ The tooltips and the start page show the keys of the platform in use.
   - `transcripts.py` reads the transcripts in `~/.claude/projects/*/*.jsonl`. Files are read incrementally; the index is cached in `~/.clida/index.json`.
   - `registry.py` reads `~/.claude/sessions/<pid>.json`, where every running CLI reports its state (busy/idle/waiting). It checks that the process still lives via `/proc` on Linux and WSL, and via `ps` on macOS.
   - `library.py` stores folders and the archive, `notes.py` the notes. A message note is anchored to the transcript entry's `uuid`, which stays stable across reloads, resumes and compactions.
+  - `settings.py` stores the settings, checks every value against its `SCHEMA` and words the server's messages in the chosen language.
   - `ws.py` is a minimal WebSocket implementation for the terminal stream.
-- `static/` is the frontend: vanilla JS, no build step. xterm.js, marked, DOMPurify and highlight.js come from `npm install` into `node_modules/` (`clida` does this on first start) and are served locally.
+- `static/` is the frontend: vanilla JS, no build step. `i18n.js` holds every UI text in both languages. xterm.js, marked, DOMPurify and highlight.js come from `npm install` into `node_modules/` (`clida` does this on first start) and are served locally.
 
 ### Titles
 
 Titles set in CLIDA are stored in `~/.clida/titles.json` and take precedence there. CLIDA also appends a `custom-title` entry to the transcript, exactly like `/rename` does, so `claude --resume` shows the new name too.
+
+### Adding a setting
+
+A new setting needs three entries:
+
+- Its allowed values and its default go into `SCHEMA` in `clida/settings.py`. The server stores nothing else.
+- Its control and its effect go into `SETTINGS` in `static/app.js`. `value()` returns what the window uses right now, and `apply()` switches it.
+- Its texts go into `static/i18n.js`.
+
+The settings dialog builds itself from `SETTINGS`.
 
 ### Security
 
@@ -131,6 +143,7 @@ One limit comes from the browser: cookies do not distinguish ports, so other loc
 | `~/.clida/titles.json` | Titles set in CLIDA |
 | `~/.clida/library.json` | Folders and archived chats |
 | `~/.clida/notes.json` | Session and message notes |
+| `~/.clida/settings.json` | Settings (language) |
 | `~/.clida/uploads/` | Copies of attached files, one folder per session (removed when the chat is deleted) |
 | `~/.clida/token` | Login token of the window |
 

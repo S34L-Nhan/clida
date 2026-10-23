@@ -11,6 +11,7 @@ from pathlib import Path
 from . import STATE_DIR, registry, transcripts
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
+from .settings import Settings, tr
 from .terminals import UPLOADS, Terminals
 
 UPLOAD_LIMIT = 50 * 1024 * 1024
@@ -61,11 +62,15 @@ def _home_label(path):
     return "~" + path[len(home):] if path.startswith(home + "/") else path
 
 
-def _clean_name(value, limit: int, what: str) -> str:
+def _clean_name(value, limit: int, empty: str) -> str:
     name = " ".join(str(value or "").split())[:limit]
     if not name:
-        raise HttpError(400, f"{what} darf nicht leer sein")
+        raise HttpError(400, empty)
     return name
+
+
+def _folder_name(value) -> str:
+    return _clean_name(value, 80, tr("Ordnername darf nicht leer sein", "The folder name must not be empty"))
 
 
 def _upload_name(name) -> str:
@@ -87,6 +92,7 @@ class Desk:
         self.titles = Titles()
         self.library = Library()
         self.notes = Notes()
+        self.settings = Settings()
         self.terminals = Terminals(claude)
 
     def _require_session(self, session_id: str) -> dict:
@@ -95,7 +101,7 @@ class Desk:
             self.index.scan()
             info = self.index.get(session_id)
         if info is None:
-            raise HttpError(404, "Chat nicht gefunden")
+            raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
         return info
 
     def _title(self, session_id: str, info) -> str:
@@ -108,7 +114,7 @@ class Desk:
                     return info[key]
             if info.get("first_prompt"):
                 return _first_line(info["first_prompt"])
-        return "Neuer Chat"
+        return tr("Neuer Chat", "New chat")
 
     def status(self) -> dict:
         self.terminals.reap()
@@ -170,11 +176,11 @@ class Desk:
         if info is None:
             if any(t.session_id == session_id for t in self.terminals.all()):
                 return {"items": [], "truncated": False}
-            raise HttpError(404, "Chat nicht gefunden")
+            raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
         return transcripts.render(info["path"])
 
     def rename(self, session_id: str, title) -> dict:
-        title = _clean_name(title, 200, "Titel")
+        title = _clean_name(title, 200, tr("Titel darf nicht leer sein", "The title must not be empty"))
         self.titles.set(session_id, title)
         info = self.index.get(session_id)
         if info:
@@ -197,23 +203,25 @@ class Desk:
         resume = body.get("resume")
         if resume:
             if not transcripts.SESSION_ID.fullmatch(str(resume)):
-                raise HttpError(400, "Ungültige Session-ID")
+                raise HttpError(400, tr("Ungültige Session-ID", "Invalid session id"))
             info = self._require_session(resume)
             cwd = info["cwd"]
             if not cwd or not os.path.isdir(cwd):
-                raise HttpError(400, f"Arbeitsverzeichnis existiert nicht mehr: {cwd}")
+                raise HttpError(400, tr("Arbeitsverzeichnis existiert nicht mehr: ",
+                                        "Working directory no longer exists: ") + str(cwd))
             status = self.status()  # also updates which session each of our terminals runs now
             for row in status["terminals"]:
                 # One of our terminals may run it under another id, after /resume or /clear in the CLI.
                 if row["session_id"] == resume and row["status"] != "exited":
                     return {"id": row["id"], "session_id": resume, "cwd": row["cwd"]}
             if not body.get("force") and any(ext["session_id"] == resume for ext in status["external"]):
-                raise HttpError(409, "Dieser Chat läuft bereits in einem anderen Terminal.")
+                raise HttpError(409, tr("Dieser Chat läuft bereits in einem anderen Terminal.",
+                                        "This chat is already running in another terminal."))
             term = self.terminals.start(cwd, resume=resume)
         else:
             cwd = os.path.abspath(os.path.expanduser(str(body.get("cwd") or "~")))
             if not os.path.isdir(cwd):
-                raise HttpError(400, f"Verzeichnis existiert nicht: {cwd}")
+                raise HttpError(400, tr("Verzeichnis existiert nicht: ", "Directory does not exist: ") + cwd)
             title = " ".join(str(body.get("title") or "").split())[:200]
             term = self.terminals.start(cwd, name=title or None)
             if title:
@@ -221,24 +229,24 @@ class Desk:
         return {"id": term.id, "session_id": term.session_id, "cwd": term.cwd}
 
     def create_folder(self, name) -> dict:
-        return self.library.create_folder(_clean_name(name, 80, "Ordnername"))
+        return self.library.create_folder(_folder_name(name))
 
     def rename_folder(self, folder_id: str, name) -> dict:
-        name = _clean_name(name, 80, "Ordnername")
+        name = _folder_name(name)
         if not self.library.rename_folder(folder_id, name):
-            raise HttpError(404, "Ordner nicht gefunden")
+            raise HttpError(404, tr("Ordner nicht gefunden", "Folder not found"))
         return {"id": folder_id, "name": name}
 
     def delete_folder(self, folder_id: str) -> dict:
         if not self.library.delete_folder(folder_id):
-            raise HttpError(404, "Ordner nicht gefunden")
+            raise HttpError(404, tr("Ordner nicht gefunden", "Folder not found"))
         return {"ok": True}
 
     def move_session(self, session_id: str, folder_id) -> dict:
         if folder_id is not None and not isinstance(folder_id, str):
-            raise HttpError(400, "Ungültiger Ordner")
+            raise HttpError(400, tr("Ungültiger Ordner", "Invalid folder"))
         if not self.library.move(session_id, folder_id):
-            raise HttpError(404, "Ordner nicht gefunden")
+            raise HttpError(404, tr("Ordner nicht gefunden", "Folder not found"))
         return {"ok": True}
 
     def archive_session(self, session_id: str, archived) -> dict:
@@ -250,11 +258,12 @@ class Desk:
         status = self.status()
         running = [t for t in status["terminals"] if t["session_id"] == session_id and t["status"] != "exited"]
         if running or any(e["session_id"] == session_id for e in status["external"]):
-            raise HttpError(409, "Diese Sitzung läuft noch. Bitte zuerst beenden.")
+            raise HttpError(409, tr("Diese Sitzung läuft noch. Bitte zuerst beenden.",
+                                    "This session is still running. Please stop it first."))
         try:
             transcripts.delete_session_files(session_id, self.index.paths(session_id))
         except (OSError, ValueError) as e:
-            raise HttpError(500, f"Löschen fehlgeschlagen: {e}")
+            raise HttpError(500, tr("Löschen fehlgeschlagen: ", "Deleting failed: ") + str(e))
         self.library.forget(session_id)
         self.titles.set(session_id, None)
         shutil.rmtree(UPLOADS / session_id, ignore_errors=True)
@@ -269,11 +278,11 @@ class Desk:
         """Store a file dropped into a running session; the browser never reveals the original path."""
         term = self.terminals.get(terminal_id)
         if term is None or not term.alive:
-            raise HttpError(404, "Diese Session läuft nicht.")
+            raise HttpError(404, tr("Diese Session läuft nicht.", "This session is not running."))
         if length < 0:
-            raise HttpError(411, "Dateigröße fehlt")
+            raise HttpError(411, tr("Dateigröße fehlt", "File size missing"))
         if length > UPLOAD_LIMIT:
-            raise HttpError(413, "Datei ist größer als 50 MB")
+            raise HttpError(413, tr("Datei ist größer als 50 MB", "File is larger than 50 MB"))
         folder = UPLOADS / terminal_id
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         first = target = folder / _upload_name(name)
@@ -288,7 +297,7 @@ class Desk:
                 while left:
                     chunk = stream.read(min(65536, left))
                     if not chunk:
-                        raise HttpError(400, "Upload abgebrochen")
+                        raise HttpError(400, tr("Upload abgebrochen", "Upload aborted"))
                     f.write(chunk)
                     left -= len(chunk)
             os.replace(part, target)
@@ -305,7 +314,8 @@ class Desk:
     def _note_body(body) -> str:
         body = str(body or "").strip()
         if len(body) > BODY_MAX:
-            raise HttpError(400, f"Notiz ist länger als {BODY_MAX} Zeichen")
+            raise HttpError(400, tr(f"Notiz ist länger als {BODY_MAX} Zeichen",
+                                    f"The note is longer than {BODY_MAX} characters"))
         return body
 
     def set_session_note(self, session_id: str, body) -> dict:
@@ -316,27 +326,38 @@ class Desk:
         anchor = str(body.get("anchor") or "")
         role = body.get("role")
         if not text:
-            raise HttpError(400, "Notiz ist leer")
+            raise HttpError(400, tr("Notiz ist leer", "The note is empty"))
         if not re.fullmatch(r"[0-9a-f-]{36}#\d{1,4}", anchor) or role not in ("user", "assistant"):
-            raise HttpError(400, "Ungültige Nachricht")
+            raise HttpError(400, tr("Ungültige Nachricht", "Invalid message"))
         preview = " ".join(str(body.get("preview") or "").split())[:PREVIEW_MAX]
         return self.notes.add(session_id, anchor, role, preview, text)
 
     def edit_note(self, session_id: str, note_id: str, body) -> dict:
         text = self._note_body(body)
         if not text:
-            raise HttpError(400, "Notiz ist leer")
+            raise HttpError(400, tr("Notiz ist leer", "The note is empty"))
         note = self.notes.edit(session_id, note_id, text)
         if note is None:
-            raise HttpError(404, "Notiz nicht gefunden")
+            raise HttpError(404, tr("Notiz nicht gefunden", "Note not found"))
         return note
 
     def delete_note(self, session_id: str, note_id: str) -> dict:
         if not self.notes.remove(session_id, note_id):
-            raise HttpError(404, "Notiz nicht gefunden")
+            raise HttpError(404, tr("Notiz nicht gefunden", "Note not found"))
         return {"ok": True}
 
     def stop_terminal(self, terminal_id: str) -> dict:
         if not self.terminals.stop(terminal_id):
-            raise HttpError(404, "Terminal nicht gefunden")
+            raise HttpError(404, tr("Terminal nicht gefunden", "Terminal not found"))
         return {"ok": True}
+
+    # -- settings ---------------------------------------------------------------------------
+
+    def get_settings(self) -> dict:
+        return {"settings": self.settings.snapshot()}
+
+    def update_settings(self, body: dict) -> dict:
+        try:
+            return {"settings": self.settings.update(body)}
+        except ValueError as e:
+            raise HttpError(400, tr("Ungültige Einstellung: ", "Invalid setting: ") + str(e))

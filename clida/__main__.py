@@ -67,7 +67,7 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    print(f"clida läuft auf http://localhost:{args.port}", flush=True)
+    print(f"clida runs on http://localhost:{args.port}", flush=True)
     try:
         server.serve_forever()
     finally:
