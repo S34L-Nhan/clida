@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import STATE_DIR, locate, registry, storage, transcripts
+from . import STATE_DIR, browser, locate, registry, storage, transcripts
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .settings import Settings, tr
@@ -301,6 +301,14 @@ class Desk:
         finally:
             part.unlink(missing_ok=True)
         return {"path": str(target)}
+
+    def open_url(self, url) -> dict:
+        if not browser.allowed(url):
+            raise HttpError(400, tr("Nur http-, https- und mailto-Links lassen sich öffnen.",
+                                    "Only http, https and mailto links can be opened."))
+        if not browser.open_url(url):
+            raise HttpError(500, tr("Der Standardbrowser ließ sich nicht starten.", "The default browser did not start."))
+        return {"ok": True}
 
     def locate_folder(self, body: dict) -> dict:
         """The path of a folder dropped into a tab; the browser gives only its name and contents."""

@@ -1665,7 +1665,7 @@ function ensureTerminal(tab) {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  term.loadAddon(new WebLinksAddon((ev, uri) => window.open(uri, '_blank', 'noopener')));
+  term.loadAddon(new WebLinksAddon((ev, uri) => openExternal(uri)));
   term.open(tab.termHost);
   term.attachCustomKeyEventHandler((ev) => terminalKey(tab, ev));
   term.onData((data) => send(tab, { t: 'i', d: data }));
@@ -1679,7 +1679,18 @@ function ensureTerminal(tab) {
 // Without this handler xterm asks with the browser's confirm().
 async function openTerminalLink(uri) {
   if (!/^https?:/i.test(uri)) return;
-  if (await ask({ title: t('link.title'), text: el('code', '', uri), yes: t('link.open') })) window.open(uri, '_blank', 'noopener');
+  if (await ask({ title: t('link.title'), text: el('code', '', uri), yes: t('link.open') })) openExternal(uri);
+}
+
+// Links go to the system's default browser through the server: opened from this page, they would
+// land in the browser that runs the app window (Edge, say), whatever the default is.
+async function openExternal(url) {
+  try {
+    await api('POST', '/api/open-url', { url });
+  } catch (e) {
+    if (e.status === 404) window.open(url, '_blank', 'noopener');  // a server from before this: open here
+    else toast(e.message);
+  }
 }
 
 function connect(tab) {
@@ -2035,6 +2046,16 @@ function wire() {
     attachFiles(state.attachTarget, ev.target.files);
     ev.target.value = '';
   });
+  // Links in rendered messages and notes (DOMPurify gives them target=_blank as a fallback).
+  const externalLink = (ev) => {
+    const link = ev.target.closest?.('a[href]');
+    if (!link || !/^(https?|mailto):/i.test(link.href) || (ev.type === 'auxclick' && ev.button !== 1)) return;
+    if (new URL(link.href).origin === location.origin) return;  // a relative link or #anchor: not a web page
+    ev.preventDefault();
+    openExternal(link.href);
+  };
+  document.addEventListener('click', externalLink);
+  document.addEventListener('auxclick', externalLink);  // middle click
   window.addEventListener('pointermove', tabPointerMove);
   window.addEventListener('pointerup', tabPointerUp);
   window.addEventListener('pointercancel', tabPointerUp);
