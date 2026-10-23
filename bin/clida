@@ -115,7 +115,39 @@ open_window_linux() {
 open_window() {
   local url
   url="$(login_url)"
+  [[ "$PLATFORM" != wsl ]] || windows_reaches_server || warn_unreachable
   "open_window_$PLATFORM" "$url" || echo "Open in a browser: $url"
+}
+
+# Windows reaches the server through WSL's localhost relay (NAT networking). That relay can hang on
+# one port, and the window then spins forever. So check from the Windows side first.
+windows_reaches_server() {
+  local curl="$WIN32/curl.exe" _
+  [[ -x "$curl" ]] || return 0
+  for _ in 1 2 3 4 5; do  # a new listener takes the relay a moment to pick up
+    (cd /mnt/c && "$curl" -fsS -o NUL --noproxy '*' --max-time 1.5 "http://localhost:$PORT/healthz") >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+# Said in a message box too: the desktop shortcut has no console to print to.
+warn_unreachable() {
+  local text lang
+  lang="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("language", "de"))' "$STATE/settings.json" 2>/dev/null || echo de)"
+  if [[ "$lang" == en ]]; then
+    text="Windows cannot reach CLIDA at localhost:$PORT, although the server runs in WSL. WSL's port forwarding is stuck.
+
+Fix: run \"wsl --shutdown\" in PowerShell or Win+R, then open CLIDA again. This ends all WSL processes."
+  else
+    text="Windows erreicht CLIDA unter localhost:$PORT nicht, obwohl der Server in WSL läuft. Die Portweiterleitung von WSL hängt.
+
+Abhilfe: \"wsl --shutdown\" in PowerShell oder Win+R ausführen, dann CLIDA neu öffnen. Das beendet alle WSL-Prozesse."
+  fi
+  echo "clida: $text" >&2
+  (cd /mnt/c && CLIDA_MSG="$text" WSLENV="${WSLENV:+$WSLENV:}CLIDA_MSG" "$WIN32/WindowsPowerShell/v1.0/powershell.exe" \
+    -NoProfile -NonInteractive -Command 'Add-Type -AssemblyName PresentationFramework; [void][System.Windows.MessageBox]::Show($env:CLIDA_MSG, "CLIDA")' \
+    >/dev/null 2>&1 &)
 }
 
 # WSL shuts down once no Windows-side wsl.exe client is left, taking the server with it.

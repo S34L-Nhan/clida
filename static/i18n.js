@@ -119,6 +119,9 @@ const TEXTS = {
     'stop.title': 'Session beenden?',
     'stop.text': 'Der Verlauf bleibt erhalten und kann jederzeit fortgesetzt werden.',
 
+    'link.title': 'Link öffnen?',
+    'link.open': 'Öffnen',
+
     'settings': 'Einstellungen',
     'settings.general': 'Allgemein',
     'settings.language': 'Sprache',
@@ -236,6 +239,9 @@ const TEXTS = {
     'resume.anywayText': '{error} Then two processes write to the same history.',
     'stop.title': 'Stop the session?',
     'stop.text': 'The history is kept and can be resumed at any time.',
+
+    'link.title': 'Open link?',
+    'link.open': 'Open',
 
     'settings': 'Settings',
     'settings.general': 'General',

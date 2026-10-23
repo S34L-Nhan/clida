@@ -597,6 +597,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .ctx-item svg { width: 16px; height: 16px; color: var(--muted); }
 .ctx-item.danger, .ctx-item.danger svg { color: var(--danger); }
 .dialog.small { width: min(420px, calc(100vw - 32px)); }
+#ask-text code { word-break: break-all; }
 .dialog p { margin: 0; line-height: 1.5; }
 .btn.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
 .btn.danger-solid:hover { filter: brightness(1.08); }
@@ -640,14 +641,15 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
   position: absolute;
   top: -4px;
   right: -6px;
-  display: none;
+  display: inline-grid;
+  opacity: 0;  /* not display: none, which would also take it out of the keyboard's reach */
   width: 28px;
   height: 28px;
   background: var(--panel);
   border: 1px solid var(--border);
 }
 .msg-wrap.user .note-add { right: auto; left: 0; }
-.msg-wrap:hover .note-add, .msg-wrap .note-add:focus-visible { display: inline-grid; }
+.msg-wrap:hover .note-add, .msg-wrap .note-add:focus-visible { opacity: 1; }
 .msg-wrap .note-add svg { width: 15px; height: 15px; }
 .note-card {
   margin: 4px 0 16px;

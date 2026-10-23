@@ -1,6 +1,5 @@
 """What the UI can ask for: sessions, titles, live status and terminals."""
 
-import json
 import os
 import re
 import shutil
@@ -8,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import STATE_DIR, registry, transcripts
+from . import STATE_DIR, registry, storage, transcripts
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .settings import Settings, tr
@@ -31,10 +30,7 @@ class Titles:
 
     def __init__(self):
         self._lock = threading.Lock()
-        try:
-            self._titles = json.loads(TITLES_FILE.read_text())
-        except (OSError, ValueError):
-            self._titles = {}
+        self._titles = storage.load(TITLES_FILE) or {}
 
     def get(self, session_id: str):
         with self._lock:
@@ -47,10 +43,7 @@ class Titles:
                 self._titles.pop(session_id, None)
             else:
                 self._titles[session_id] = title
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = TITLES_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self._titles, ensure_ascii=False, indent=1))
-            os.replace(tmp, TITLES_FILE)
+            storage.save(TITLES_FILE, self._titles)
 
 
 def _home_label(path):
@@ -223,9 +216,12 @@ class Desk:
             if not os.path.isdir(cwd):
                 raise HttpError(400, tr("Verzeichnis existiert nicht: ", "Directory does not exist: ") + cwd)
             title = " ".join(str(body.get("title") or "").split())[:200]
+            folder = body.get("folder")
             term = self.terminals.start(cwd, name=title or None)
             if title:
                 self.titles.set(term.session_id, title)
+            if isinstance(folder, str) and folder:
+                self.library.move(term.session_id, folder)  # a folder deleted meanwhile is skipped
         return {"id": term.id, "session_id": term.session_id, "cwd": term.cwd}
 
     def create_folder(self, name) -> dict:
@@ -268,9 +264,9 @@ class Desk:
         self.titles.set(session_id, None)
         shutil.rmtree(UPLOADS / session_id, ignore_errors=True)
         self.notes.forget(session_id)
-        term = self.terminals.get(session_id)
-        if term is not None and not term.alive:
-            self.terminals.stop(session_id)
+        for term in self.terminals.all():
+            if term.session_id == session_id and not term.alive:
+                self.terminals.stop(term.id)
         self.index.scan()
         return {"ok": True}
 
@@ -283,7 +279,7 @@ class Desk:
             raise HttpError(411, tr("Dateigröße fehlt", "File size missing"))
         if length > UPLOAD_LIMIT:
             raise HttpError(413, tr("Datei ist größer als 50 MB", "File is larger than 50 MB"))
-        folder = UPLOADS / terminal_id
+        folder = term.uploads
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         first = target = folder / _upload_name(name)
         n = 2

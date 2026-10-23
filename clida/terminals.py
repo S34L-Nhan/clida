@@ -95,9 +95,12 @@ class _Viewer:
 
 
 class Terminal:
-    def __init__(self, claude: str, cwd: str, session_id: str, argv: list):
-        self.id = session_id          # stable key for tabs and websockets
+    def __init__(self, claude: str, cwd: str, session_id: str, argv: list, uploads):
+        # Its own id, not the session's: after /clear the terminal runs another session, and the
+        # old chat must still open (and resume) on its own.
+        self.id = str(uuid.uuid4())   # key for tabs and websockets
         self.session_id = session_id  # follows /clear and /resume inside the CLI
+        self.uploads = uploads        # the folder passed with --add-dir
         self.cwd = cwd
         self.started = time.time()
         self.last_output = 0.0
@@ -110,8 +113,14 @@ class Terminal:
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             try:
+                # This server ignores SIGHUP and Python ignores SIGPIPE; ignored signals survive exec,
+                # and a CLI that ignores SIGHUP would not end on "Stop".
+                signal.signal(signal.SIGHUP, signal.SIG_DFL)
+                signal.signal(signal.SIGPIPE, signal.SIG_DFL)
                 os.chdir(cwd)
                 os.execve(claude, [claude, *argv], env)
+            except OSError as e:
+                os.write(1, f"clida: {claude}: {e.strerror}\r\n".encode())  # the PTY, so the tab shows why
             finally:
                 os._exit(127)
         # pty.fork() leaves the master inheritable: every later session would get a copy.
@@ -230,11 +239,9 @@ class Terminals:
     def start(self, cwd: str, resume: str = None, name: str = None) -> Terminal:
         with self._lock:
             if resume:
-                current = self._by_id.get(resume)
-                if current is not None:
-                    if current.alive:
+                for current in self._by_id.values():
+                    if current.alive and current.session_id == resume:
                         return current
-                    current.close()
                 argv = ["--resume", resume]
                 session_id = resume
             else:
@@ -244,8 +251,8 @@ class Terminals:
             uploads = UPLOADS / session_id
             uploads.mkdir(mode=0o700, parents=True, exist_ok=True)
             argv += ["--add-dir", str(uploads)]
-            term = Terminal(self.claude, cwd, session_id, argv)
-            self._by_id[session_id] = term
+            term = Terminal(self.claude, cwd, session_id, argv, uploads)
+            self._by_id[term.id] = term
             return term
 
     def get(self, terminal_id: str):

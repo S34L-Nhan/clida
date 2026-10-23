@@ -115,7 +115,11 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 });
 // Transcripts can quote anything (web pages, tool output), so no styles or form controls either.
-const PURIFY = { FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select'], FORBID_ATTR: ['style'] };
+// SANITIZE_NAMED_PROPS prefixes id and name, so an id="toast" in a message cannot hijack the app's own.
+const PURIFY = {
+  FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select'], FORBID_ATTR: ['style'],
+  SANITIZE_NAMED_PROPS: true,
+};
 const markdown = (text) => DOMPurify.sanitize(marked.parse(text), PURIFY);
 hljs.registerAliases(['mysql', 'mariadb', 'pgsql', 'postgres', 'postgresql', 'sqlite', 'tsql', 'plsql'], { languageName: 'sql' });
 
@@ -208,6 +212,10 @@ function applyStatus(data) {
   state.terminals = new Map(data.terminals.map((row) => [row.id, row]));
   state.bySession = new Map(data.terminals.filter((row) => row.status !== 'exited').map((row) => [row.session_id, row]));
   state.external = new Map(data.external.map((e) => [e.session_id, e]));
+  for (const tab of state.tabs) {
+    const row = state.terminals.get(tab.id);
+    if (row) tab.sid = row.session_id;  // follows /clear and /resume inside the CLI
+  }
   let finished = false;
   for (const row of data.terminals) {
     const prev = state.lastStatus.get(row.id);
@@ -223,6 +231,7 @@ function applyStatus(data) {
 
 async function refreshStatus() {
   let finished = false;
+  const asked = Date.now();
   try {
     finished = applyStatus(await api('GET', '/api/status'));
     setOnline(true);
@@ -230,19 +239,33 @@ async function refreshStatus() {
     setOnline(false, e.status);
     return;
   }
-  for (const tab of state.tabs) {
-    if (tab.term && !state.terminals.has(tab.id)) {
-      disposeTerminal(tab);
-      tab.view = 'history';
-      loadHistory(tab);
-    }
+  for (const tab of [...state.tabs]) {
+    // An answer older than the tab's terminal cannot know it yet.
+    if (tab.id !== tab.sid && !state.terminals.has(tab.id) && tab.since < asked) historyTab(tab);
   }
   paint();
   if (finished) {
     refreshSessions();
     const tab = activeTab();
     if (tab && tab.view === 'history' && tab.loaded) loadHistory(tab, { quiet: true });
+    for (const other of state.tabs) if (other !== tab && other.loaded) other.stale = true;  // reload when shown
   }
+}
+
+// The tab's terminal is gone (server restart, or forgotten after it ended): it shows the chat's
+// history from now on, under the chat's id. If another tab shows that chat already, it closes.
+function historyTab(tab) {
+  disposeTerminal(tab);
+  if (findTab(tab.sid)) {
+    closeTab(tab);
+    return;
+  }
+  state.attention.delete(tab.id);
+  if (state.active === tab.id) state.active = tab.sid;
+  tab.id = tab.sid;
+  tab.view = 'history';
+  saveTabs();
+  loadHistory(tab);
 }
 
 async function refreshSessions() {
@@ -283,7 +306,7 @@ function setOnline(online, status) {
   banner.replaceChildren(...textWith(status === 403 ? 'banner.expired' : 'banner.offline', { cmd: el('code', '', 'clida') }));
 }
 
-const tabSession = (tab) => state.terminals.get(tab.id)?.session_id || tab.id;
+const tabSession = (tab) => state.terminals.get(tab.id)?.session_id || tab.sid;
 const titleOf = (sid) => state.byId.get(sid)?.title || t('chat.new');
 const activeTab = () => state.tabs.find((tab) => tab.id === state.active) || null;
 const findTab = (id) => state.tabs.find((tab) => tab.id === id) || null;
@@ -528,12 +551,16 @@ function startRename(target, sid) {
 // ---- folders, archive, delete -------------------------------------------------------------
 
 async function newFolder() {
+  if (state.addingFolder) return;  // a second click while the first folder is on its way
+  state.addingFolder = true;
   let folder;
   try {
     folder = await change('POST', '/api/folders', { name: t('folder.new') });
   } catch (e) {
     toast(e.message);
     return;
+  } finally {
+    state.addingFolder = false;
   }
   $('#search').value = '';  // a search would hide the new, still empty folder
   if (!state.folders.some((f) => f.id === folder.id)) state.folders.push(folder);
@@ -575,13 +602,16 @@ async function moveToFolder(sid, folderId) {
   }
   const current = state.byId.get(sid);
   if (current) current.folder = folderId;
-  if (folderId) {  // open the target folder, so the chat does not seem to vanish
-    const collapsed = store.get('collapsedFolders', {});
-    delete collapsed[folderId];
-    store.set('collapsedFolders', collapsed);
-  }
+  if (folderId) expandFolder(folderId);
   renderSidebar();
   paintSidebar();
+}
+
+// Open a folder that just got a chat, so the chat does not seem to vanish.
+function expandFolder(folderId) {
+  const collapsed = store.get('collapsedFolders', {});
+  delete collapsed[folderId];
+  store.set('collapsedFolders', collapsed);
 }
 
 async function setArchived(sid, archived) {
@@ -743,6 +773,7 @@ function closeMenu() {
 
 function setCollapsed(collapsed) {
   $('#app').classList.toggle('collapsed', collapsed);
+  $('.sidebar').inert = collapsed;  // 0 px wide, but Tab would still walk through its entries
   store.set('collapsed', collapsed);
   setTimeout(() => fitTab(activeTab()), 200);
 }
@@ -750,20 +781,23 @@ function setCollapsed(collapsed) {
 // ---- tabs ---------------------------------------------------------------------------------
 
 function saveTabs() {
-  store.set('tabs', state.tabs.map((tab) => ({ id: tab.id, view: tab.view })));
+  store.set('tabs', state.tabs.map((tab) => ({ id: tab.id, sid: tab.sid, view: tab.view })));
   store.set('active', state.active);
 }
 
+// Open a chat: in the tab of its running terminal, else in the tab that shows it already, else in a
+// new history tab. A terminal tab's id is the terminal's, a history tab's id is the chat's.
 function openSession(sid) {
   const term = state.bySession.get(sid);
-  const id = term ? term.id : sid;
-  if (!findTab(id)) addTab(id, term ? 'terminal' : 'history');
-  activate(id);
+  const shown = term ? findTab(term.id) : state.tabs.find((tab) => tabSession(tab) === sid);
+  if (shown) return activate(shown.id);
+  addTab(term ? term.id : sid, term ? 'terminal' : 'history', sid);
+  activate(term ? term.id : sid);
 }
 
-function addTab(id, view) {
-  const tab = { id, view, term: null, fit: null, ws: null, loaded: false, showAll: false, items: [],
-    notes: { session: null, messages: [] } };
+function addTab(id, view, sid = id) {
+  const tab = { id, sid, since: Date.now(), view, term: null, fit: null, ws: null, loaded: false, stale: false,
+    showAll: false, items: [], notes: { session: null, messages: [] } };
   buildView(tab);
   state.tabs.push(tab);
   saveTabs();
@@ -870,8 +904,8 @@ function showView(tab) {
       fitTab(tab);
       tab.term?.focus();
     });
-  } else if (!tab.loaded) {
-    loadHistory(tab);
+  } else if (!tab.loaded || tab.stale) {
+    loadHistory(tab, { quiet: tab.loaded });
   }
 }
 
@@ -1113,8 +1147,11 @@ function paint() {
 async function loadHistory(tab, { quiet = false } = {}) {
   const sid = tabSession(tab);
   const box = tab.hist;
-  // A background refresh would throw away a note being written; a later one catches up.
-  if (quiet && tab.histInner.querySelector('.note-editor')) return;
+  // A background refresh would pull a note being written out from under the cursor; catch up later.
+  if (quiet && tab.histInner.querySelector('.note-editor')) {
+    tab.stale = true;
+    return;
+  }
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   if (!quiet) tab.histInner.replaceChildren(el('div', 'loading', t('history.loading')));
   let data;
@@ -1127,11 +1164,38 @@ async function loadHistory(tab, { quiet = false } = {}) {
   tab.items = data.items;
   tab.truncated = data.truncated;
   tab.loaded = true;
-  renderHistory(tab);
+  tab.stale = false;
+  if (quiet && historySignature(tab) === tab.shownSignature) return;  // nothing new: leave it be
+  renderHistory(tab, { keepPlace: quiet && !atBottom });
   if (!quiet || atBottom) box.scrollTop = box.scrollHeight;
 }
 
-function renderHistory(tab) {
+const historySignature = (tab) => JSON.stringify([language(), tab.showAll, tab.truncated, tab.items, tab.notes]);
+
+// Where the reader is: the first message in view, and the steps and tools they unfolded.
+function historyPlace(tab) {
+  const top = tab.hist.getBoundingClientRect().top;
+  const anchor = [...tab.histInner.querySelectorAll(':scope > [data-index]')].find((node) => node.getBoundingClientRect().bottom > top);
+  return {
+    open: new Set([...tab.histInner.querySelectorAll('details[open][data-key]')].map((node) => node.dataset.key)),
+    index: anchor?.dataset.index,
+    offset: anchor ? anchor.getBoundingClientRect().top - top : 0,
+  };
+}
+
+function restorePlace(tab, place, scroll) {
+  for (const node of tab.histInner.querySelectorAll('details[data-key]')) {
+    if (!place.open.has(node.dataset.key)) continue;
+    node.open = true;
+    node.fill?.();  // now, not in the later toggle event, so the scroll below sees the final height
+  }
+  const anchor = scroll && place.index !== undefined && tab.histInner.querySelector(`:scope > [data-index="${place.index}"]`);
+  if (anchor) tab.hist.scrollTop += anchor.getBoundingClientRect().top - tab.hist.getBoundingClientRect().top - place.offset;
+}
+
+// keepPlace: the first message in view stays where it is, even when older ones drop out of the window.
+function renderHistory(tab, { keepPlace = false } = {}) {
+  const place = historyPlace(tab);
   const items = tab.items;
   const start = tab.showAll ? 0 : Math.max(0, items.length - HISTORY_WINDOW);
   const nodes = [];
@@ -1152,17 +1216,20 @@ function renderHistory(tab) {
     nodes.push(el('div', 'empty-note', t(live ? 'history.emptyLive' : 'history.empty')));
   }
   let steps = null;
-  for (const item of items.slice(start)) {
+  for (let i = start; i < items.length; i++) {
+    const item = items[i];
     if (item.k === 'tool' || item.k === 'thinking') {
       if (!steps) {
-        steps = stepsGroup();
+        steps = stepsGroup(i);
         nodes.push(steps.root);
       }
-      steps.add(item);
+      steps.add(item, i);
       continue;
     }
     steps = null;
-    nodes.push(...withNotes(tab, item));
+    const [node, ...cards] = withNotes(tab, item);
+    node.dataset.index = String(i);
+    nodes.push(node, ...cards);
   }
   // Notes whose message is no longer in the transcript still deserve a place.
   const shown = new Set(items.map((item) => item.uid));
@@ -1171,7 +1238,21 @@ function renderHistory(tab) {
     nodes.push(el('div', 'divider', t('note.orphans')));
     for (const note of orphans) nodes.push(noteCard(tab, note, true));
   }
+  // Open note editors keep their unsaved text: they go back next to their message or note.
+  const editors = [...tab.histInner.querySelectorAll('.note-editor')];
+  const focused = editors.some((editor) => editor.contains(document.activeElement)) ? document.activeElement : null;
   tab.histInner.replaceChildren(...nodes);
+  for (const editor of editors) {
+    const { note, anchor } = editor.dataset;
+    const spot = note
+      ? tab.histInner.querySelector(`.note-card[data-note="${CSS.escape(note)}"]`)
+      : tab.histInner.querySelector(`.msg-wrap[data-uid="${CSS.escape(anchor)}"]`);
+    if (note) spot?.replaceWith(editor);  // no card: the note was deleted
+    else spot?.after(editor);
+  }
+  focused?.focus({ preventScroll: true });
+  restorePlace(tab, place, keepPlace);
+  tab.shownSignature = historySignature(tab);
 }
 
 // ---- notes --------------------------------------------------------------------------------
@@ -1186,15 +1267,13 @@ async function loadNotes(tab, { render = true } = {}) {
   } catch {
     return;  // no notes, or the server predates them: the view simply shows none
   }
-  renderSessionNote(tab);
+  if (!tab.sessionNote.querySelector('.note-editor')) renderSessionNote(tab);  // keep a note being written
   if (render && tab.loaded) rerenderHistory(tab);
 }
 
 // Re-render the history without losing the reader's place in it.
 function rerenderHistory(tab) {
-  const top = tab.hist.scrollTop;
-  renderHistory(tab);
-  tab.hist.scrollTop = top;
+  renderHistory(tab, { keepPlace: true });
 }
 
 // Paste rendered chat output as markdown instead of flat text (see paste.js).
@@ -1247,7 +1326,10 @@ function renderSessionNote(tab) {
   const bar = tab.sessionNote;
   const note = tab.notes.session;
   bar.hidden = !note;
-  if (!note) return;
+  if (!note) {
+    bar.replaceChildren();  // also the editor that just closed, or the note button would find it
+    return;
+  }
   const body = el('div', 'md');
   renderMarkdown(body, note.body);
   bar.replaceChildren(icon('note'), body);
@@ -1284,6 +1366,7 @@ function withNotes(tab, item) {
   const node = renderItem(item);
   if (!item.uid || (item.k !== 'user' && item.k !== 'assistant')) return [node];
   const wrap = el('div', `msg-wrap ${item.k}`);
+  wrap.dataset.uid = item.uid;
   const add = el('button', 'icon-btn note-add');
   add.title = t('note.message');
   add.append(icon('note'));
@@ -1304,10 +1387,12 @@ function withNotes(tab, item) {
           toast(e.message);
           return;
         }
+        editor.remove();  // done; other open editors stay
         rerenderHistory(tab);
       },
       onCancel: () => editor.remove(),
     });
+    editor.dataset.anchor = item.uid;
     wrap.after(editor);
   };
   wrap.append(node, add);
@@ -1317,6 +1402,7 @@ function withNotes(tab, item) {
 
 function noteCard(tab, note, withPreview = false) {
   const card = el('div', 'note-card');
+  card.dataset.note = note.id;
   const head = el('div', 'note-head');
   head.append(icon('note'), el('span', '', t('note')), el('span', 'note-time', timeLabel(note.updated)));
   const edit = el('button', 'icon-btn');
@@ -1339,7 +1425,7 @@ function noteCard(tab, note, withPreview = false) {
     rerenderHistory(tab);
   };
   edit.onclick = () => {
-    card.replaceWith(noteEditor({
+    const editor = noteEditor({
       initial: note.body,
       onSave: async (text) => {
         if (!text) {
@@ -1352,11 +1438,17 @@ function noteCard(tab, note, withPreview = false) {
           toast(e.message);
           return;
         }
+        editor.remove();
         rerenderHistory(tab);
       },
-      onCancel: () => rerenderHistory(tab),
+      onCancel: () => {
+        editor.remove();
+        rerenderHistory(tab);
+      },
       onDelete: remove,
-    }));
+    });
+    editor.dataset.note = note.id;
+    card.replaceWith(editor);
   };
   return card;
 }
@@ -1388,8 +1480,11 @@ function renderItem(item) {
   }
 }
 
-function stepsGroup() {
+// index: the first item's place in the history, a key that stays the same across re-renders.
+function stepsGroup(index) {
   const root = el('details', 'steps');
+  root.dataset.index = String(index);
+  root.dataset.key = `s${index}`;
   const summary = el('summary');
   const body = el('div', 'steps-body');
   root.append(summary, body);
@@ -1399,8 +1494,8 @@ function stepsGroup() {
   let thoughts = 0;
   return {
     root,
-    add(item) {
-      body.append(renderStep(item));
+    add(item, i) {
+      body.append(renderStep(item, i));
       if (item.k === 'tool') {
         tools += 1;
         if (!names.includes(item.name)) names.push(item.name);
@@ -1417,23 +1512,25 @@ function stepsGroup() {
   };
 }
 
-function renderStep(item) {
+function renderStep(item, index) {
   if (item.k === 'thinking') {
     const node = el('div', 'thinking md');
     renderMarkdown(node, item.text);
     return node;
   }
   const node = el('details', 'tool');
+  node.dataset.key = `t${index}`;
   const summary = el('summary');
   summary.append(el('span', 'tool-name', item.name), el('span', 'tool-sum', item.summary));
   if (item.error) summary.append(el('span', 'badge', t('error')));
   node.append(summary);
-  node.addEventListener('toggle', () => {
-    if (!node.open || node.dataset.filled) return;
+  node.fill = () => {  // on first open; also called directly when a re-render opens it again
+    if (node.dataset.filled) return;
     node.dataset.filled = '1';
     if (item.input && item.input !== item.summary) node.append(toolInput(item));
     if (item.result) node.append(el('pre', '', item.result));
-  });
+  };
+  node.addEventListener('toggle', () => { if (node.open) node.fill(); });
   return node;
 }
 
@@ -1532,6 +1629,7 @@ function ensureTerminal(tab) {
     scrollback: 10000,
     theme: TERM_THEME,
     allowProposedApi: true,
+    linkHandler: { activate: (ev, uri) => openTerminalLink(uri) },
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -1543,6 +1641,13 @@ function ensureTerminal(tab) {
   tab.term = term;
   tab.fit = fit;
   connect(tab);
+}
+
+// A link printed with its own text (OSC 8): the text need not match the address, so show it first.
+// Without this handler xterm asks with the browser's confirm().
+async function openTerminalLink(uri) {
+  if (!/^https?:/i.test(uri)) return;
+  if (await ask({ title: t('link.title'), text: el('code', '', uri), yes: t('link.open') })) window.open(uri, '_blank', 'noopener');
 }
 
 function connect(tab) {
@@ -1645,9 +1750,13 @@ async function resumeTab(tab, force = false) {
     if (started.id !== tab.id) {
       const other = findTab(started.id);
       if (other && other !== tab) closeTab(other);
+      if (state.terminals.get(tab.id)?.status === 'exited') api('DELETE', `/api/terminals/${tab.id}`).catch(() => {});
+      state.attention.delete(tab.id);
       if (state.active === tab.id) state.active = started.id;
       tab.id = started.id;
     }
+    tab.sid = started.session_id;
+    tab.since = Date.now();
     tab.exited = false;
     tab.view = 'terminal';
     await refreshStatus();
@@ -1714,16 +1823,21 @@ async function submitNewChat(ev) {
   const cwd = $('#new-cwd').value.trim();
   const title = $('#new-title').value.trim();
   const folder = $('#new-folder').value || null;
+  const submit = $('#new-form [type="submit"]');
+  if (submit.disabled) return;
+  submit.disabled = true;  // also stops Enter: a form does not submit through a disabled button
   try {
-    const started = await api('POST', '/api/terminals', { cwd, title });
+    const started = await api('POST', '/api/terminals', { cwd, title, folder });
     store.set('lastCwd', started.cwd);
     $('#new-dialog').close();
+    if (folder) expandFolder(folder);
     await refreshSessions();
-    if (folder) await moveToFolder(started.session_id, folder);
-    if (!findTab(started.id)) addTab(started.id, 'terminal');
+    if (!findTab(started.id)) addTab(started.id, 'terminal', started.session_id);
     activate(started.id);
   } catch (e) {
     $('#new-error').textContent = e.message;
+  } finally {
+    submit.disabled = false;
   }
 }
 
@@ -1849,7 +1963,7 @@ function wire() {
     const action = ev.target.closest('[data-action]')?.dataset.action;
     if (action === 'toggle-sidebar') setCollapsed(!$('#app').classList.contains('collapsed'));
     else if (action === 'new-chat') openNewDialog();
-    else if (action === 'new-folder') newFolder();
+    else if (action === 'new-folder' && ev.detail < 2) newFolder();  // a double click makes one folder
     else if (action === 'settings') openSettings();
     else if (action === 'close-dialog') $('#new-dialog').close();
   });
@@ -1948,16 +2062,21 @@ async function start() {
   setLanguage(store.get('language', 'de'));
   translatePage();
   wire();
-  if (store.get('collapsed', false)) $('#app').classList.add('collapsed');
+  if (store.get('collapsed', false)) {
+    $('#app').classList.add('collapsed');
+    $('.sidebar').inert = true;
+  }
   setHistoryWidth(store.get('historyWidth', HISTORY_WIDTH.start));
   await loadSettings();
   await refreshSessions();
+  const wanted = store.get('active', null);  // read first: addTab saves the tabs, and the active one with them
   for (const saved of store.get('tabs', [])) {
     if (!saved || findTab(saved.id)) continue;
-    if (state.byId.has(saved.id) || state.terminals.has(saved.id)) addTab(saved.id, saved.view === 'terminal' ? 'terminal' : 'history');
+    const sid = saved.sid || saved.id;
+    if (state.terminals.has(saved.id)) addTab(saved.id, saved.view === 'terminal' ? 'terminal' : 'history', sid);
+    else if (state.byId.has(sid) && !state.tabs.some((tab) => tabSession(tab) === sid)) addTab(sid, 'history', sid);
   }
   const linked = location.hash.slice(1);
-  const wanted = store.get('active', null);
   if (state.byId.has(linked) || state.bySession.has(linked)) {
     history.replaceState(null, '', location.pathname);
     openSession(linked);

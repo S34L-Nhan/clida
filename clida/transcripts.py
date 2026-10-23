@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import threading
+import traceback
 
 from pathlib import Path
 
@@ -35,10 +36,16 @@ _SKIP_PREFIXES = (
     b'{"type":"cost-state"',
 )
 _HIDDEN_TAGS = ("<local-command-caveat>", "<system-reminder>", "<task-notification>", "<command-message>")
-_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
+# OSC sequences end with BEL or with ESC \ (hyperlinks); stopping at any ESC keeps the match short.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 TOOL_TEXT_LIMIT = 4000
 MAX_ITEMS = 3000
+
+
+def _str(value):
+    """value if it is a string; transcripts are written by another program, so check every type."""
+    return value if isinstance(value, str) else None
 
 
 def _loads(line: bytes):
@@ -70,7 +77,7 @@ def _user_text(entry: dict):
         blocks = [b for b in content if isinstance(b, dict)]
         if any(b.get("type") == "tool_result" for b in blocks):
             return None
-        content = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        content = "\n".join(_str(b.get("text")) or "" for b in blocks if b.get("type") == "text")
     if not isinstance(content, str):
         return None
     text = content.strip()
@@ -91,9 +98,9 @@ class Index:
         try:
             data = json.loads(INDEX_FILE.read_text())
         except (OSError, ValueError):
-            return
-        if data.get("version") == INDEX_VERSION:
-            self._files = data.get("files", {})
+            return  # only a cache: the next scan rebuilds it
+        if isinstance(data, dict) and data.get("version") == INDEX_VERSION and isinstance(data.get("files"), dict):
+            self._files = data["files"]
 
     def _save(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,7 +124,10 @@ class Index:
                         st = path.stat()
                     except OSError:
                         continue
-                    self._refresh(key, path.stem, project.name, st)
+                    try:
+                        self._refresh(key, path.stem, project.name, st)
+                    except Exception:  # one odd file must not hide all other chats
+                        traceback.print_exc()
             for key in set(self._files) - seen:
                 del self._files[key]
                 self._dirty = True
@@ -179,20 +189,20 @@ class Index:
                 continue
             kind = entry.get("type")
             if kind == "ai-title":
-                info["ai_title"] = entry.get("aiTitle") or info["ai_title"]
+                info["ai_title"] = _str(entry.get("aiTitle")) or info["ai_title"]
             elif kind == "custom-title":
-                info["custom_title"] = entry.get("customTitle") or None
+                info["custom_title"] = _str(entry.get("customTitle")) or None
             elif kind == "summary":
-                info["summary"] = entry.get("summary") or info["summary"]
+                info["summary"] = _str(entry.get("summary")) or info["summary"]
             elif kind == "last-prompt":
-                info["last_prompt"] = (entry.get("lastPrompt") or "")[:300] or info["last_prompt"]
-            if info["cwd"] is None and isinstance(entry.get("cwd"), str):
+                info["last_prompt"] = (_str(entry.get("lastPrompt")) or "")[:300] or info["last_prompt"]
+            if info["cwd"] is None and _str(entry.get("cwd")):
                 info["cwd"] = entry["cwd"]
             if info["first_prompt"] is None and kind == "user":
                 text = _user_text(entry)
                 if text:
                     info["first_prompt"] = text[:300]
-                    info["created"] = entry.get("timestamp")
+                    info["created"] = _str(entry.get("timestamp"))
 
 
 def delete_session_files(session_id: str, paths: list):
@@ -247,9 +257,9 @@ def _result_text(content) -> str:
         for block in content:
             if isinstance(block, dict):
                 if block.get("type") == "text":
-                    parts.append(block.get("text", ""))
+                    parts.append(_str(block.get("text")) or "")
                 elif block.get("type") == "image":
-                    parts.append("[Bild]")
+                    parts.append(tr("[Bild]", "[Image]"))
         return "\n".join(parts)
     return ""
 
@@ -274,13 +284,71 @@ def _user_string_items(text: str):
     if stripped.startswith(_HIDDEN_TAGS) or not stripped:
         return []
     if stripped.startswith("[Request interrupted"):
-        return [{"k": "note", "text": "Unterbrochen"}]
+        return [{"k": "note", "text": tr("Unterbrochen", "Interrupted")}]
     return [{"k": "user", "text": stripped}]
 
 
 def _uid(uuid, n: int):
     """A stable anchor for notes: the entry's uuid plus the item's place inside that entry."""
     return f"{uuid}#{n}" if uuid else None
+
+
+def _render_entry(entry: dict, items: list, tools: dict):
+    """Add the display items of one transcript entry; tool results go into their tool's item."""
+    kind, ts = entry.get("type"), entry.get("timestamp")
+    uuid = entry.get("uuid")
+    if kind == "system" and entry.get("subtype") == "compact_boundary":
+        items.append({"k": "divider", "text": tr("Kontext komprimiert", "Context compacted"), "ts": ts})
+        return
+    if kind not in ("user", "assistant"):
+        return
+    content = (entry.get("message") or {}).get("content")
+    if kind == "user":
+        if entry.get("isCompactSummary"):
+            items.append({"k": "divider", "text": tr("Kontext komprimiert", "Context compacted"), "ts": ts})
+            return
+        if entry.get("isMeta"):
+            return
+        if isinstance(content, str):
+            for n, item in enumerate(_user_string_items(content)):
+                item["ts"], item["uid"] = ts, _uid(uuid, n)
+                items.append(item)
+            return
+        texts = []
+        for block in content if isinstance(content, list) else ():
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "tool_result":
+                tool = tools.get(block.get("tool_use_id"))
+                if tool is not None:
+                    tool["result"] = _clip(_ANSI.sub("", _result_text(block.get("content"))), TOOL_TEXT_LIMIT)
+                    tool["error"] = bool(block.get("is_error"))
+            elif btype == "text":
+                texts.extend(i for i in _user_string_items(_str(block.get("text")) or "") if i["k"] == "user")
+            elif btype == "image":
+                texts.append({"k": "user", "text": tr("[Bild]", "[Image]")})
+        for n, item in enumerate(texts):
+            item["ts"], item["uid"] = ts, _uid(uuid, n)
+            items.append(item)
+        return
+    for n, block in enumerate(content if isinstance(content, list) else ()):
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        text = _str(block.get("text")) or ""
+        thinking = _str(block.get("thinking")) or ""
+        if btype == "text" and text.strip():
+            items.append({"k": "assistant", "text": text, "ts": ts, "uid": _uid(uuid, n)})
+        elif btype == "thinking" and thinking.strip():
+            items.append({"k": "thinking", "text": _clip(thinking, TOOL_TEXT_LIMIT), "ts": ts})
+        elif btype == "tool_use":
+            name = _str(block.get("name")) or "Tool"
+            inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+            tool = {"k": "tool", "name": name, "summary": _tool_summary(name, inp),
+                    "input": _tool_input(name, inp), "result": None, "error": False, "ts": ts}
+            tools[block.get("id")] = tool
+            items.append(tool)
 
 
 def render(path: str) -> dict:
@@ -293,57 +361,9 @@ def render(path: str) -> dict:
             entry = _loads(line)
             if entry is None or entry.get("isSidechain"):
                 continue
-            kind, ts = entry.get("type"), entry.get("timestamp")
-            uuid = entry.get("uuid")
-            if kind == "system" and entry.get("subtype") == "compact_boundary":
-                items.append({"k": "divider", "text": tr("Kontext komprimiert", "Context compacted"), "ts": ts})
-                continue
-            if kind not in ("user", "assistant"):
-                continue
-            content = (entry.get("message") or {}).get("content")
-            if kind == "user":
-                if entry.get("isCompactSummary"):
-                    items.append({"k": "divider", "text": tr("Kontext komprimiert", "Context compacted"), "ts": ts})
-                    continue
-                if entry.get("isMeta"):
-                    continue
-                if isinstance(content, str):
-                    for n, item in enumerate(_user_string_items(content)):
-                        item["ts"], item["uid"] = ts, _uid(uuid, n)
-                        items.append(item)
-                    continue
-                texts = []
-                for block in content if isinstance(content, list) else ():
-                    if not isinstance(block, dict):
-                        continue
-                    btype = block.get("type")
-                    if btype == "tool_result":
-                        tool = tools.get(block.get("tool_use_id"))
-                        if tool is not None:
-                            tool["result"] = _clip(_ANSI.sub("", _result_text(block.get("content"))), TOOL_TEXT_LIMIT)
-                            tool["error"] = bool(block.get("is_error"))
-                    elif btype == "text":
-                        texts.extend(i for i in _user_string_items(block.get("text", "")) if i["k"] == "user")
-                    elif btype == "image":
-                        texts.append({"k": "user", "text": "[Bild]"})
-                for n, item in enumerate(texts):
-                    item["ts"], item["uid"] = ts, _uid(uuid, n)
-                    items.append(item)
-                continue
-            for n, block in enumerate(content if isinstance(content, list) else ()):
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text" and block.get("text", "").strip():
-                    items.append({"k": "assistant", "text": block["text"], "ts": ts, "uid": _uid(uuid, n)})
-                elif btype == "thinking" and block.get("thinking", "").strip():
-                    items.append({"k": "thinking", "text": _clip(block["thinking"], TOOL_TEXT_LIMIT), "ts": ts})
-                elif btype == "tool_use":
-                    name = block.get("name") or "Tool"
-                    inp = block.get("input") if isinstance(block.get("input"), dict) else {}
-                    tool = {"k": "tool", "name": name, "summary": _tool_summary(name, inp),
-                            "input": _tool_input(name, inp), "result": None, "error": False, "ts": ts}
-                    tools[block.get("id")] = tool
-                    items.append(tool)
+            try:
+                _render_entry(entry, items, tools)
+            except (AttributeError, TypeError, ValueError):
+                continue  # written by another program: skip what does not have the expected shape
     truncated = len(items) > MAX_ITEMS
     return {"items": items[-MAX_ITEMS:], "truncated": truncated}

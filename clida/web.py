@@ -9,7 +9,6 @@ import sys
 import threading
 import time
 import traceback
-from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -78,6 +77,9 @@ def _locked_page() -> bytes:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "clida"
+    # A connection that sends nothing must not hold a thread and a file descriptor forever.
+    # The browser polls every 2 s, so its keep-alive connections never get this idle.
+    timeout = 60
     desk = None
     token = ""
     port = 0
@@ -87,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def log_error(self, fmt, *args):
+        if fmt.startswith("Request timed out"):
+            return  # an idle keep-alive connection ending, not an error
         sys.stderr.write("%s %s\n" % (self.log_date_time_string(), fmt % args))
 
     def do_GET(self):
@@ -104,6 +108,8 @@ class Handler(BaseHTTPRequestHandler):
     # -- plumbing ---------------------------------------------------------------------------
 
     def _dispatch(self, method):
+        # A body left unread would be taken for the start of the next request on this connection.
+        self._body_read = self.headers.get("Transfer-Encoding") is None and self._content_length() == 0
         try:
             url = urlsplit(self.path)
             if url.path == "/healthz":
@@ -137,9 +143,13 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _authed(self) -> bool:
-        cookie = SimpleCookie(self.headers.get("Cookie") or "")
-        value = cookie[COOKIE].value if COOKIE in cookie else ""
-        return hmac.compare_digest(value.encode(), self.token.encode())
+        # By hand: localhost cookies are shared by all ports, and http.cookies drops every cookie
+        # (or raises) when another local app's cookie has a space, quotes or an odd name.
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == COOKIE and hmac.compare_digest(value.encode(), self.token.encode()):
+                return True
+        return False
 
     def _login(self, ticket):
         """Swap a one-time ticket from the launcher for the session cookie.
@@ -168,19 +178,34 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", self.csp)
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        if not self._body_read:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
     def _send_json(self, status, obj):
-        self._send(status, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+        # ASCII escapes: a transcript may hold half an emoji (a lone surrogate), which UTF-8 cannot encode.
+        self._send(status, json.dumps(obj).encode(), "application/json; charset=utf-8")
+
+    def _content_length(self) -> int:
+        """The declared body size: 0 without the header, -1 if it is not a number."""
+        try:
+            return max(int(self.headers.get("Content-Length") or 0), -1)
+        except ValueError:
+            return -1
 
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
+        length = self._content_length()
+        if length < 0:
+            raise HttpError(400, tr("Ungültige Länge", "Invalid length"))
         if length > 1024 * 1024:
             raise HttpError(413, tr("Anfrage zu groß", "Request too large"))
         try:
-            body = json.loads(self.rfile.read(length) or b"{}")
+            data = self.rfile.read(length)
+            self._body_read = True
+            body = json.loads(data or b"{}")
         except ValueError:
             body = None
         if not isinstance(body, dict):
@@ -271,13 +296,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_upload(self, sid):
         name = parse_qs(urlsplit(self.path).query).get("name", [""])[0]
-        try:
-            length = int(self.headers.get("Content-Length") or -1)
-        except ValueError:
-            length = -1
-        if not 0 <= length <= 50 * 1024 * 1024:
-            self.close_connection = True  # the body stays unread, so this connection cannot be reused
-        self._send_json(200, self.desk.save_upload(sid, name, length, self.rfile))
+        length = self._content_length() if "Content-Length" in self.headers else -1
+        saved = self.desk.save_upload(sid, name, length, self.rfile)
+        self._body_read = True  # an error above leaves it unread, and _send closes the connection
+        self._send_json(200, saved)
 
     def route_login_ticket(self):
         ticket = secrets.token_urlsafe(24)
@@ -305,6 +327,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "Upgrade")
         self.send_header("Sec-WebSocket-Accept", ws.accept_value(key))
         self.end_headers()
+        self.connection.settimeout(None)  # a terminal may sit quiet for hours
         sock = ws.WebSocket(self.connection, self.rfile)
         self.close_connection = True
         term.attach(sock)
@@ -314,13 +337,18 @@ class Handler(BaseHTTPRequestHandler):
                 if not is_text:
                     term.write(payload)
                     continue
-                msg = json.loads(payload)
-                if msg.get("t") == "i":
-                    term.write(str(msg.get("d", "")).encode())
-                elif msg.get("t") == "r":
-                    term.resize(int(msg.get("c", 0)), int(msg.get("r", 0)))
+                try:
+                    msg = json.loads(payload)
+                    if msg.get("t") == "i":
+                        term.write(str(msg.get("d", "")).encode())
+                    elif msg.get("t") == "r":
+                        term.resize(int(msg.get("c", 0)), int(msg.get("r", 0)))
+                except (ValueError, TypeError, AttributeError, OverflowError):
+                    continue  # not a message the page sends; ignore it
         except (ws.Closed, OSError, ValueError):
             pass
+        except Exception:  # after the 101 an HTTP error response would only garble the stream
+            traceback.print_exc()
         finally:
             term.detach(sock)
             sock.close()

@@ -36,8 +36,10 @@ def _claude_binary() -> str:
         if not found and fallback.exists():
             found = str(fallback)
     if not found:
-        sys.exit("clida: `claude` nicht gefunden (PATH oder CLIDA_CLAUDE setzen)")
-    return os.path.realpath(found)
+        sys.exit("clida: `claude` not found (put it on PATH or set CLIDA_CLAUDE)")
+    # Not resolved: ~/.local/bin/claude is a symlink that each auto-update points at a new version,
+    # and the installer deletes old ones. A resolved path would start them long after they are gone.
+    return os.path.abspath(found)
 
 
 def main():

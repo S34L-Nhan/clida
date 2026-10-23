@@ -1,12 +1,10 @@
 """How the sidebar is organised: folders and the archive (~/.clida/library.json)."""
 
-import json
-import os
 import secrets
 import threading
 import time
 
-from . import STATE_DIR
+from . import STATE_DIR, storage
 
 LIBRARY_FILE = STATE_DIR / "library.json"
 
@@ -14,18 +12,13 @@ LIBRARY_FILE = STATE_DIR / "library.json"
 class Library:
     def __init__(self):
         self._lock = threading.Lock()
-        try:
-            data = json.loads(LIBRARY_FILE.read_text())
-        except (OSError, ValueError):
-            data = {}
+        data = storage.load(LIBRARY_FILE, lambda d: isinstance(d, dict) and isinstance(d.get("folders", []), list)
+                            and isinstance(d.get("archived", {}), dict)) or {}
         self._folders = data.get("folders", [])    # [{"id", "name", "sessions": [ids]}], in display order
         self._archived = data.get("archived", {})  # session id -> archived at (unix time)
 
     def _save(self):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = LIBRARY_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"folders": self._folders, "archived": self._archived}, ensure_ascii=False, indent=1))
-        os.replace(tmp, LIBRARY_FILE)
+        storage.save(LIBRARY_FILE, {"folders": self._folders, "archived": self._archived})
 
     def _folder(self, folder_id):
         return next((f for f in self._folders if f["id"] == folder_id), None)

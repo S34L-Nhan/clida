@@ -147,11 +147,14 @@ One limit comes from the browser: cookies do not distinguish ports, so other loc
 | `~/.clida/uploads/` | Copies of attached files, one folder per session (removed when the chat is deleted) |
 | `~/.clida/token` | Login token of the window |
 
+If one of these files cannot be read, CLIDA moves it aside as `<name>.corrupt-<time>` and starts that part empty, so the next save does not overwrite it.
+
 Port and paths can be changed with `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE` (path to the CLI).
 
 ## Limitations
 
 - Sessions live in the server process. `clida stop`, `wsl --shutdown` or a Windows restart ends them. The history is kept, and *Fortsetzen* brings them back.
-- If you switch sessions inside the CLI with `/clear` or `/resume`, the tab follows the new session id from the CLI's registry. This is not tested much yet.
+- If you switch sessions inside the CLI with `/clear` or `/resume`, the tab follows the new session from the CLI's registry. The earlier chat stays in the sidebar; it opens in its own tab and can be resumed there.
+- On WSL with NAT networking, Windows reaches CLIDA through WSL's localhost relay (`wslrelay.exe`). That relay can hang on one port; the window then only shows a spinner. `clida` checks this from the Windows side before it opens the window and, if Windows cannot get through, says so in a message box. The fix is `wsl --shutdown`, then opening CLIDA again. Mirrored networking (`networkingMode=mirrored` in `.wslconfig`) does not use the relay; `wslinfo --networking-mode` shows which mode WSL actually runs in.
 - Dragged or picked files are copies: Claude sees the copy's path, and its edits do not reach the original. For files of your project, use `@` in the CLI instead. Up to 50 MB per file.
 - macOS support is new and has not run on a real Mac yet. Start, window, shortcut, stop, status detection and the Mac shortcuts were checked in a simulation on Linux.

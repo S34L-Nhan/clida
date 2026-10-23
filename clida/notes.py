@@ -6,12 +6,11 @@ uuid, which stays the same across reloads, resumes and compactions.
 """
 
 import json
-import os
 import secrets
 import threading
 import time
 
-from . import STATE_DIR
+from . import STATE_DIR, storage
 
 NOTES_FILE = STATE_DIR / "notes.json"
 BODY_MAX = 2000
@@ -21,16 +20,10 @@ PREVIEW_MAX = 140
 class Notes:
     def __init__(self):
         self._lock = threading.Lock()
-        try:
-            self._data = json.loads(NOTES_FILE.read_text())
-        except (OSError, ValueError):
-            self._data = {}  # session id -> {"session": {...} | None, "messages": [...]}
+        self._data = storage.load(NOTES_FILE) or {}  # session id -> {"session": {...} | None, "messages": [...]}
 
     def _save(self):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = NOTES_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=1))
-        os.replace(tmp, NOTES_FILE)
+        storage.save(NOTES_FILE, self._data)
 
     def _entry(self, session_id: str) -> dict:
         return self._data.setdefault(session_id, {"session": None, "messages": []})

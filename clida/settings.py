@@ -5,11 +5,9 @@ setting is one entry here, one in SETTINGS in static/app.js (control and effect)
 in static/i18n.js.
 """
 
-import json
-import os
 import threading
 
-from . import STATE_DIR
+from . import STATE_DIR, storage
 
 SETTINGS_FILE = STATE_DIR / "settings.json"
 SCHEMA = {
@@ -27,11 +25,7 @@ def tr(de: str, en: str) -> str:
 class Settings:
     def __init__(self):
         self._lock = threading.Lock()
-        try:
-            data = json.loads(SETTINGS_FILE.read_text())
-        except (OSError, ValueError):
-            data = {}
-        data = data if isinstance(data, dict) else {}
+        data = storage.load(SETTINGS_FILE) or {}
         self._values = {key: data[key] for key in SCHEMA if _valid(key, data.get(key))}  # only what was chosen
         self._apply()
 
@@ -54,10 +48,7 @@ class Settings:
         with self._lock:
             self._values.update(changes)
             self._apply()
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = SETTINGS_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self._values, ensure_ascii=False, indent=1))
-            os.replace(tmp, SETTINGS_FILE)
+            storage.save(SETTINGS_FILE, self._values)
             return self._effective()
 
 
