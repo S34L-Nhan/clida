@@ -344,6 +344,13 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .change-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
 .change.deleted .change-path, .change.gone .change-path { text-decoration: line-through; color: var(--muted); }
 .change-edits { color: var(--muted); font-size: 12px; }
+.change-via { color: var(--muted); font-size: 11px; padding: 1px 6px; border: 1px dashed var(--border); border-radius: 6px; }
+.change-commits { margin: 0 0 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+.change-commits > summary { padding: 8px 12px; cursor: pointer; font-size: 13px; }
+.commit { display: flex; gap: 10px; align-items: baseline; padding: 4px 12px; font-size: 13px; border-top: 1px solid var(--border); }
+.commit-sha { flex: none; color: var(--accent); font-size: 12px; }
+.commit-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commit-when { flex: none; color: var(--muted); font-size: 12px; }
 .status-mark { flex: none; width: 18px; height: 18px; border-radius: 5px; display: inline-grid; place-items: center; font: 600 11px/1 "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--code-bg); }
 .status-mark.added, .status-text.added { color: var(--ok); }
 .status-mark.added { background: color-mix(in srgb, var(--ok) 18%, transparent); }

@@ -1718,6 +1718,8 @@ function renderChanges(tab) {
   const removed = files.reduce((n, f) => n + (f.removed || 0), 0);
   if (added || removed) sum.append(el('span', 'diff-add', `+${added}`), el('span', 'diff-del', `−${removed}`));
   nodes.push(sum, el('p', 'changes-hint', t('changes.hint')));
+  const { commits = [] } = tab.changes;
+  if (commits.length) nodes.push(commitList(tab, commits));
   if (!files.length) nodes.push(el('div', 'empty-note', t('changes.none')));
   for (const file of files) nodes.push(changedFile(tab, file));
   tab.changesInner.replaceChildren(...nodes);
@@ -1736,7 +1738,13 @@ function changedFile(tab, file) {
   if (file.added != null && (file.added || file.removed)) {
     summary.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `−${file.removed}`));
   }
-  summary.append(el('span', 'change-edits', t('changes.edits', { n: file.edits })));
+  if (file.source === 'git') {
+    const via = el('span', 'change-via', t('changes.viaShell'));
+    via.title = t('changes.viaShellHint');
+    summary.append(via);
+  } else {
+    summary.append(el('span', 'change-edits', t('changes.edits', { n: file.edits })));
+  }
   node.append(summary);
   // Filled on first open: a diff of thousands of lines for every file would slow the view down.
   node.fill = () => {
@@ -1776,6 +1784,24 @@ function changedFile(tab, file) {
     }
   });
   return node;
+}
+
+// The commits made while the chat ran, newest first, like the commits tab of a merge request.
+function commitList(tab, commits) {
+  const box = el('details', 'change-commits');
+  box.open = !!tab.commitsOpen;
+  box.addEventListener('toggle', () => { tab.commitsOpen = box.open; });
+  box.append(el('summary', '', t('changes.commits', { n: commits.length })));
+  const repos = new Set(commits.map((c) => c.repo)).size;
+  for (const commit of commits) {
+    const row = el('div', 'commit');
+    const when = new Date(commit.time * 1000);
+    row.append(el('code', 'commit-sha', commit.sha.slice(0, 7)), el('span', 'commit-subject', commit.subject),
+      el('span', 'commit-when', [repos > 1 && commit.repo, timeLabel(commit.time)].filter(Boolean).join(' · ')));
+    row.title = `${commit.sha} · ${when.toLocaleString(locale())}`;
+    box.append(row);
+  }
+  return box;
 }
 
 // The file's diff from before the chat to now, with old and new line numbers as in a merge request.

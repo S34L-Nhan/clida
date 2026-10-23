@@ -1,5 +1,6 @@
 """What the UI can ask for: sessions, titles, live status and terminals."""
 
+import datetime
 import os
 import re
 import secrets
@@ -10,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import STATE_DIR, browser, locate, registry, storage, transcripts
+from . import STATE_DIR, browser, gitrepo, locate, registry, storage, transcripts
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .settings import Settings, tr
@@ -111,6 +112,7 @@ class Desk:
         self.settings = Settings()
         self.terminals = Terminals(claude)
         self.changes_cache = transcripts.ChangesCache()
+        self.repo_changes = gitrepo.RepoChanges()
         # New on every start: an open window that sees it change reloads, with the new code.
         self.boot = secrets.token_hex(6)
         self._windows = {}  # window id -> time of its last request (monotonic)
@@ -221,9 +223,11 @@ class Desk:
         return transcripts.render(info["path"])
 
     def changes(self, session_id: str, brief: bool = False) -> dict:
-        """The files the chat changed with its edit tools, each as before the chat against now,
-        and the git branch of its folder.
+        """What the chat changed, like a merge request: each file as before the chat against now.
 
+        The files come from the chat's Edit and Write calls, and from its git repository: what
+        commits during the chat touched, and uncommitted files written during it (shell commands
+        leave no other trace). For a file in both, the CLI's own backup gives the state before.
         brief leaves the diffs and steps out: the header and the switch only need the counts.
         """
         info = self.index.get(session_id)
@@ -234,13 +238,36 @@ class Desk:
         if info is None and cwd is None:
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
         files = self.changes_cache.get(session_id, self.index.paths(session_id)) if info else []
+        repo = {"files": [], "commits": [], "repos": []}
+        window = self._chat_window(session_id, info)
+        if window:
+            dirs = ([cwd] if cwd else []) + [os.path.dirname(f["path"]) for f in files]
+            repo = self.repo_changes.get([d for d in dirs if os.path.isdir(d)][:20], *window)
+            known = {changed["path"] for changed in files}
+            files = sorted(files + [f for f in repo["files"] if f["path"] not in known], key=lambda f: f["path"])
         out = []
         for changed in files:
             label = (os.path.relpath(changed["path"], cwd)
                      if cwd and changed["path"].startswith(cwd.rstrip("/") + "/") else _home_label(changed["path"]))
             out.append({**changed, "label": label, **({"net": None, "steps": []} if brief else {})})
-        git = _git_state(cwd) if cwd and os.path.isdir(cwd) else None
-        return {"files": out, "git": git}
+        # The branch of the chat's folder, or else of the first repository it worked in.
+        where = cwd if cwd and os.path.isdir(cwd) else None
+        git = (_git_state(where) if where else None) or (_git_state(repo["repos"][0]) if repo["repos"] else None)
+        return {"files": out, "git": git, "commits": repo["commits"]}
+
+    def _chat_window(self, session_id: str, info):
+        """(start, end) of the chat in seconds: its first prompt, and its last write or now while it runs."""
+        term = next((t for t in self.terminals.all() if t.session_id == session_id), None)
+        starts = [term.started] if term else []
+        try:
+            if info and info.get("created"):
+                starts.append(datetime.datetime.fromisoformat(info["created"].replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            pass
+        if not starts:
+            return None
+        end = time.time() if term and term.alive else max(info["mtime"] if info else 0, min(starts))
+        return min(starts), end
 
     def rename(self, session_id: str, title) -> dict:
         title = _clean_name(title, 200, tr("Titel darf nicht leer sein", "The title must not be empty"))
