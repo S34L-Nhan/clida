@@ -1,10 +1,13 @@
 """Running Claude CLI processes, as announced in ~/.claude/sessions/<pid>.json."""
 
 import json
+import os
+import subprocess
 
 from . import CLAUDE_HOME
 
 SESSIONS_DIR = CLAUDE_HOME / "sessions"
+HAVE_PROC = os.path.exists("/proc/self/stat")  # Linux and WSL; macOS has no /proc
 
 
 def _alive(pid, proc_start) -> bool:
@@ -20,8 +23,25 @@ def _alive(pid, proc_start) -> bool:
     return len(fields) > 19 and fields[19] == str(proc_start)
 
 
+def _process_table() -> dict:
+    """pid -> command line of every process, from ps(1). For systems without /proc."""
+    try:
+        listing = subprocess.run(["ps", "-A", "-o", "pid=,command="], capture_output=True, text=True,
+                                 timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    table = {}
+    for line in listing.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if pid.isdigit():
+            table[int(pid)] = command
+    return table
+
+
 def running() -> dict:
     """Live CLI processes keyed by pid; stale files from dead processes are skipped."""
+    # Without /proc there is no start time to compare, so a recycled pid must at least run claude.
+    table = None if HAVE_PROC else _process_table()
     out = {}
     for path in SESSIONS_DIR.glob("*.json"):
         if not path.stem.isdigit():
@@ -31,7 +51,10 @@ def running() -> dict:
         except (OSError, ValueError):
             continue
         pid = entry.get("pid")
-        if isinstance(pid, int) and _alive(pid, entry.get("procStart")):
+        if not isinstance(pid, int):
+            continue
+        alive = _alive(pid, entry.get("procStart")) if table is None else "claude" in table.get(pid, "")
+        if alive:
             out[pid] = entry
     return out
 

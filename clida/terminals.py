@@ -3,6 +3,7 @@
 import collections
 import fcntl
 import os
+import sys
 import pty
 import signal
 import struct
@@ -29,7 +30,7 @@ _INHERITED_SESSION_VARS = {
 def child_env() -> dict:
     env = {k: v for k, v in os.environ.items() if k not in _INHERITED_SESSION_VARS}
     env.update(TERM="xterm-256color", COLORTERM="truecolor")
-    env.setdefault("LANG", "C.UTF-8")
+    env.setdefault("LANG", "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8")  # macOS has no C.UTF-8
     return env
 
 

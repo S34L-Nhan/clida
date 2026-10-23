@@ -1,11 +1,17 @@
-"""Render static/icon.ico (the same motif as static/icon.svg) with the stdlib only."""
+"""Render the app icon (the same motif as static/icon.svg) with the stdlib only.
+
+    python3 tools/make_icon.py          -> static/icon.ico (Windows shortcut)
+    python3 tools/make_icon.py --png    -> static/icon-1024.png (source of the macOS app icon)
+"""
 
 import math
 import struct
+import sys
 import zlib
 from pathlib import Path
 
-OUT = Path(__file__).resolve().parent.parent / "static" / "icon.ico"
+STATIC = Path(__file__).resolve().parent.parent / "static"
+OUT = STATIC / "icon.ico"
 SIZES = (16, 24, 32, 48, 64, 256)
 BG = (0xC9, 0x64, 0x42)
 FG = (0xFF, 0xFF, 0xFF)
@@ -28,22 +34,23 @@ def _in_rounded_square(px, py):
     return 0 <= px <= 64 and 0 <= py <= 64 and math.hypot(px - cx, py - cy) <= RADIUS
 
 
-def render(size):
+def render(size, samples=SAMPLES, margin=0):
+    """margin: transparent border in pixels (macOS icons sit inside one)."""
     rows = []
-    scale = 64 / size
+    scale = 64 / (size - 2 * margin)
     for y in range(size):
         row = bytearray([0])  # PNG filter type "none"
         for x in range(size):
             inside = ink = 0
-            for sy in range(SAMPLES):
-                for sx in range(SAMPLES):
-                    px = (x + (sx + 0.5) / SAMPLES) * scale
-                    py = (y + (sy + 0.5) / SAMPLES) * scale
+            for sy in range(samples):
+                for sx in range(samples):
+                    px = (x - margin + (sx + 0.5) / samples) * scale
+                    py = (y - margin + (sy + 0.5) / samples) * scale
                     if _in_rounded_square(px, py):
                         inside += 1
                         if any(_seg_dist(px, py, *s) <= HALF_STROKE for s in STROKES):
                             ink += 1
-            total = SAMPLES * SAMPLES
+            total = samples * samples
             mix = ink / inside if inside else 0
             rgb = [round(b + (f - b) * mix) for b, f in zip(BG, FG)]
             row += bytes(rgb + [round(255 * inside / total)])
@@ -60,6 +67,12 @@ def _png(size, raw):
 
 
 def main():
+    if "--png" in sys.argv:
+        out = STATIC / "icon-1024.png"
+        # Apple's grid: an 824 px body on the 1024 px canvas. 2x2 samples are plenty at this size.
+        out.write_bytes(render(1024, samples=2, margin=100))
+        print(f"wrote {out} ({out.stat().st_size} bytes)")
+        return
     images = [render(s) for s in SIZES]
     offset = 6 + 16 * len(images)
     directory, blobs = b"", b""

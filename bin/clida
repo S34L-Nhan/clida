@@ -1,27 +1,37 @@
 #!/usr/bin/env bash
-# clida: start the local server (if needed) and open the app window.
+# clida: start the local server (if needed) and open the app window. Runs on WSL, macOS and Linux;
+# kept to bash 3.2, which is what macOS ships.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# Follow the symlink in ~/.local/bin by hand: older macOS has no `readlink -f`.
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do
+  target="$(readlink "$SELF")"
+  if [[ "$target" == /* ]]; then SELF="$target"; else SELF="$(dirname "$SELF")/$target"; fi
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 STATE="${CLIDA_HOME:-$HOME/.clida}"
 PORT="${CLIDA_PORT:-47321}"
 LOG="$STATE/server.log"
 KEEPALIVE_LOCK="$STATE/keepalive.lock"
 WIN32="/mnt/c/Windows/System32"
+if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then PLATFORM=wsl
+elif [[ "$(uname -s)" == Darwin ]]; then PLATFORM=mac
+else PLATFORM=linux; fi
 
 usage() {
   cat <<EOF
 Usage: clida [open|start|stop|restart|status|serve|url|shortcut]
 
   open     (default) start the server if needed and open the window
-  app      like open, then keep WSL alive while the server runs (Windows shortcut target)
+  app      like open; on WSL it then keeps WSL alive while the server runs (desktop shortcut target)
   start    start the server in the background only
   stop     stop the server; asks first if sessions are running (--force: don't ask)
   restart  stop + open (same question, same --force)
   status   show whether the server runs and how many sessions it hosts
   serve    run the server in the foreground (logs to the terminal)
   url      print a one-time login URL (valid 60 s), e.g. for another browser
-  shortcut create or update the "CLIDA" shortcut on the Windows desktop
+  shortcut create or update the CLIDA shortcut (WSL: Windows desktop, macOS: ~/Applications)
 EOF
 }
 
@@ -45,7 +55,8 @@ start_server() {
   ensure_deps
   mkdir -p -m 700 "$STATE"
   cd "$ROOT"
-  setsid nohup python3 -m clida --port "$PORT" >>"$LOG" 2>&1 < /dev/null &
+  # --detach forks into its own session, so closing this terminal does not take the server along.
+  python3 -m clida --port "$PORT" --detach >>"$LOG" 2>&1 </dev/null
   for _ in $(seq 1 50); do
     healthy && return 0
     sleep 0.1
@@ -62,29 +73,55 @@ login_url() {
   echo "http://localhost:$PORT/?ticket=$ticket"
 }
 
-open_window() {
-  local url browser
-  url="$(login_url)"
+open_window_wsl() {
+  local browser
   for browser in 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' \
                  'C:\Program Files\Google\Chrome\Application\chrome.exe'; do
     if [[ -x "$(wslpath -u "$browser")" ]]; then
       # Start-Process detaches the browser from our console. Started directly, it would die with
       # the hidden console of the desktop shortcut as soon as this script exits.
       (cd /mnt/c && "$WIN32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -Command \
-        "Start-Process -FilePath '$browser' -ArgumentList '--app=$url','--window-size=1440,920'") >/dev/null 2>&1
+        "Start-Process -FilePath '$browser' -ArgumentList '--app=$1','--window-size=1440,920'") >/dev/null 2>&1
       return 0
     fi
   done
-  if command -v xdg-open >/dev/null; then
-    xdg-open "$url" >/dev/null 2>&1 &
-  else
-    echo "Open in a browser: $url"
-  fi
+  return 1
+}
+
+open_window_mac() {
+  local app
+  # Only Chromium browsers have app windows; Safari would open a normal tab.
+  for app in "Google Chrome" "Microsoft Edge" "Brave Browser" "Chromium"; do
+    if [[ -d "/Applications/$app.app" || -d "$HOME/Applications/$app.app" ]]; then
+      open -na "$app" --args --app="$1" --window-size=1440,920
+      return 0
+    fi
+  done
+  open "$1"
+}
+
+open_window_linux() {
+  local browser
+  for browser in google-chrome chromium chromium-browser microsoft-edge brave-browser; do
+    if command -v "$browser" >/dev/null; then
+      nohup "$browser" --app="$1" --window-size=1440,920 >/dev/null 2>&1 &
+      return 0
+    fi
+  done
+  command -v xdg-open >/dev/null || return 1
+  xdg-open "$1" >/dev/null 2>&1 &
+}
+
+open_window() {
+  local url
+  url="$(login_url)"
+  "open_window_$PLATFORM" "$url" || echo "Open in a browser: $url"
 }
 
 # WSL shuts down once no Windows-side wsl.exe client is left, taking the server with it.
-# A headless wsl.exe that waits while the server is up prevents that.
+# A headless wsl.exe that waits while the server is up prevents that. Not needed elsewhere.
 keepalive() {
+  [[ "$PLATFORM" == wsl ]] || return 0
   exec 9>"$KEEPALIVE_LOCK"
   flock -n 9 || return 0
   local misses=0
@@ -95,7 +132,7 @@ keepalive() {
 }
 
 ensure_keepalive() {
-  [[ -n "${WSL_DISTRO_NAME:-}" && -x "$WIN32/WindowsPowerShell/v1.0/powershell.exe" ]] || return 0
+  [[ "$PLATFORM" == wsl && -x "$WIN32/WindowsPowerShell/v1.0/powershell.exe" ]] || return 0
   flock -n "$KEEPALIVE_LOCK" true || return 0  # one is already running
   # Started from the Windows side, so it does not hang on this terminal's interop session.
   (cd /mnt/c && "$WIN32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -Command \
@@ -103,8 +140,7 @@ ensure_keepalive() {
     >/dev/null 2>&1 &)
 }
 
-make_shortcut() {
-  [[ -n "${WSL_DISTRO_NAME:-}" ]] || { echo "clida: shortcuts need WSL" >&2; exit 1; }
+make_shortcut_wsl() {
   local appdata dir script
   appdata="$(cd /mnt/c && "$WIN32/cmd.exe" /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')"
   dir="$(wslpath "$appdata")/clida"
@@ -130,12 +166,44 @@ EOF
     | tr -d '\r'
 }
 
+# A small AppleScript app in ~/Applications, so CLIDA starts from Launchpad, Spotlight or the Dock.
+make_shortcut_mac() {
+  local app="$HOME/Applications/CLIDA.app" work
+  work="$(mktemp -d)"
+  mkdir -p "$HOME/Applications"
+  rm -rf "$app"
+  # Apps start with a minimal PATH, so add the usual homes of claude, python3 and npm.
+  cat >"$work/clida.applescript" <<EOF
+do shell script "export PATH=\"\$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH\"; '$ROOT/bin/clida' >/dev/null 2>&1"
+EOF
+  osacompile -o "$app" "$work/clida.applescript"
+  if command -v iconutil >/dev/null && [[ -f "$ROOT/static/icon-1024.png" ]]; then
+    mkdir "$work/clida.iconset"
+    for size in 16 32 128 256 512; do
+      sips -z "$size" "$size" "$ROOT/static/icon-1024.png" --out "$work/clida.iconset/icon_${size}x${size}.png" >/dev/null
+      sips -z $((size * 2)) $((size * 2)) "$ROOT/static/icon-1024.png" --out "$work/clida.iconset/icon_${size}x${size}@2x.png" >/dev/null
+    done
+    iconutil -c icns "$work/clida.iconset" -o "$app/Contents/Resources/applet.icns"
+    touch "$app"  # make Finder pick up the new icon
+  fi
+  rm -rf "$work"
+  echo "$app"
+}
+
+make_shortcut() {
+  case "$PLATFORM" in
+    wsl) make_shortcut_wsl ;;
+    mac) make_shortcut_mac ;;
+    *) echo "clida: shortcuts are only supported on WSL and macOS" >&2; exit 1 ;;
+  esac
+}
+
 # True only if the pid really is our server; after a crash or `wsl --shutdown` server.pid
 # stays behind, and the number may belong to some other process by now.
 is_server() {
   [[ "$1" =~ ^[0-9]+$ ]] || return 1
   local cmdline
-  cmdline="$(tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null)" || return 1
+  cmdline="$(ps -o command= -p "$1" 2>/dev/null)" || return 1
   [[ "$cmdline" == *"-m clida --port $PORT"* ]]
 }
 

@@ -31,9 +31,10 @@ def _token() -> str:
 
 def _claude_binary() -> str:
     found = os.environ.get("CLIDA_CLAUDE") or shutil.which("claude")
-    fallback = Path.home() / ".local/bin/claude"
-    if not found and fallback.exists():
-        found = str(fallback)
+    # A macOS app starts with a minimal PATH; these are the usual install places.
+    for fallback in (Path.home() / ".local/bin/claude", Path("/opt/homebrew/bin/claude"), Path("/usr/local/bin/claude")):
+        if not found and fallback.exists():
+            found = str(fallback)
     if not found:
         sys.exit("clida: `claude` nicht gefunden (PATH oder CLIDA_CLAUDE setzen)")
     return os.path.realpath(found)
@@ -43,7 +44,14 @@ def main():
     parser = argparse.ArgumentParser(prog="clida")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("CLIDA_PORT", 47321)))
+    parser.add_argument("--detach", action="store_true", help="fork into the background (used by the launcher)")
     args = parser.parse_args()
+    if args.detach:
+        # An own session, so closing the terminal that ran `clida` does not end the server.
+        # setsid(1) would do the same, but macOS does not have it.
+        if os.fork():
+            os._exit(0)
+        os.setsid()
 
     # Index, titles and log quote your prompts, so keep the folder private.
     STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)

@@ -54,7 +54,7 @@ body {
   overflow: hidden;
 }
 button { font: inherit; color: inherit; }
-code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace; }
+code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, ui-monospace, monospace; }
 [hidden] { display: none !important; }
 .muted { color: var(--muted); font-weight: normal; }
 
@@ -356,7 +356,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospac
 .badge { padding: 0 6px; border-radius: 6px; background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); font-size: 11px; }
 .tool > summary { padding: 3px 0; cursor: pointer; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tool-name { color: var(--text); font-weight: 600; margin-right: 6px; }
-.tool-sum { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.tool-sum { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; font-size: 12px; }
 .tool pre.diff { white-space: pre; }
 .diff-del { color: var(--danger); }
 .diff-add { color: var(--ok); }
@@ -397,7 +397,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospac
 .empty h1 { font: 500 30px/1.2 Georgia, "Times New Roman", serif; margin: 0 0 10px; }
 .empty p { color: var(--muted); margin: 0 0 22px; }
 .keys { display: grid; grid-template-columns: auto auto; gap: 6px 14px; margin-top: 36px; font-size: 12px; color: var(--muted); text-align: left; }
-.keys dt { font-family: "Cascadia Mono", Consolas, monospace; color: var(--text); }
+.keys dt { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; color: var(--text); }
 .keys dd { margin: 0; }
 
 /* ---- dialog & toast -------------------------------------------------------------------- */
@@ -425,7 +425,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospac
   font: inherit;
 }
 .dialog input:focus { outline: none; border-color: var(--accent); }
-#new-cwd { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+#new-cwd { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; font-size: 13px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .chip {
   padding: 2px 9px;
@@ -477,7 +477,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospac
   color: var(--muted);
   font-size: 12px;
 }
-.codeblock-lang { font-family: "Cascadia Mono", Consolas, monospace; }
+.codeblock-lang { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
 .codeblock-copy {
   display: inline-flex;
   align-items: center;

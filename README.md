@@ -1,6 +1,6 @@
 # CLIDA
 
-A desktop window for the Claude Code CLI, similar to Claude Desktop. The UI is in German; UI labels below are quoted as they appear.
+A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on Windows (WSL) and macOS. The UI is in German; UI labels below are quoted as they appear.
 
 - **Sidebar** with all past chats from `~/.claude/projects`, grouped by date (today, yesterday, last 7 days …), with search. It collapses and expands.
 - **Rename chats**: pencil icon, double-click the title in the list or on a tab, or click the heading.
@@ -19,13 +19,28 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. The UI is i
 
 ## Requirements and setup
 
-- WSL 2 with Python 3.12 (stdlib only, no pip), Node.js/npm (only to fetch the frontend libraries), and the `claude` CLI
-- Microsoft Edge or Google Chrome on the Windows side
+Common to both: Python 3.9 or newer (stdlib only, no pip), Node.js/npm (only to fetch the frontend libraries on the first start), and the `claude` CLI.
+
+### Windows (WSL)
+
+- WSL 2, plus Microsoft Edge or Google Chrome on the Windows side
 
 ```bash
 git clone https://github.com/S34L-Nhan/clida.git ~/clida
 ln -s ~/clida/bin/clida ~/.local/bin/clida   # put the launcher on PATH
 clida shortcut                               # optional: Windows desktop shortcut
+clida                                        # first start runs npm install
+```
+
+### macOS
+
+- `python3` from the Xcode Command Line Tools or Homebrew
+- Google Chrome, Microsoft Edge, Brave or Chromium for an app window. Without one of them, CLIDA opens in a normal tab of the default browser (Safari has no app windows).
+
+```bash
+git clone https://github.com/S34L-Nhan/clida.git ~/clida
+mkdir -p ~/.local/bin && ln -s ~/clida/bin/clida ~/.local/bin/clida   # the claude installer puts ~/.local/bin on PATH
+clida shortcut                               # optional: ~/Applications/CLIDA.app (Launchpad, Spotlight, Dock)
 clida                                        # first start runs npm install
 ```
 
@@ -38,12 +53,12 @@ clida stop       # stop the server; asks first if sessions are running (--force:
 clida restart
 clida serve      # run the server in the foreground, logs to the terminal
 clida url        # one-time login URL (valid for 60 s), e.g. for another browser
-clida shortcut   # create/update the "CLIDA" shortcut on the Windows desktop
+clida shortcut   # create/update the shortcut (WSL: Windows desktop, macOS: ~/Applications/CLIDA.app)
 ```
 
-The window is an Edge app window (`msedge --app=…`): no address bar, and its own taskbar entry. If Edge is missing, Chrome is used.
+The window is a browser app window (`--app=…`): no address bar, and its own taskbar or Dock entry. On WSL, Edge comes first and Chrome second; on macOS, Chrome, Edge, Brave and Chromium in that order.
 
-The desktop shortcut runs `clida app` via `conhost.exe --headless wsl.exe …`, so no console window appears. Its icon lives in `%LOCALAPPDATA%\clida\clida.ico`. `tools/make_icon.py` renders it from the same motif as `static/icon.svg`.
+On WSL, the desktop shortcut runs `clida app` via `conhost.exe --headless wsl.exe …`, so no console window appears. Its icon lives in `%LOCALAPPDATA%\clida\clida.ico`. On macOS, `clida shortcut` builds a small AppleScript app in `~/Applications` with the icon from `static/icon-1024.png`. `tools/make_icon.py` renders both icons from the same motif as `static/icon.svg`.
 
 ### Keeping WSL alive
 
@@ -51,18 +66,20 @@ WSL shuts down once no `wsl.exe` is left on the Windows side, and takes the serv
 
 ### Keys
 
-| Key | Action |
-|---|---|
-| Ctrl+Shift+O | New chat |
-| Ctrl+Shift+B | Toggle sidebar |
-| Ctrl+Shift+F | Search chats |
-| Ctrl+PgUp / Ctrl+PgDn | Switch tab |
-| Shift+Enter | New line in the terminal (instead of sending) |
-| Ctrl+C with a selection | Copy (without a selection: a normal Ctrl+C to the CLI) |
-| Ctrl+V | Paste |
-| Middle-click on a tab | Close tab |
-| Tab key, then Enter | Open a chat or tab with the keyboard |
-| F2 | Rename the selected chat or tab |
+| Windows (WSL) | macOS | Action |
+|---|---|---|
+| Ctrl+Shift+O | ⌘⇧O | New chat |
+| Ctrl+Shift+B | ⌘⇧B | Toggle sidebar |
+| Ctrl+Shift+F | ⌘⇧F | Search chats |
+| Ctrl+PgUp / Ctrl+PgDn | ⌘⌥← / ⌘⌥→ | Switch tab |
+| Shift+Enter | ⇧↩ | New line in the terminal (instead of sending) |
+| Ctrl+C with a selection | ⌘C | Copy. On Windows, Ctrl+C without a selection goes to the CLI; on macOS Ctrl+C always does. |
+| Ctrl+V | ⌘V | Paste. On macOS, Ctrl+V goes to the CLI (for pasting images). |
+| Middle-click on a tab | Middle-click on a tab | Close tab |
+| Tab key, then Enter | Tab key, then Enter | Open a chat or tab with the keyboard |
+| F2 | F2 | Rename the selected chat or tab |
+
+The tooltips and the start page show the keys of the platform in use.
 
 - **New chat**: pick a working directory (recently used ones are suggested) and optionally a title. The title goes to the CLI via `--name`.
 - **Open an earlier chat**: shows the history first. *Fortsetzen* (resume) runs `claude --resume <id>` in the original working directory. If the chat already runs in another terminal, CLIDA asks first.
@@ -73,7 +90,7 @@ WSL shuts down once no `wsl.exe` is left on the Windows side, and takes the serv
 - `clida/` is a small server built on the Python stdlib only (no pip). It listens on `127.0.0.1:47321`.
   - `terminals.py` starts each session with `pty.fork()` as the real `claude` CLI. Up to 2 MB of output is buffered, so a newly opened tab can rebuild the screen. Each tab gets its own send queue, so a slow tab never stalls a session.
   - `transcripts.py` reads the transcripts in `~/.claude/projects/*/*.jsonl`. Files are read incrementally; the index is cached in `~/.clida/index.json`.
-  - `registry.py` reads `~/.claude/sessions/<pid>.json`, where every running CLI reports its state (busy/idle/waiting).
+  - `registry.py` reads `~/.claude/sessions/<pid>.json`, where every running CLI reports its state (busy/idle/waiting). It checks that the process still lives via `/proc` on Linux and WSL, and via `ps` on macOS.
   - `library.py` stores folders and the archive.
   - `ws.py` is a minimal WebSocket implementation for the terminal stream.
 - `static/` is the frontend: vanilla JS, no build step. xterm.js, marked, DOMPurify and highlight.js come from `npm install` into `node_modules/` (`clida` does this on first start) and are served locally.
@@ -112,4 +129,5 @@ Port and paths can be changed with `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE`
 
 - Sessions live in the server process. `clida stop`, `wsl --shutdown` or a Windows restart ends them. The history is kept, and *Fortsetzen* brings them back.
 - If you switch sessions inside the CLI with `/clear` or `/resume`, the tab follows the new session id from the CLI's registry. This is not tested much yet.
-- Pasting images from the clipboard does not work directly, as in any WSL terminal.
+- On WSL, pasting images from the clipboard does not work directly, as in any WSL terminal.
+- macOS support is new and has not run on a real Mac yet. Start, window, shortcut, stop, status detection and the Mac shortcuts were checked in a simulation on Linux.

@@ -37,6 +37,9 @@ const icon = (name) => {
   return span.firstChild;
 };
 
+// On a Mac the app shortcuts use Cmd, and Ctrl+C / Ctrl+V belong to the CLI (interrupt, image paste).
+const MAC = /Mac|iPhone|iPad/.test(navigator.userAgentData?.platform || navigator.platform || '');
+const MONO = '"Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, Monaco, "DejaVu Sans Mono", monospace';
 const STATUS_LABEL = { busy: 'arbeitet', waiting: 'wartet auf dich', idle: 'bereit', starting: 'startet', exited: 'beendet' };
 const HISTORY_WINDOW = 400;
 // Text width slider 0..100: 0 = narrowest, 50 = the classic 800px column, 100 = full width.
@@ -1060,7 +1063,7 @@ function ensureTerminal(tab) {
     return;
   }
   const term = new Terminal({
-    fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace',
+    fontFamily: MONO,
     fontSize: 14,
     lineHeight: 1.15,
     cursorBlink: true,
@@ -1157,6 +1160,8 @@ function terminalKey(tab, ev) {
     if (ev.type === 'keydown') send(tab, { t: 'i', d: '\x1b\r' });
     return false;
   }
+  // On a Mac, Cmd+C / Cmd+V copy and paste natively, and Ctrl+C / Ctrl+V go to the CLI.
+  if (MAC) return true;
   if (ev.ctrlKey && !ev.altKey && key === 'c' && (ev.shiftKey || tab.term.hasSelection())) {
     if (ev.type === 'keydown' && tab.term.hasSelection()) {
       navigator.clipboard?.writeText(tab.term.getSelection()).catch(() => {});
@@ -1251,7 +1256,16 @@ async function submitNewChat(ev) {
 
 // ---- wiring -------------------------------------------------------------------------------
 
+// Show the Mac key names in tooltips and in the key list of the start page.
+function macKeyLabels() {
+  const swap = (text) => text.replace(/Strg\+Umschalt\+/g, '⌘⇧').replace('Strg+Bild↑/↓', '⌘⌥←/→')
+    .replace('Umschalt+Enter', '⇧↩');
+  for (const node of document.querySelectorAll('[title]')) node.title = swap(node.title);
+  for (const node of document.querySelectorAll('.keys dt')) node.textContent = swap(node.textContent);
+}
+
 function wire() {
+  if (MAC) macKeyLabels();
   for (const node of document.querySelectorAll('[data-icon]')) node.append(icon(node.dataset.icon));
   document.addEventListener('click', (ev) => {
     const action = ev.target.closest('[data-action]')?.dataset.action;
@@ -1286,10 +1300,15 @@ function wire() {
   // Capture phase, so the terminal never sees the app's own shortcuts.
   window.addEventListener('keydown', (ev) => {
     const key = ev.key.toLowerCase();
-    if (ev.ctrlKey && ev.shiftKey && key === 'b') setCollapsed(!$('#app').classList.contains('collapsed'));
-    else if (ev.ctrlKey && ev.shiftKey && key === 'o') openNewDialog();
-    else if (ev.ctrlKey && !ev.shiftKey && (ev.key === 'PageDown' || ev.key === 'PageUp')) cycleTab(ev.key === 'PageDown' ? 1 : -1);
-    else if (ev.ctrlKey && ev.shiftKey && key === 'f') { setCollapsed(false); $('#search').focus(); }
+    const mod = MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
+    // Switch tabs: Ctrl+PgUp/PgDn, on a Mac Cmd+Option+Left/Right (no PgUp key, layout-independent).
+    const step = MAC
+      ? ev.metaKey && ev.altKey && { ArrowLeft: -1, ArrowRight: 1 }[ev.key]
+      : ev.ctrlKey && !ev.shiftKey && { PageUp: -1, PageDown: 1 }[ev.key];
+    if (mod && ev.shiftKey && key === 'b') setCollapsed(!$('#app').classList.contains('collapsed'));
+    else if (mod && ev.shiftKey && key === 'o') openNewDialog();
+    else if (step) cycleTab(step);
+    else if (mod && ev.shiftKey && key === 'f') { setCollapsed(false); $('#search').focus(); }
     else return;
     ev.preventDefault();
     ev.stopPropagation();
