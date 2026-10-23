@@ -5,7 +5,6 @@ import os
 import re
 import secrets
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -81,15 +80,8 @@ def _upload_name(name) -> str:
 
 def _git_state(cwd):
     """Branch and number of changed files of the repository cwd is in; None outside one."""
-    try:
-        # Without optional locks: git status may otherwise take index.lock to refresh the index,
-        # and a git commit Claude runs in the same repo at that moment would fail.
-        out = subprocess.run(["git", "--no-optional-locks", "-C", cwd, "status", "--porcelain=v1", "--branch"],
-                             capture_output=True, text=True, timeout=3)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    lines = out.stdout.splitlines()
-    if out.returncode or not lines or not lines[0].startswith("## "):
+    lines = (gitrepo.git(cwd, "status", "--porcelain=v1", "--branch", timeout=3) or "").splitlines()
+    if not lines or not lines[0].startswith("## "):
         return None
     head = lines[0][3:]
     for prefix in ("No commits yet on ", "Initial commit on "):
@@ -241,22 +233,40 @@ class Desk:
         repo = {"files": [], "commits": [], "repos": []}
         window = self._chat_window(session_id, info)
         if window:
-            dirs = ([cwd] if cwd else []) + [os.path.dirname(f["path"]) for f in files]
-            repo = self.repo_changes.get([d for d in dirs if os.path.isdir(d)][:20], *window)
-            known = {changed["path"] for changed in files}
-            files = sorted(files + [f for f in repo["files"] if f["path"] not in known], key=lambda f: f["path"])
+            # Deduplicated first: a chat edits many files in few folders, and the limit is on folders.
+            dirs = list(dict.fromkeys(d for d in ([cwd] if cwd else []) + [os.path.dirname(f["path"]) for f in files]
+                                      if os.path.isdir(d)))[:20]
+            repo = self.repo_changes.get(dirs, *window, brief=brief)
+            # Matched by real path: git reports /mnt/d/work/x for a file Claude edited as ~/work/x.
+            tool = {os.path.realpath(f["path"]): f for f in files}
+            for found in repo["files"]:
+                mine = tool.get(os.path.realpath(found["path"]))
+                if mine is None:
+                    files.append(found)
+                elif not mine["known"]:
+                    # No CLI backup of it, but git knows how it was: its diff, with the chat's steps.
+                    mine.update({k: found[k] for k in ("status", "note", "known", "net", "added", "removed")})
+            files.sort(key=lambda f: f["path"])
         out = []
         for changed in files:
-            label = (os.path.relpath(changed["path"], cwd)
-                     if cwd and changed["path"].startswith(cwd.rstrip("/") + "/") else _home_label(changed["path"]))
-            out.append({**changed, "label": label, **({"net": None, "steps": []} if brief else {})})
+            out.append({**changed, "label": self._change_label(changed["path"], cwd),
+                        **({"net": None, "steps": []} if brief else {})})
         # The branch of the chat's folder, or else of the first repository it worked in.
         where = cwd if cwd and os.path.isdir(cwd) else None
         git = (_git_state(where) if where else None) or (_git_state(repo["repos"][0]) if repo["repos"] else None)
         return {"files": out, "git": git, "commits": repo["commits"]}
 
+    @staticmethod
+    def _change_label(path: str, cwd) -> str:
+        """The path relative to the chat's folder, also when one of them is reached through a symlink."""
+        if cwd:
+            for root, target in ((cwd, path), (os.path.realpath(cwd), os.path.realpath(path))):
+                if target.startswith(root.rstrip("/") + "/"):
+                    return os.path.relpath(target, root)
+        return _home_label(path)
+
     def _chat_window(self, session_id: str, info):
-        """(start, end) of the chat in seconds: its first prompt, and its last write or now while it runs."""
+        """(start, end) of the chat in seconds: its first prompt, and its last write; end None while it runs."""
         term = next((t for t in self.terminals.all() if t.session_id == session_id), None)
         starts = [term.started] if term else []
         try:
@@ -266,7 +276,7 @@ class Desk:
             pass
         if not starts:
             return None
-        end = time.time() if term and term.alive else max(info["mtime"] if info else 0, min(starts))
+        end = None if term and term.alive else max(info["mtime"] if info else 0, min(starts))
         return min(starts), end
 
     def rename(self, session_id: str, title) -> dict:

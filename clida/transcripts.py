@@ -523,7 +523,9 @@ def changes(path: str) -> dict:
                     result = entry.get("toolUseResult") if isinstance(entry.get("toolUseResult"), dict) else {}
                     replaced = name == "Write" and result.get("type") == "update"
                     if not changed["edits"]:
-                        changed["created"] = name == "Write" and result.get("type") == "create"
+                        # Newer CLIs say "create"; older transcripts say nothing, and a first Write then
+                        # most likely made the file (a backup, if any, still wins: see _compare).
+                        changed["created"] = name == "Write" and result.get("type") in ("create", None)
                     changed["edits"] += 1
                     for hunk in hunks:
                         cut = len(hunk) - STEP_LINE_LIMIT
@@ -537,17 +539,10 @@ def changes(path: str) -> dict:
     return {"files": files}
 
 
-def _read(path):
-    """(text, note): the file's text, or None if it does not exist; note says why there is no diff."""
-    try:
-        size = os.path.getsize(path)
-        if size > NET_SIZE_LIMIT:
-            return None, "large"
-        data = Path(path).read_bytes()
-    except FileNotFoundError:
-        return None, None
-    except OSError:
-        return None, "unreadable"
+def classify(data: bytes):
+    """(text, note) of a file's content: note says why it gets no diff (large, binary)."""
+    if len(data) > NET_SIZE_LIMIT:
+        return None, "large"
     if b"\0" in data[:8192]:
         return None, "binary"
     try:
@@ -556,7 +551,20 @@ def _read(path):
         return None, "binary"
 
 
-def _net_diff(before: str, after: str) -> dict:
+def read_text(path):
+    """(text, note) of a file on disk; (None, None) if it does not exist."""
+    try:
+        if os.path.getsize(path) > NET_SIZE_LIMIT:
+            return None, "large"
+        data = Path(path).read_bytes()
+    except FileNotFoundError:
+        return None, None
+    except OSError:
+        return None, "unreadable"
+    return classify(data)
+
+
+def net_diff(before: str, after: str) -> dict:
     """A unified diff with line numbers: rows of [kind, old line, new line, text], kind @ + - or space."""
     rows, added, removed = [], 0, 0
     old_no = new_no = 0
@@ -646,13 +654,13 @@ class ChangesCache:
         # Before: the first backup is the file as it was before the chat's first edit. A tracked file
         # without one did not exist yet, nor did one that Write created. Else it is not known.
         if first is not None and first.exists():
-            before, before_note = _read(first)
+            before, before_note = read_text(first)
             known = True  # a binary or large before is known too, it just gets no diff
         elif changed["backup"] or changed["created"]:
             before, before_note, known = None, None, True
         else:
             before, before_note, known = None, None, False
-        after, after_note = _read(changed["path"]) if now is not None else (None, None)
+        after, after_note = read_text(changed["path"]) if now is not None else (None, None)
         exists = now is not None
         note = before_note or after_note
         if not exists:
@@ -664,7 +672,7 @@ class ChangesCache:
         out = {"status": status, "note": note, "known": known, "net": None, "added": None, "removed": None}
         if note or not known:
             return out
-        diff = _net_diff(before or "", after or "")
+        diff = net_diff(before or "", after or "")
         if exists and before is not None and not diff["rows"]:
             out["status"] = "unchanged"  # edited, and back to how it was
         out.update(net=diff["rows"], added=diff["added"], removed=diff["removed"])
