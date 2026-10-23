@@ -604,6 +604,7 @@ function inlineEdit(target, initial, save, { focusKey = null, maxLength = 200 } 
   if (target.querySelector('input')) return;
   const original = target.textContent;
   const input = el('input', 'rename-input');
+  input.autocomplete = 'off';  // no autofill suggestions from what was typed into other fields
   input.maxLength = maxLength;
   input.value = initial;
   target.replaceChildren(input);
@@ -2371,6 +2372,27 @@ function wire() {
     const terminalToo = !MAC && ev.ctrlKey && (letter === 'u' || (ev.shiftKey && letter === 'c'));
     if (!terminalToo) ev.stopPropagation();
   }, true);
+
+  // Nor the browser's own shortcuts that make no sense in an app: print, save or open a page,
+  // bookmarks, history, downloads, reload, caret browsing, Edge's reader and read aloud, back and
+  // forward. Only preventDefault: the terminal still gets these keys (Ctrl+R searches the CLI's
+  // history, Ctrl+O shows its transcript, Ctrl+G opens the editor). Find (Ctrl+F) and zoom stay.
+  // Ctrl+W, Ctrl+N and Ctrl+T cannot be taken from the browser by any page.
+  window.addEventListener('keydown', (ev) => {
+    const letter = /^Key([A-Z])$/.exec(ev.code)?.[1].toLowerCase() || '';
+    const mod = MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
+    const browserKey = ['F1', 'F5', 'F6', 'F7', 'F9', 'BrowserBack', 'BrowserForward', 'BrowserRefresh', 'BrowserHome'].includes(ev.key)
+      || (mod && !ev.altKey && !ev.shiftKey && 'psodhjr'.includes(letter) && letter)
+      || (mod && !ev.altKey && ev.shiftKey && 'drsuy'.includes(letter) && letter)  // bookmark all, hard reload, web capture, read aloud, collections
+      || (!MAC && ev.ctrlKey && ev.shiftKey && ev.key === 'Delete')  // clear browsing data
+      || (!MAC && ev.altKey && !ev.ctrlKey && ['ArrowLeft', 'ArrowRight', 'Home'].includes(ev.key))
+      || (MAC && ev.metaKey && !ev.altKey && ['[', ']'].includes(ev.key));  // not Cmd+Left/Right: line start/end in text
+    if (browserKey) ev.preventDefault();
+  }, true);
+  // The mouse's back and forward buttons.
+  for (const type of ['mouseup', 'auxclick']) {
+    window.addEventListener(type, (ev) => { if (ev.button === 3 || ev.button === 4) ev.preventDefault(); });
+  }
 
   // Capture phase, so the terminal never sees the app's own shortcuts.
   window.addEventListener('keydown', (ev) => {

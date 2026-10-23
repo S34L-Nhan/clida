@@ -2,6 +2,8 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
+/* No rubber-band bounce and no swipe to go back or forward, as in a browser tab. */
+html, body { overscroll-behavior: none; }
 body {
   background: var(--bg);
   color: var(--text);
