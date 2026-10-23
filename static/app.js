@@ -1993,7 +1993,7 @@ const SETTINGS = [
   {
     section: 'settings.appearance',
     items: [
-      { key: 'theme', label: 'settings.theme', hint: 'settings.themeHint',
+      { key: 'theme', label: 'settings.theme', hint: 'settings.themeHint', hintNodes: () => ({ cmd: el('code', '', '/theme (Auto (match terminal))') }),
         choices: () => [['system', t('theme.system')], ['light', t('theme.light')], ['dark', t('theme.dark')], ...THEMES],
         value: () => theme, apply: applyTheme },
     ],
@@ -2066,7 +2066,11 @@ function renderSettings(focusKey = null) {
       const label = el('label', '', t(item.label));
       label.htmlFor = `setting-${item.key}`;
       text.append(label);
-      if (item.hint) text.append(el('p', 'settings-hint', t(item.hint)));
+      if (item.hint) {
+        const hint = el('p', 'settings-hint');
+        hint.append(...textWith(item.hint, item.hintNodes?.() || {}));  // {placeholders} become those nodes
+        text.append(hint);
+      }
       const select = el('select');
       select.id = `setting-${item.key}`;
       for (const [value, name] of item.choices()) {
@@ -2178,6 +2182,7 @@ function wire() {
     answer(false);
   });
   $('#settings-done').onclick = () => $('#settings-dialog').close();
+  $('#settings-close').onclick = () => $('#settings-dialog').close();
   dropZone($('#session-list'), null);
   // A file dropped anywhere must not make the window open it and leave CLIDA; onto a running
   // terminal it becomes an attachment.

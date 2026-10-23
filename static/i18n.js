@@ -36,6 +36,7 @@ const TEXTS = {
     'edit': 'Bearbeiten',
     'rename': 'Umbenennen',
     'done': 'Fertig',
+    'close': 'Schließen',
     'quoted': '„{text}“',
 
     'delete.title': 'Sitzung löschen?',
@@ -133,7 +134,7 @@ const TEXTS = {
     'settings.languageHint': 'Sprache der Oberfläche. Claude antwortet weiter in der Sprache, in der du schreibst.',
     'settings.appearance': 'Darstellung',
     'settings.theme': 'Farbschema',
-    'settings.themeHint': '„System“ ist basierend auf dem Betriebssystem. Das Terminal passt sich mit an. Muss einmalig auf /theme (Auto (match terminal)) gesetzt werden.',
+    'settings.themeHint': '„System“ ist basierend auf dem Betriebssystem. Das Terminal passt sich mit an.\nMuss einmalig auf {cmd} gesetzt werden.',
     'theme.system': 'System',
     'theme.light': 'Hell',
     'theme.dark': 'Dunkel',
@@ -168,6 +169,7 @@ const TEXTS = {
     'edit': 'Edit',
     'rename': 'Rename',
     'done': 'Done',
+    'close': 'Close',
     'quoted': '“{text}”',
 
     'delete.title': 'Delete session?',
@@ -265,7 +267,7 @@ const TEXTS = {
     'settings.languageHint': 'Language of the interface. Claude still answers in the language you write in.',
     'settings.appearance': 'Appearance',
     'settings.theme': 'Color theme',
-    'settings.themeHint': '“System” is based on the operating system. The terminal adapts along with it. Must be set once to /theme (Auto (match terminal)).',
+    'settings.themeHint': '“System” is based on the operating system. The terminal adapts along with it.\nMust be set once to {cmd}.',
     'theme.system': 'System',
     'theme.light': 'Light',
     'theme.dark': 'Dark',

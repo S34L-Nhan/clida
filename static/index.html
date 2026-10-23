@@ -83,7 +83,10 @@
   </dialog>
 
   <dialog id="settings-dialog" class="dialog settings" aria-labelledby="settings-title">
-    <h2 id="settings-title" data-i18n="settings">Einstellungen</h2>
+    <div class="dialog-head">
+      <h2 id="settings-title" data-i18n="settings">Einstellungen</h2>
+      <button type="button" id="settings-close" class="icon-btn" data-i18n-label="close" data-icon="x"></button>
+    </div>
     <div id="settings-body"></div>
     <p id="settings-error" class="error" role="alert"></p>
     <div class="dialog-actions">
