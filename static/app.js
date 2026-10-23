@@ -2367,7 +2367,9 @@ function wire() {
   // history, Ctrl+O shows its transcript, Ctrl+G opens the editor). Find (Ctrl+F) and zoom stay.
   // Ctrl+W, Ctrl+N and Ctrl+T cannot be taken from the browser by any page.
   window.addEventListener('keydown', (ev) => {
-    const letter = /^Key([A-Z])$/.exec(ev.code)?.[1].toLowerCase() || '';
+    // By the key's label, as the browser matches its own shortcuts: by position (ev.code), the Z of
+    // a German keyboard is a Y, and Ctrl+Shift+Z (redo) would be taken for Edge's Ctrl+Shift+Y.
+    const letter = /^[a-z]$/i.test(ev.key) ? ev.key.toLowerCase() : '';
     const mod = MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
     const browserKey = ['F1', 'F5', 'F6', 'F7', 'F9', 'BrowserBack', 'BrowserForward', 'BrowserRefresh', 'BrowserHome'].includes(ev.key)
       || (mod && !ev.altKey && !ev.shiftKey && 'psodhjr'.includes(letter) && letter)
@@ -2377,9 +2379,10 @@ function wire() {
       || (MAC && ev.metaKey && !ev.altKey && ['[', ']'].includes(ev.key));  // not Cmd+Left/Right: line start/end in text
     if (browserKey) ev.preventDefault();
   }, true);
-  // The mouse's back and forward buttons.
+  // The mouse's back and forward buttons. Capture phase: the terminal stops mouse events itself
+  // while the CLI tracks the mouse, and they would never get here.
   for (const type of ['mouseup', 'auxclick']) {
-    window.addEventListener(type, (ev) => { if (ev.button === 3 || ev.button === 4) ev.preventDefault(); });
+    window.addEventListener(type, (ev) => { if (ev.button === 3 || ev.button === 4) ev.preventDefault(); }, true);
   }
 
   // Capture phase, so the terminal never sees the app's own shortcuts.
