@@ -92,6 +92,7 @@ const state = {
   tabPress: null,   // pressed or dragged tab (see tabPointerDown)
   tabSettle: null,  // a dropped tab still gliding into its slot
   attachTarget: null, // tab whose paperclip opened the file picker
+  answer: null,     // resolves the question in the ask dialog
   online: true,
 };
 
@@ -596,19 +597,33 @@ async function setArchived(sid, archived) {
   paintSidebar();
 }
 
-function confirmDelete(name) {
-  const dialog = $('#delete-dialog');
-  $('#delete-text').replaceChildren(...textWith('delete.text', { name: el('strong', '', quote(name)) }));
-  dialog.returnValue = '';
+// A yes/no question in CLIDA's own dialog; the browser's confirm() would head it "localhost says".
+// text is a string or a list of strings and nodes. Resolves true for yes; Cancel and Esc are no.
+function ask({ title, text, yes, danger = false }) {
+  const dialog = $('#ask-dialog');
+  if (dialog.open) return Promise.resolve(false);  // one question at a time
+  $('#ask-title').textContent = title;
+  $('#ask-text').replaceChildren(...[].concat(text));
+  $('#ask-yes').textContent = yes;
+  $('#ask-yes').className = `btn ${danger ? 'danger-solid' : 'primary'}`;
   dialog.showModal();
-  $('#delete-cancel').focus();
-  return new Promise((resolve) => {
-    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'delete'), { once: true });
-  });
+  $('#ask-cancel').focus();
+  return new Promise((resolve) => { state.answer = resolve; });
+}
+
+// The buttons answer directly: the dialog's close event comes later and could already find the
+// next question open.
+function answer(yes) {
+  const resolve = state.answer;
+  state.answer = null;
+  $('#ask-dialog').close();
+  resolve?.(yes);
 }
 
 async function deleteChat(sid) {
-  if (!(await confirmDelete(titleOf(sid)))) return;
+  const name = el('strong', '', quote(titleOf(sid)));
+  const text = textWith('delete.text', { name });
+  if (!(await ask({ title: t('delete.title'), text, yes: t('delete'), danger: true }))) return;
   try {
     await change('DELETE', `/api/sessions/${sid}`);
   } catch (e) {
@@ -1313,7 +1328,7 @@ function noteCard(tab, note, withPreview = false) {
   if (withPreview && note.preview) card.append(el('div', 'note-preview', quote(note.preview)));
   card.append(head, body);
   const remove = async () => {
-    if (!confirm(t('note.confirmDelete'))) return;
+    if (!(await ask({ title: t('note.deleteTitle'), text: t('note.deleteText'), yes: t('delete'), danger: true }))) return;
     try {
       await change('DELETE', `/api/sessions/${tabSession(tab)}/notes/${note.id}`);
     } catch (e) {
@@ -1639,8 +1654,8 @@ async function resumeTab(tab, force = false) {
     activate(tab.id);
   } catch (e) {
     if (e.status === 409 && !force) {
-      const ok = confirm(t('resume.anyway', { error: e.message }));
-      if (ok) return resumeTab(tab, true);
+      const text = t('resume.anywayText', { error: e.message });
+      if (await ask({ title: t('resume.anywayTitle'), text, yes: t('resume') })) return resumeTab(tab, true);
       return;
     }
     toast(e.message);
@@ -1648,7 +1663,7 @@ async function resumeTab(tab, force = false) {
 }
 
 async function stopTab(tab) {
-  if (!confirm(t('stop.confirm'))) return;
+  if (!(await ask({ title: t('stop.title'), text: t('stop.text'), yes: t('stop') }))) return;
   try {
     await api('DELETE', `/api/terminals/${tab.id}`);
   } catch (e) {
@@ -1839,8 +1854,12 @@ function wire() {
     else if (action === 'close-dialog') $('#new-dialog').close();
   });
   $('#new-form').addEventListener('submit', submitNewChat);
-  $('#delete-cancel').onclick = () => $('#delete-dialog').close('cancel');
-  $('#delete-confirm').onclick = () => $('#delete-dialog').close('delete');
+  $('#ask-cancel').onclick = () => answer(false);
+  $('#ask-yes').onclick = () => answer(true);
+  $('#ask-dialog').addEventListener('cancel', (ev) => {  // Esc
+    ev.preventDefault();
+    answer(false);
+  });
   $('#settings-done').onclick = () => $('#settings-dialog').close();
   dropZone($('#session-list'), null);
   // A file dropped anywhere must not make the window open it and leave CLIDA; onto a running
