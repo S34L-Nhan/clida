@@ -258,7 +258,7 @@ async function refreshStatus() {
     const tab = activeTab();
     if (tab && tab.view === 'history' && tab.loaded) loadHistory(tab, { quiet: true });
     for (const other of state.tabs) if (other !== tab && other.loaded) other.stale = true;  // reload when shown
-    for (const other of state.tabs) loadChanges(other);  // small, and the header and switch show its counts
+    for (const other of state.tabs) loadChanges(other);  // the header and the switch show its counts
   }
 }
 
@@ -1000,7 +1000,7 @@ function showView(tab) {
       tab.term?.focus();
     });
   } else if (tab.view === 'changes') {
-    loadChanges(tab);
+    loadChanges(tab);  // full: the diffs come only now
   } else if (!tab.loaded || tab.stale) {
     loadHistory(tab, { quiet: tab.loaded });
   }
@@ -1676,19 +1676,25 @@ function toolInput(item) {
 // The files a chat changed, built from its Edit and Write calls: what Claude did, not a git diff,
 // so changes made by hand or by shell commands do not show up here.
 
+// Without the diffs unless the view is shown: the other tabs only need the counts, and showing
+// the view loads them in full (showView).
 async function loadChanges(tab) {
+  const seq = tab.changesSeq = (tab.changesSeq || 0) + 1;
+  const brief = tab.view !== 'changes';
   let data;
   try {
-    data = await api('GET', `/api/sessions/${tabSession(tab)}/changes`);
+    data = await api('GET', `/api/sessions/${tabSession(tab)}/changes${brief ? '?brief=1' : ''}`);
   } catch (e) {
-    if (tab.view === 'changes') tab.changesInner.replaceChildren(el('div', 'empty-note', e.message));
+    if (seq === tab.changesSeq && !brief) tab.changesInner.replaceChildren(el('div', 'empty-note', e.message));
     return;
   }
-  const signature = JSON.stringify([language(), data]);
-  if (signature === tab.changesSignature) return;
-  tab.changesSignature = signature;
+  if (seq !== tab.changesSeq) return;  // a newer load went out meanwhile
   tab.changes = data;
-  renderChanges(tab);
+  if (!brief) {
+    const signature = JSON.stringify([language(), data]);
+    if (signature !== tab.changesSignature) renderChanges(tab);  // unchanged: keep scroll and open files
+    tab.changesSignature = signature;
+  }
   paintView(tab);
 }
 
@@ -1723,7 +1729,7 @@ function changedFile(tab, file) {
   node.append(summary);
   for (const hunk of file.hunks) {
     const when = hunk.ts ? dates().clock.format(new Date(hunk.ts)) : '';
-    node.append(el('div', 'hunk-head', [hunk.tool, when].filter(Boolean).join(' · ')));
+    node.append(el('div', 'hunk-head', [hunk.tool, hunk.replaced && t('changes.replaced'), when].filter(Boolean).join(' · ')));
     const pre = el('pre', 'diff');
     for (const line of hunk.lines) {
       const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : line === '⋯' ? 'diff-gap' : '';

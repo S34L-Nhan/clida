@@ -351,10 +351,14 @@ update() {
     exit 1
   fi
   branch="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
+  if [[ "$branch" == HEAD ]]; then
+    echo "clida: $ROOT is not on a branch (detached HEAD); check one out, e.g. git -C $ROOT switch main" >&2
+    exit 1
+  fi
   before="$(git -C "$ROOT" rev-parse HEAD)"
   echo "clida: fetching updates for branch $branch ..."
   if ! git -C "$ROOT" pull --ff-only --quiet; then
-    echo "clida: update failed: local changes or commits in the way? See: git -C $ROOT status" >&2
+    echo "clida: update failed, see git's message above (git -C $ROOT status shows the checkout)." >&2
     exit 1
   fi
   after="$(git -C "$ROOT" rev-parse HEAD)"
@@ -364,7 +368,10 @@ update() {
   fi
   echo "clida: updated $branch ${before:0:7}..${after:0:7}:"
   git -C "$ROOT" log --format='  %h %s' "$before..$after" | head -n 20
-  CLIDA_FORCE="$FORCE" exec "$ROOT/bin/clida" after-update "$before"
+  # --force goes on as an argument: in the environment it would reach the restarted server and
+  # every session it starts, and a later `clida stop` in one of them would not ask any more.
+  if [[ "$FORCE" == 1 ]]; then exec "$ROOT/bin/clida" after-update "$before" --force; fi
+  exec "$ROOT/bin/clida" after-update "$before"
 }
 
 after_update() {
@@ -389,8 +396,8 @@ after_update() {
   ensure_keepalive
 }
 
-FORCE="${CLIDA_FORCE:-0}"
-[[ "${2:-}" == "--force" ]] && FORCE=1
+FORCE=0
+[[ "${2:-}" == "--force" || ( "${1:-}" == after-update && "${3:-}" == "--force" ) ]] && FORCE=1
 
 case "${1:-open}" in
   open) start_server; show_window; ensure_keepalive ;;

@@ -81,7 +81,9 @@ def _upload_name(name) -> str:
 def _git_state(cwd):
     """Branch and number of changed files of the repository cwd is in; None outside one."""
     try:
-        out = subprocess.run(["git", "-C", cwd, "status", "--porcelain=v1", "--branch"],
+        # Without optional locks: git status may otherwise take index.lock to refresh the index,
+        # and a git commit Claude runs in the same repo at that moment would fail.
+        out = subprocess.run(["git", "--no-optional-locks", "-C", cwd, "status", "--porcelain=v1", "--branch"],
                              capture_output=True, text=True, timeout=3)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -108,6 +110,7 @@ class Desk:
         self.notes = Notes()
         self.settings = Settings()
         self.terminals = Terminals(claude)
+        self.changes_cache = transcripts.ChangesCache()
         # New on every start: an open window that sees it change reloads, with the new code.
         self.boot = secrets.token_hex(6)
         self._windows = {}  # window id -> time of its last request (monotonic)
@@ -217,8 +220,11 @@ class Desk:
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
         return transcripts.render(info["path"])
 
-    def changes(self, session_id: str) -> dict:
-        """The files the chat changed with its edit tools, and the git branch of its folder."""
+    def changes(self, session_id: str, brief: bool = False) -> dict:
+        """The files the chat changed with its edit tools, and the git branch of its folder.
+
+        brief leaves the diffs out: the header and the switch only need the counts.
+        """
         info = self.index.get(session_id)
         if info is None:
             self.index.scan()
@@ -226,12 +232,14 @@ class Desk:
         cwd = info["cwd"] if info else next((t.cwd for t in self.terminals.all() if t.session_id == session_id), None)
         if info is None and cwd is None:
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
-        files = transcripts.changes(info["path"]) if info else []
+        files = self.changes_cache.get(self.index.paths(session_id)) if info else []
+        out = []
         for changed in files:
-            changed["label"] = (os.path.relpath(changed["path"], cwd)
-                                if cwd and changed["path"].startswith(cwd.rstrip("/") + "/") else _home_label(changed["path"]))
+            label = (os.path.relpath(changed["path"], cwd)
+                     if cwd and changed["path"].startswith(cwd.rstrip("/") + "/") else _home_label(changed["path"]))
+            out.append({**changed, "label": label, **({"hunks": []} if brief else {})})
         git = _git_state(cwd) if cwd and os.path.isdir(cwd) else None
-        return {"files": files, "git": git}
+        return {"files": out, "git": git}
 
     def rename(self, session_id: str, title) -> dict:
         title = _clean_name(title, 200, tr("Titel darf nicht leer sein", "The title must not be empty"))

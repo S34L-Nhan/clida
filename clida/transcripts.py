@@ -20,7 +20,7 @@ from .settings import tr
 
 PROJECTS = CLAUDE_HOME / "projects"
 INDEX_FILE = STATE_DIR / "index.json"
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 # Metadata entries are written with "type" as their first key.
@@ -160,7 +160,10 @@ class Index:
             by_id = {}
             for info in self._files.values():
                 by_id.setdefault(info["id"], []).append(info)
-            cost_today = sum(info["cost_days"].get(today, 0) for info in self._files.values())
+            # A second transcript of a chat starts with the total carried over from the first, so
+            # its first figure may count again here; capped at the chat's cost, it cannot grow past it.
+            cost_today = sum(min(sum(info["cost_days"].get(today, 0) for info in infos), usage_of(infos)["cost"])
+                             for infos in by_id.values())
         return {"chats": {sid: usage_of(infos) for sid, infos in by_id.items()}, "today": round(cost_today, 4)}
 
     def paths(self, session_id: str) -> list:
@@ -229,9 +232,9 @@ class Index:
 
 def _empty_usage() -> dict:
     # tokens: summed over the API messages of the chat; cost: the CLI's own figure (cost-state),
-    # also split by local day. cost_run, last_msg and last_day carry over between incremental reads.
+    # also split by local day. cost_last, last_msg and last_day carry over between incremental reads.
     return {"tokens": dict.fromkeys(USAGE_KEYS, 0), "cost": 0.0, "cost_days": {},
-            "cost_run": None, "last_msg": None, "last_day": None}
+            "cost_last": 0.0, "last_msg": None, "last_day": None}
 
 
 def _local_day(timestamp) -> str:
@@ -256,17 +259,13 @@ def _count_usage(info: dict, entry: dict):
             if isinstance(value, int):
                 info["tokens"][key] += value
         return
-    # cost-state: the running total of one CLI process, written now and then. A resumed chat gets a
-    # new process (startTime) whose total either starts at 0 or carries on from the last one.
-    total, start = entry.get("totalCostUSD"), entry.get("startTime")
+    # cost-state: the chat's running total, written now and then. A resumed chat carries it on
+    # (checked with claude --resume: same total, same startTime), so only the growth counts.
+    total = entry.get("totalCostUSD")
     if not isinstance(total, (int, float)):
         return
-    run = info["cost_run"]
-    if run is None or (start != run[0] and total < run[1]):
-        delta = total
-    else:
-        delta = max(total - run[1], 0)
-    info["cost_run"] = [start, total]
+    delta = total - info["cost_last"] if total >= info["cost_last"] else total  # lower: a total that started over
+    info["cost_last"] = total
     if delta:
         info["cost"] += delta
         day = info["last_day"] or "?"
@@ -279,7 +278,8 @@ def usage_of(infos: list) -> dict:
     for info in infos:
         for key in USAGE_KEYS:
             tokens[key] += info["tokens"][key]
-    return {"tokens": tokens, "cost": round(sum(info["cost"] for info in infos), 4)}
+    # Every transcript of a chat holds the running total so far, so the highest one is the chat's.
+    return {"tokens": tokens, "cost": round(max(info["cost"] for info in infos), 4)}
 
 
 def delete_session_files(session_id: str, paths: list):
@@ -471,6 +471,42 @@ def _edit_hunks(name: str, inp: dict) -> list:
     return [["+" + l for l in (_str(inp.get("new_source")) or "").splitlines()]]  # NotebookEdit
 
 
+class ChangesCache:
+    """changes() per transcript, kept until the file grows: the window asks again after every turn."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._files = {}  # path -> (size, mtime, files)
+
+    def _of(self, path: str) -> list:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return []
+        with self._lock:
+            hit = self._files.get(path)
+        if hit and hit[:2] == (st.st_size, st.st_mtime):
+            return hit[2]
+        files = changes(path)
+        with self._lock:
+            self._files[path] = (st.st_size, st.st_mtime, files)
+        return files
+
+    def get(self, paths: list) -> list:
+        """The changes over all transcripts of a chat (resuming from another folder can leave two)."""
+        merged = {}
+        for path in sorted(paths, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0):
+            for changed in self._of(path):
+                into = merged.get(changed["path"])
+                if into is None:
+                    merged[changed["path"]] = {**changed, "hunks": list(changed["hunks"])}
+                    continue
+                for key in ("edits", "added", "removed"):
+                    into[key] += changed[key]
+                into["hunks"] += changed["hunks"]
+        return list(merged.values())
+
+
 def changes(path: str) -> list:
     """The files a chat changed with its edit tools, in the order first touched, each with its diffs.
 
@@ -503,13 +539,16 @@ def changes(path: str) -> list:
                         continue
                     changed = files.setdefault(target, {"path": target, "edits": 0, "added": 0, "removed": 0,
                                                        "created": False, "hunks": []})
+                    # The tool result says whether Write made the file or replaced one.
+                    result = entry.get("toolUseResult") if isinstance(entry.get("toolUseResult"), dict) else {}
+                    replaced = name == "Write" and result.get("type") == "update"
                     changed["edits"] += 1
-                    changed["created"] = changed["created"] or (name == "Write" and not changed["hunks"])
+                    changed["created"] = changed["created"] or (name == "Write" and not changed["hunks"] and not replaced)
                     for hunk in hunks:
                         changed["added"] += sum(1 for l in hunk if l.startswith("+"))
                         changed["removed"] += sum(1 for l in hunk if l.startswith("-"))
                         cut = len(hunk) - DIFF_LINE_LIMIT
                         if cut > 0:
                             hunk = hunk[:DIFF_LINE_LIMIT] + ["… " + tr(f"({cut} Zeilen gekürzt)", f"({cut} lines cut)")]
-                        changed["hunks"].append({"tool": name, "ts": ts, "lines": hunk})
+                        changed["hunks"].append({"tool": name, "ts": ts, "lines": hunk, "replaced": replaced})
     return list(files.values())

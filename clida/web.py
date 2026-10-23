@@ -260,7 +260,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, self.desk.messages(sid))
 
     def route_changes(self, sid):
-        self._send_json(200, self.desk.changes(sid))
+        brief = parse_qs(urlsplit(self.path).query).get("brief", [""])[0] == "1"
+        self._send_json(200, self.desk.changes(sid, brief))
 
     def route_rename(self, sid):
         self._send_json(200, self.desk.rename(sid, self._body().get("title")))
