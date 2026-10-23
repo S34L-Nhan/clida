@@ -446,8 +446,12 @@ def render(path: str) -> dict:
     return {"items": items[-MAX_ITEMS:], "truncated": truncated}
 
 
-DIFF_LINE_LIMIT = 400  # per tool call
+FILE_HISTORY = CLAUDE_HOME / "file-history"
+STEP_LINE_LIMIT = 400  # per tool call
+NET_LINE_LIMIT = 3000  # per file
+NET_SIZE_LIMIT = 512 * 1024  # larger files get no diff: difflib grows fast with size
 _EDIT_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
+_SNAPSHOT = b'{"type":"file-history-snapshot"'
 
 
 def _diff_lines(old: str, new: str) -> list:
@@ -471,55 +475,32 @@ def _edit_hunks(name: str, inp: dict) -> list:
     return [["+" + l for l in (_str(inp.get("new_source")) or "").splitlines()]]  # NotebookEdit
 
 
-class ChangesCache:
-    """changes() per transcript, kept until the file grows: the window asks again after every turn."""
+def changes(path: str) -> dict:
+    """The files a transcript changed with its edit tools, each with the steps that changed it.
 
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._files = {}  # path -> (size, mtime, files)
-
-    def _of(self, path: str) -> list:
-        try:
-            st = os.stat(path)
-        except OSError:
-            return []
-        with self._lock:
-            hit = self._files.get(path)
-        if hit and hit[:2] == (st.st_size, st.st_mtime):
-            return hit[2]
-        files = changes(path)
-        with self._lock:
-            self._files[path] = (st.st_size, st.st_mtime, files)
-        return files
-
-    def get(self, paths: list) -> list:
-        """The changes over all transcripts of a chat (resuming from another folder can leave two)."""
-        merged = {}
-        for path in sorted(paths, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0):
-            for changed in self._of(path):
-                into = merged.get(changed["path"])
-                if into is None:
-                    merged[changed["path"]] = {**changed, "hunks": list(changed["hunks"])}
-                    continue
-                for key in ("edits", "added", "removed"):
-                    into[key] += changed[key]
-                into["hunks"] += changed["hunks"]
-        return list(merged.values())
-
-
-def changes(path: str) -> list:
-    """The files a chat changed with its edit tools, in the order first touched, each with its diffs.
-
-    Only tool calls that succeeded count; the diffs are what the tools did, not the file's state now.
+    Only tool calls that succeeded count. "backup" is the file's name in the CLI's file history
+    (~/.claude/file-history/<session>/<backup>@v<n>, what /rewind restores from), if it kept one.
     """
-    files, calls = {}, {}
+    files, calls, tracked, cwd = {}, {}, {}, None
     with open(path, "rb") as f:
         for line in f:
+            if line.startswith(_SNAPSHOT):
+                # Before each turn the CLI records every file its tools touched so far: the backup's
+                # name, or none while the file does not exist.
+                entry = _loads(line) or {}
+                snapshot = entry.get("snapshot") if isinstance(entry.get("snapshot"), dict) else {}
+                backups = snapshot.get("trackedFileBackups")
+                for key, backup in (backups.items() if isinstance(backups, dict) else ()):
+                    name = _str((backup or {}).get("backupFileName")) if isinstance(backup, dict) else None
+                    if name and "@" in name:
+                        tracked[key] = name.split("@")[0]
+                continue
             if line.startswith(_SKIP_PREFIXES) or line.startswith(_META_PREFIXES):
                 continue
             entry = _loads(line)
             if entry is None or entry.get("isSidechain") or entry.get("type") not in ("user", "assistant"):
                 continue
+            cwd = cwd or _str(entry.get("cwd"))
             content = (entry.get("message") or {}).get("content")
             for block in content if isinstance(content, list) else ():
                 if not isinstance(block, dict):
@@ -537,18 +518,154 @@ def changes(path: str) -> list:
                         hunks = _edit_hunks(name, inp)
                     except (AttributeError, TypeError):
                         continue
-                    changed = files.setdefault(target, {"path": target, "edits": 0, "added": 0, "removed": 0,
-                                                       "created": False, "hunks": []})
+                    changed = files.setdefault(target, {"path": target, "edits": 0, "created": False, "steps": []})
                     # The tool result says whether Write made the file or replaced one.
                     result = entry.get("toolUseResult") if isinstance(entry.get("toolUseResult"), dict) else {}
                     replaced = name == "Write" and result.get("type") == "update"
+                    if not changed["edits"]:
+                        changed["created"] = name == "Write" and result.get("type") == "create"
                     changed["edits"] += 1
-                    changed["created"] = changed["created"] or (name == "Write" and not changed["hunks"] and not replaced)
                     for hunk in hunks:
-                        changed["added"] += sum(1 for l in hunk if l.startswith("+"))
-                        changed["removed"] += sum(1 for l in hunk if l.startswith("-"))
-                        cut = len(hunk) - DIFF_LINE_LIMIT
+                        cut = len(hunk) - STEP_LINE_LIMIT
                         if cut > 0:
-                            hunk = hunk[:DIFF_LINE_LIMIT] + ["… " + tr(f"({cut} Zeilen gekürzt)", f"({cut} lines cut)")]
-                        changed["hunks"].append({"tool": name, "ts": ts, "lines": hunk, "replaced": replaced})
-    return list(files.values())
+                            hunk = hunk[:STEP_LINE_LIMIT] + ["… " + tr(f"({cut} Zeilen gekürzt)", f"({cut} lines cut)")]
+                        changed["steps"].append({"tool": name, "ts": ts, "lines": hunk, "replaced": replaced})
+    for changed in files.values():
+        target = changed["path"]
+        keys = [target] + ([os.path.relpath(target, cwd)] if cwd else [])
+        changed["backup"] = next((tracked[k] for k in keys if k in tracked), None)
+    return {"files": files}
+
+
+def _read(path):
+    """(text, note): the file's text, or None if it does not exist; note says why there is no diff."""
+    try:
+        size = os.path.getsize(path)
+        if size > NET_SIZE_LIMIT:
+            return None, "large"
+        data = Path(path).read_bytes()
+    except FileNotFoundError:
+        return None, None
+    except OSError:
+        return None, "unreadable"
+    if b"\0" in data[:8192]:
+        return None, "binary"
+    try:
+        return data.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, "binary"
+
+
+def _net_diff(before: str, after: str) -> dict:
+    """A unified diff with line numbers: rows of [kind, old line, new line, text], kind @ + - or space."""
+    rows, added, removed = [], 0, 0
+    old_no = new_no = 0
+    # [2:]: without the --- and +++ file header
+    for line in list(difflib.unified_diff(before.splitlines(), after.splitlines(), n=3, lineterm=""))[2:]:
+        if line.startswith("@@"):
+            m = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            old_no, new_no = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+            rows.append(["@", None, None, line])
+        elif line.startswith("+"):
+            rows.append(["+", None, new_no, line[1:]])
+            new_no += 1
+            added += 1
+        elif line.startswith("-"):
+            rows.append(["-", old_no, None, line[1:]])
+            old_no += 1
+            removed += 1
+        else:
+            rows.append([" ", old_no, new_no, line[1:]])
+            old_no += 1
+            new_no += 1
+    cut = len(rows) - NET_LINE_LIMIT
+    if cut > 0:
+        rows = rows[:NET_LINE_LIMIT] + [["@", None, None, tr(f"… ({cut} Zeilen gekürzt)", f"… ({cut} lines cut)")]]
+    return {"rows": rows, "added": added, "removed": removed}
+
+
+class ChangesCache:
+    """What a chat changed, like a merge request: each file as it was before the chat against now.
+
+    Transcripts are parsed once per size and mtime; a file's diff is kept until it changes on disk.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._parsed = {}  # transcript path -> (size, mtime, changes())
+        self._nets = {}  # file path -> (key, result)
+
+    def _parse(self, path: str) -> dict:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return {"files": {}}
+        with self._lock:
+            hit = self._parsed.get(path)
+        if hit and hit[:2] == (st.st_size, st.st_mtime):
+            return hit[2]
+        parsed = changes(path)
+        with self._lock:
+            self._parsed[path] = (st.st_size, st.st_mtime, parsed)
+        return parsed
+
+    def get(self, session_id: str, paths: list) -> list:
+        """The files of a chat over all its transcripts (resuming from another folder can leave two)."""
+        merged = {}
+        for path in sorted(paths, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0):
+            for changed in self._parse(path)["files"].values():
+                into = merged.get(changed["path"])
+                if into is None:
+                    merged[changed["path"]] = {**changed, "steps": list(changed["steps"])}
+                    continue
+                into["edits"] += changed["edits"]
+                into["steps"] += changed["steps"]
+                into["backup"] = into["backup"] or changed["backup"]
+        return [self._net(session_id, changed) for changed in sorted(merged.values(), key=lambda c: c["path"])]
+
+    def _net(self, session_id: str, changed: dict) -> dict:
+        path = changed["path"]
+        try:
+            st = os.stat(path)
+            now = (st.st_size, st.st_mtime)
+        except OSError:
+            now = None
+        first = FILE_HISTORY / session_id / f"{changed['backup']}@v1" if changed["backup"] else None
+        key = (now, str(first), changed["created"])
+        with self._lock:
+            hit = self._nets.get(path)
+        if hit and hit[0] == key:
+            return {**changed, **hit[1]}
+        result = self._compare(changed, first, now)
+        with self._lock:
+            self._nets[path] = (key, result)
+        return {**changed, **result}
+
+    @staticmethod
+    def _compare(changed: dict, first, now) -> dict:
+        # Before: the first backup is the file as it was before the chat's first edit. A tracked file
+        # without one did not exist yet, nor did one that Write created. Else it is not known.
+        if first is not None and first.exists():
+            before, before_note = _read(first)
+            known = True  # a binary or large before is known too, it just gets no diff
+        elif changed["backup"] or changed["created"]:
+            before, before_note, known = None, None, True
+        else:
+            before, before_note, known = None, None, False
+        after, after_note = _read(changed["path"]) if now is not None else (None, None)
+        exists = now is not None
+        note = before_note or after_note
+        if not exists:
+            status = "deleted" if (before is not None or not known or before_note) else "gone"
+        elif known and before is None and not before_note:
+            status = "added"
+        else:
+            status = "modified"
+        out = {"status": status, "note": note, "known": known, "net": None, "added": None, "removed": None}
+        if note or not known:
+            return out
+        diff = _net_diff(before or "", after or "")
+        if exists and before is not None and not diff["rows"]:
+            out["status"] = "unchanged"  # edited, and back to how it was
+        out.update(net=diff["rows"], added=diff["added"], removed=diff["removed"])
+        return out

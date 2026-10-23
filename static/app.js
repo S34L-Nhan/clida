@@ -1702,43 +1702,95 @@ async function loadChanges(tab) {
 function renderChanges(tab) {
   const { files, git } = tab.changes;
   const nodes = [];
-  const head = el('div', 'changes-head');
   if (git) {
+    const repo = el('div', 'changes-head');
     const where = el('span', 'changes-branch');
     where.append(icon('branch'), git.branch || t('changes.detached'));
-    head.append(where, el('span', '', t('changes.dirty', { n: git.dirty })));
+    repo.append(where, el('span', '', t('changes.dirty', { n: git.dirty })));
+    nodes.push(repo);
   }
-  head.append(el('span', '', t('changes.count', { n: files.length })));
-  nodes.push(head, el('p', 'changes-hint', t('changes.hint')));
+  // Like the top of a merge request: how many files, how many of each kind, and the lines.
+  const sum = el('div', 'changes-sum');
+  const kinds = ['added', 'modified', 'deleted'].map((status) => [status, files.filter((f) => f.status === status).length]);
+  sum.append(el('strong', '', t('changes.files', { n: files.length })));
+  for (const [status, n] of kinds) if (n) sum.append(el('span', `status-text ${status}`, t(`changes.n.${status}`, { n })));
+  const added = files.reduce((n, f) => n + (f.added || 0), 0);
+  const removed = files.reduce((n, f) => n + (f.removed || 0), 0);
+  if (added || removed) sum.append(el('span', 'diff-add', `+${added}`), el('span', 'diff-del', `−${removed}`));
+  nodes.push(sum, el('p', 'changes-hint', t('changes.hint')));
   if (!files.length) nodes.push(el('div', 'empty-note', t('changes.none')));
   for (const file of files) nodes.push(changedFile(tab, file));
   tab.changesInner.replaceChildren(...nodes);
 }
 
+const STATUS_MARK = { added: 'A', modified: 'M', deleted: 'D', gone: 'D', unchanged: '=' };
+
 function changedFile(tab, file) {
-  const node = el('details', 'change');
-  node.open = tab.openFiles.has(file.path);
-  node.addEventListener('toggle', () => {
-    if (node.open) tab.openFiles.add(file.path); else tab.openFiles.delete(file.path);
-  });
+  const node = el('details', `change ${file.status}`);
   const summary = el('summary');
   summary.title = file.path;
-  summary.append(el('span', 'change-path', file.label));
-  if (file.created) summary.append(el('span', 'badge new', t('changes.new')));
-  summary.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `−${file.removed}`),
-    el('span', 'change-edits', t('changes.edits', { n: file.edits })));
-  node.append(summary);
-  for (const hunk of file.hunks) {
-    const when = hunk.ts ? dates().clock.format(new Date(hunk.ts)) : '';
-    node.append(el('div', 'hunk-head', [hunk.tool, hunk.replaced && t('changes.replaced'), when].filter(Boolean).join(' · ')));
-    const pre = el('pre', 'diff');
-    for (const line of hunk.lines) {
-      const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : line === '⋯' ? 'diff-gap' : '';
-      pre.append(el('span', cls, line + '\n'));
-    }
-    node.append(pre);
+  const mark = el('span', `status-mark ${file.status}`, STATUS_MARK[file.status] || 'M');
+  mark.title = t(`changes.status.${file.status}`);
+  summary.append(mark, el('span', 'change-path', file.label));
+  if (file.status !== 'modified') summary.append(el('span', `status-text ${file.status}`, t(`changes.status.${file.status}`)));
+  if (file.added != null && (file.added || file.removed)) {
+    summary.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `−${file.removed}`));
   }
+  summary.append(el('span', 'change-edits', t('changes.edits', { n: file.edits })));
+  node.append(summary);
+  // Filled on first open: a diff of thousands of lines for every file would slow the view down.
+  node.fill = () => {
+    if (node.dataset.filled) return;
+    node.dataset.filled = '1';
+    const note = file.note ? t(`changes.note.${file.note}`)
+      : !file.known ? t('changes.note.unknown')
+        : file.status === 'gone' ? t('changes.note.gone')
+          : file.status === 'unchanged' ? t('changes.note.unchanged') : '';
+    if (note) node.append(el('p', 'change-note', note));
+    if (file.net?.length) node.append(netDiff(file.net));
+    if (!file.steps.length) return;
+    // What each Edit or Write call did, in order; open from the start when there is no before.
+    const steps = el('details', 'change-steps');
+    steps.open = !file.known;
+    steps.append(el('summary', '', t('changes.steps', { n: file.steps.length })));
+    for (const step of file.steps) {
+      const when = step.ts ? dates().clock.format(new Date(step.ts)) : '';
+      steps.append(el('div', 'hunk-head', [step.tool, step.replaced && t('changes.replaced'), when].filter(Boolean).join(' · ')));
+      const pre = el('pre', 'diff');
+      for (const line of step.lines) {
+        const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : line === '⋯' ? 'diff-gap' : '';
+        pre.append(el('span', cls, line + '\n'));
+      }
+      steps.append(pre);
+    }
+    node.append(steps);
+  };
+  node.open = tab.openFiles.has(file.path);
+  if (node.open) node.fill();
+  node.addEventListener('toggle', () => {
+    if (node.open) {
+      tab.openFiles.add(file.path);
+      node.fill();
+    } else {
+      tab.openFiles.delete(file.path);
+    }
+  });
   return node;
+}
+
+// The file's diff from before the chat to now, with old and new line numbers as in a merge request.
+function netDiff(rows) {
+  const box = el('div', 'net-diff');
+  const table = el('div', 'net-rows');
+  for (const [kind, oldNo, newNo, text] of rows) {
+    const cls = { '+': 'add', '-': 'del', '@': 'hunk' }[kind] || '';
+    const row = el('div', `dl ${cls}`);
+    row.append(el('span', 'ln', oldNo ?? ''), el('span', 'ln', newNo ?? ''),
+      el('span', 'sign', kind === '@' ? '' : kind), el('span', 'code', text));
+    table.append(row);
+  }
+  box.append(table);
+  return box;
 }
 
 // ---- attachments --------------------------------------------------------------------------

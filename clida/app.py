@@ -221,9 +221,10 @@ class Desk:
         return transcripts.render(info["path"])
 
     def changes(self, session_id: str, brief: bool = False) -> dict:
-        """The files the chat changed with its edit tools, and the git branch of its folder.
+        """The files the chat changed with its edit tools, each as before the chat against now,
+        and the git branch of its folder.
 
-        brief leaves the diffs out: the header and the switch only need the counts.
+        brief leaves the diffs and steps out: the header and the switch only need the counts.
         """
         info = self.index.get(session_id)
         if info is None:
@@ -232,12 +233,12 @@ class Desk:
         cwd = info["cwd"] if info else next((t.cwd for t in self.terminals.all() if t.session_id == session_id), None)
         if info is None and cwd is None:
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
-        files = self.changes_cache.get(self.index.paths(session_id)) if info else []
+        files = self.changes_cache.get(session_id, self.index.paths(session_id)) if info else []
         out = []
         for changed in files:
             label = (os.path.relpath(changed["path"], cwd)
                      if cwd and changed["path"].startswith(cwd.rstrip("/") + "/") else _home_label(changed["path"]))
-            out.append({**changed, "label": label, **({"hunks": []} if brief else {})})
+            out.append({**changed, "label": label, **({"net": None, "steps": []} if brief else {})})
         git = _git_state(cwd) if cwd and os.path.isdir(cwd) else None
         return {"files": out, "git": git}
 
