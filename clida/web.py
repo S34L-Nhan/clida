@@ -33,6 +33,7 @@ _TICKETS = {}  # one-time login ticket -> expiry (monotonic)
 _TICKET_LOCK = threading.Lock()
 SID = r"(?P<sid>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
 FID = r"(?P<fid>f[0-9a-f]{12})"
+NID = r"(?P<nid>n[0-9a-f]{12})"
 ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name in [
     ("GET", r"/", "index"),
     ("GET", r"/static/(?P<name>[\w.-]+)", "static"),
@@ -45,6 +46,11 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("PUT", rf"/api/sessions/{SID}/folder", "move_session"),
     ("PUT", rf"/api/sessions/{SID}/archived", "archive_session"),
     ("DELETE", rf"/api/sessions/{SID}", "delete_session"),
+    ("GET", rf"/api/sessions/{SID}/notes", "notes"),
+    ("PUT", rf"/api/sessions/{SID}/notes/session", "session_note"),
+    ("POST", rf"/api/sessions/{SID}/notes", "add_note"),
+    ("PUT", rf"/api/sessions/{SID}/notes/{NID}", "edit_note"),
+    ("DELETE", rf"/api/sessions/{SID}/notes/{NID}", "delete_note"),
     ("POST", r"/api/folders", "create_folder"),
     ("PUT", rf"/api/folders/{FID}", "rename_folder"),
     ("DELETE", rf"/api/folders/{FID}", "delete_folder"),
@@ -220,6 +226,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_delete_session(self, sid):
         self._send_json(200, self.desk.delete_session(sid))
+
+    def route_notes(self, sid):
+        self._send_json(200, self.desk.notes_of(sid))
+
+    def route_session_note(self, sid):
+        self._send_json(200, self.desk.set_session_note(sid, self._body().get("body")))
+
+    def route_add_note(self, sid):
+        self._send_json(200, self.desk.add_note(sid, self._body()))
+
+    def route_edit_note(self, sid, nid):
+        self._send_json(200, self.desk.edit_note(sid, nid, self._body().get("body")))
+
+    def route_delete_note(self, sid, nid):
+        self._send_json(200, self.desk.delete_note(sid, nid))
 
     def route_create_folder(self):
         self._send_json(200, self.desk.create_folder(self._body().get("name")))

@@ -616,3 +616,68 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
   font-size: 15px;
   pointer-events: none;  /* the drag events belong to the views underneath */
 }
+
+/* ---- notes ------------------------------------------------------------------------------ */
+
+.session-note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  max-height: 30vh;
+  overflow-y: auto;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--warn) 9%, var(--bg));
+  font-size: 13.5px;
+  cursor: pointer;
+  flex: none;
+}
+.session-note > svg { width: 16px; height: 16px; flex: none; margin-top: 3px; color: var(--warn); }
+.session-note .md { flex: 1; min-width: 0; }
+.session-note .note-editor { flex: 1; margin: 2px 0; cursor: auto; }
+.msg-wrap { position: relative; }
+.msg-wrap .note-add {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  display: none;
+  width: 28px;
+  height: 28px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.msg-wrap.user .note-add { right: auto; left: 0; }
+.msg-wrap:hover .note-add, .msg-wrap .note-add:focus-visible { display: inline-grid; }
+.msg-wrap .note-add svg { width: 15px; height: 15px; }
+.note-card {
+  margin: 4px 0 16px;
+  padding: 8px 12px 10px;
+  border-left: 3px solid var(--warn);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--warn) 8%, var(--bg));
+  font-size: 13.5px;
+}
+.note-head { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.note-head > svg { width: 14px; height: 14px; color: var(--warn); }
+.note-time { font-weight: normal; }
+.note-head .icon-btn { width: 24px; height: 24px; margin-left: auto; opacity: 0; }
+.note-card:hover .note-head .icon-btn, .note-head .icon-btn:focus-visible { opacity: 1; }
+.note-head .icon-btn svg { width: 14px; height: 14px; }
+.note-body { margin-top: 4px; }
+.note-preview { color: var(--muted); font-size: 12px; font-style: italic; margin-bottom: 4px; }
+.note-editor { margin: 6px 0 14px; }
+.note-editor textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+.note-editor textarea:focus { outline: none; border-color: var(--accent); }
+.note-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.note-hint { margin-right: auto; color: var(--muted); font-size: 12px; }
+.note-mark svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; color: var(--warn); }

@@ -4,6 +4,7 @@ import { WebLinksAddon } from '/vendor/addon-web-links.mjs';
 import { marked } from '/vendor/marked.esm.js';
 import DOMPurify from '/vendor/purify.es.mjs';
 import hljs from '/vendor/highlight.mjs';
+import { htmlToMarkdown } from '/static/paste.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -26,6 +27,7 @@ const ICONS = {
   restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 5v5h5"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v10l-6 6H5z"/><path d="M13 20v-6h6"/><path d="M8.5 9h7M8.5 12.5h4"/></svg>',
   paperclip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
@@ -162,7 +164,9 @@ async function api(method, path, body) {
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
-    const err = new Error(data?.error || `HTTP ${res.status}`);
+    // Exactly this text comes only for an unknown route: the server runs older code than the page.
+    const stale = res.status === 404 && data?.error === 'Nicht gefunden';
+    const err = new Error(stale ? 'Diese Funktion braucht einen Neustart: clida restart' : data?.error || `HTTP ${res.status}`);
     err.status = res.status;
     throw err;
   }
@@ -346,10 +350,15 @@ function focusSidebar(key) {
 function sessionItem(s) {
   const item = el('div', 'item');
   item.dataset.id = s.id;
-  item.title = s.first_prompt ? s.first_prompt.slice(0, 300) : '';
+  item.title = [s.note && `Notiz: ${s.note}`, s.first_prompt?.slice(0, 300)].filter(Boolean).join('\n\n');
   const text = el('div', 'item-text');
   const title = el('div', 'item-title', s.title);
   const meta = el('div', 'item-meta', [s.cwd_label, timeLabel(s.mtime)].filter(Boolean).join(' · '));
+  if (s.note) {
+    const mark = el('span', 'note-mark');
+    mark.append(icon('note'));
+    meta.prepend(mark);
+  }
   text.append(title, meta);
   const rename = el('button', 'icon-btn');
   rename.title = 'Umbenennen';
@@ -720,10 +729,12 @@ function openSession(sid) {
 }
 
 function addTab(id, view) {
-  const tab = { id, view, term: null, fit: null, ws: null, loaded: false, showAll: false, items: [] };
+  const tab = { id, view, term: null, fit: null, ws: null, loaded: false, showAll: false, items: [],
+    notes: { session: null, messages: [] } };
   buildView(tab);
   state.tabs.push(tab);
   saveTabs();
+  loadNotes(tab);
   return tab;
 }
 
@@ -768,11 +779,15 @@ function buildView(tab) {
     state.attachTarget = tab;
     $('#attach-input').click();
   };
+  const noteBtn = el('button', 'icon-btn');
+  noteBtn.title = 'Notiz zu dieser Session (nur für dich, Claude sieht sie nie)';
+  noteBtn.append(icon('note'));
+  noteBtn.onclick = () => editSessionNote(tab);
   const resume = el('button', 'btn primary', 'Fortsetzen');
   resume.onclick = () => resumeTab(tab);
   const stop = el('button', 'btn danger', 'Beenden');
   stop.onclick = () => stopTab(tab);
-  actions.append(refresh, attach, resume, stop);
+  actions.append(refresh, noteBtn, attach, resume, stop);
   head.append(titleBox, widthCtl, seg, actions);
 
   const body = el('div', 'view-body');
@@ -785,9 +800,11 @@ function buildView(tab) {
   overlay.hidden = true;
   termWrap.append(termHost, overlay);
   body.append(hist, termWrap);
-  root.append(head, body);
+  const sessionNote = el('div', 'session-note');
+  sessionNote.hidden = true;
+  root.append(head, sessionNote, body);
   $('#views').append(root);
-  Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, refresh, attach, resume, stop, hist, histInner, termWrap, termHost, overlay });
+  Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, refresh, attach, resume, stop, sessionNote, hist, histInner, termWrap, termHost, overlay });
 }
 
 function activate(id) {
@@ -858,7 +875,7 @@ function renderTabs() {
   const signature = JSON.stringify(state.tabs.map((tab) => {
     const sid = tabSession(tab);
     return [tab.id, sid, titleOf(sid), state.terminals.get(tab.id)?.status, statusFor(sid).cls,
-      state.attention.has(tab.id), tab.id === state.active];
+      state.attention.has(tab.id), tab.id === state.active, state.byId.get(sid)?.note];
   }));
   if (signature === state.tabsSignature) return;
   state.tabsSignature = signature;
@@ -876,7 +893,8 @@ function renderTabs() {
     node.setAttribute('aria-selected', String(tab.id === state.active));
     node.dataset.id = tab.id;
     node.tabIndex = 0;
-    node.title = titleOf(sid) + (st.label ? ` – ${st.label}` : '');
+    const note = state.byId.get(sid)?.note;
+    node.title = titleOf(sid) + (st.label ? ` – ${st.label}` : '') + (note ? `\nNotiz: ${note}` : '');
     const dot = el('span', `dot ${row ? row.status : st.cls} ${state.attention.has(tab.id) ? 'attention' : ''}`);
     const label = el('span', 'tab-label', titleOf(sid));
     label.ondblclick = (ev) => { ev.stopPropagation(); startRename(label, sid); };
@@ -1055,7 +1073,7 @@ async function loadHistory(tab, { quiet = false } = {}) {
   if (!quiet) tab.histInner.replaceChildren(el('div', 'loading', 'Lade Verlauf …'));
   let data;
   try {
-    data = await api('GET', `/api/sessions/${sid}/messages`);
+    [data] = await Promise.all([api('GET', `/api/sessions/${sid}/messages`), loadNotes(tab, { render: false })]);
   } catch (e) {
     tab.histInner.replaceChildren(el('div', 'empty-note', e.message));
     return;
@@ -1098,9 +1116,203 @@ function renderHistory(tab) {
       continue;
     }
     steps = null;
-    nodes.push(renderItem(item));
+    nodes.push(...withNotes(tab, item));
+  }
+  // Notes whose message is no longer in the transcript still deserve a place.
+  const shown = new Set(items.map((item) => item.uid));
+  const orphans = tab.notes.messages.filter((note) => !shown.has(note.anchor));
+  if (orphans.length && items.length) {
+    nodes.push(el('div', 'divider', 'Notizen zu Nachrichten, die nicht mehr im Verlauf stehen'));
+    for (const note of orphans) nodes.push(noteCard(tab, note, true));
   }
   tab.histInner.replaceChildren(...nodes);
+}
+
+// ---- notes --------------------------------------------------------------------------------
+// Private notes on a session and on single messages. They live in CLIDA's own store and are never
+// typed into a terminal or written to a transcript, so neither the CLI nor the model sees them.
+
+const NOTE_MAX = 2000;
+
+async function loadNotes(tab, { render = true } = {}) {
+  try {
+    tab.notes = await api('GET', `/api/sessions/${tabSession(tab)}/notes`);
+  } catch {
+    return;  // no notes, or the server predates them: the view simply shows none
+  }
+  renderSessionNote(tab);
+  if (render && tab.loaded) rerenderHistory(tab);
+}
+
+// Re-render the history without losing the reader's place in it.
+function rerenderHistory(tab) {
+  const top = tab.hist.scrollTop;
+  renderHistory(tab);
+  tab.hist.scrollTop = top;
+}
+
+// Paste rendered chat output as markdown instead of flat text (see paste.js).
+function pasteAsMarkdown(ev) {
+  const html = ev.clipboardData?.getData('text/html');
+  const markdown = html && htmlToMarkdown(html);
+  if (!markdown) return;
+  ev.preventDefault();
+  const area = ev.target;
+  area.setRangeText(markdown, area.selectionStart, area.selectionEnd, 'end');
+  area.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function noteEditor({ initial = '', onSave, onCancel, onDelete }) {
+  const box = el('div', 'note-editor');
+  const area = el('textarea');
+  area.maxLength = NOTE_MAX;
+  area.value = initial;
+  area.rows = initial ? 6 : 4;
+  area.placeholder = 'Notiz in Markdown – nur für dich, Claude sieht sie nie';
+  area.addEventListener('paste', pasteAsMarkdown);
+  const actions = el('div', 'note-actions');
+  actions.append(el('span', 'note-hint', `${MAC ? '⌘' : 'Strg'}+Enter speichert · Esc verwirft`));
+  if (onDelete) {
+    const del = el('button', 'btn danger', 'Löschen');
+    del.onclick = onDelete;
+    actions.append(del);
+  }
+  const cancel = el('button', 'btn', 'Abbrechen');
+  const save = el('button', 'btn primary', 'Speichern');
+  cancel.onclick = onCancel;
+  save.onclick = () => onSave(area.value.trim());
+  actions.append(cancel, save);
+  area.onkeydown = (ev) => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+      ev.preventDefault();
+      onSave(area.value.trim());
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      onCancel();
+    }
+  };
+  box.append(area, actions);
+  requestAnimationFrame(() => area.focus());
+  return box;
+}
+
+function renderSessionNote(tab) {
+  const bar = tab.sessionNote;
+  const note = tab.notes.session;
+  bar.hidden = !note;
+  if (!note) return;
+  const body = el('div', 'md');
+  renderMarkdown(body, note.body);
+  bar.replaceChildren(icon('note'), body);
+  bar.title = 'Klicken zum Bearbeiten';
+  bar.onclick = (ev) => { if (!ev.target.closest('a, button')) editSessionNote(tab); };
+}
+
+function editSessionNote(tab) {
+  const bar = tab.sessionNote;
+  if (bar.querySelector('.note-editor')) return;
+  const save = async (body) => {
+    try {
+      const res = await change('PUT', `/api/sessions/${tabSession(tab)}/notes/session`, { body });
+      tab.notes.session = res.session;
+    } catch (e) {
+      toast(e.message);
+      return;
+    }
+    renderSessionNote(tab);
+  };
+  bar.onclick = null;
+  bar.hidden = false;
+  bar.title = '';
+  bar.replaceChildren(noteEditor({
+    initial: tab.notes.session?.body || '',
+    onSave: save,
+    onCancel: () => renderSessionNote(tab),
+    onDelete: tab.notes.session ? () => save('') : null,
+  }));
+}
+
+// A user or assistant message, with its add-note button and the notes anchored to it.
+function withNotes(tab, item) {
+  const node = renderItem(item);
+  if (!item.uid || (item.k !== 'user' && item.k !== 'assistant')) return [node];
+  const wrap = el('div', `msg-wrap ${item.k}`);
+  const add = el('button', 'icon-btn note-add');
+  add.title = 'Notiz zu dieser Nachricht';
+  add.append(icon('note'));
+  add.onclick = () => {
+    if (wrap.nextElementSibling?.classList.contains('note-editor')) return;
+    const editor = noteEditor({
+      onSave: async (body) => {
+        if (!body) {
+          editor.remove();
+          return;
+        }
+        try {
+          const note = await change('POST', `/api/sessions/${tabSession(tab)}/notes`, {
+            anchor: item.uid, role: item.k, preview: item.text.slice(0, 300), body,
+          });
+          tab.notes.messages.push(note);
+        } catch (e) {
+          toast(e.message);
+          return;
+        }
+        rerenderHistory(tab);
+      },
+      onCancel: () => editor.remove(),
+    });
+    wrap.after(editor);
+  };
+  wrap.append(node, add);
+  const cards = tab.notes.messages.filter((note) => note.anchor === item.uid).map((note) => noteCard(tab, note));
+  return [wrap, ...cards];
+}
+
+function noteCard(tab, note, withPreview = false) {
+  const card = el('div', 'note-card');
+  const head = el('div', 'note-head');
+  head.append(icon('note'), el('span', '', 'Notiz'), el('span', 'note-time', timeLabel(note.updated)));
+  const edit = el('button', 'icon-btn');
+  edit.title = 'Bearbeiten';
+  edit.append(icon('pencil'));
+  head.append(edit);
+  const body = el('div', 'md note-body');
+  renderMarkdown(body, note.body);
+  if (withPreview && note.preview) card.append(el('div', 'note-preview', `„${note.preview}“`));
+  card.append(head, body);
+  const remove = async () => {
+    if (!confirm('Notiz löschen?')) return;
+    try {
+      await change('DELETE', `/api/sessions/${tabSession(tab)}/notes/${note.id}`);
+    } catch (e) {
+      toast(e.message);
+      return;
+    }
+    tab.notes.messages = tab.notes.messages.filter((n) => n.id !== note.id);
+    rerenderHistory(tab);
+  };
+  edit.onclick = () => {
+    card.replaceWith(noteEditor({
+      initial: note.body,
+      onSave: async (text) => {
+        if (!text) {
+          remove();
+          return;
+        }
+        try {
+          Object.assign(note, await change('PUT', `/api/sessions/${tabSession(tab)}/notes/${note.id}`, { body: text }));
+        } catch (e) {
+          toast(e.message);
+          return;
+        }
+        rerenderHistory(tab);
+      },
+      onCancel: () => rerenderHistory(tab),
+      onDelete: remove,
+    }));
+  };
+  return card;
 }
 
 function renderItem(item) {

@@ -276,6 +276,11 @@ def _user_string_items(text: str):
     return [{"k": "user", "text": stripped}]
 
 
+def _uid(uuid, n: int):
+    """A stable anchor for notes: the entry's uuid plus the item's place inside that entry."""
+    return f"{uuid}#{n}" if uuid else None
+
+
 def render(path: str) -> dict:
     """Turn a transcript into display items for the history view."""
     items, tools = [], {}
@@ -287,6 +292,7 @@ def render(path: str) -> dict:
             if entry is None or entry.get("isSidechain"):
                 continue
             kind, ts = entry.get("type"), entry.get("timestamp")
+            uuid = entry.get("uuid")
             if kind == "system" and entry.get("subtype") == "compact_boundary":
                 items.append({"k": "divider", "text": "Kontext komprimiert", "ts": ts})
                 continue
@@ -300,8 +306,8 @@ def render(path: str) -> dict:
                 if entry.get("isMeta"):
                     continue
                 if isinstance(content, str):
-                    for item in _user_string_items(content):
-                        item["ts"] = ts
+                    for n, item in enumerate(_user_string_items(content)):
+                        item["ts"], item["uid"] = ts, _uid(uuid, n)
                         items.append(item)
                     continue
                 texts = []
@@ -318,16 +324,16 @@ def render(path: str) -> dict:
                         texts.extend(i for i in _user_string_items(block.get("text", "")) if i["k"] == "user")
                     elif btype == "image":
                         texts.append({"k": "user", "text": "[Bild]"})
-                for item in texts:
-                    item["ts"] = ts
+                for n, item in enumerate(texts):
+                    item["ts"], item["uid"] = ts, _uid(uuid, n)
                     items.append(item)
                 continue
-            for block in content if isinstance(content, list) else ():
+            for n, block in enumerate(content if isinstance(content, list) else ()):
                 if not isinstance(block, dict):
                     continue
                 btype = block.get("type")
                 if btype == "text" and block.get("text", "").strip():
-                    items.append({"k": "assistant", "text": block["text"], "ts": ts})
+                    items.append({"k": "assistant", "text": block["text"], "ts": ts, "uid": _uid(uuid, n)})
                 elif btype == "thinking" and block.get("thinking", "").strip():
                     items.append({"k": "thinking", "text": _clip(block["thinking"], TOOL_TEXT_LIMIT), "ts": ts})
                 elif btype == "tool_use":

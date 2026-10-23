@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import STATE_DIR, registry, transcripts
 from .library import Library
+from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .terminals import UPLOADS, Terminals
 
 UPLOAD_LIMIT = 50 * 1024 * 1024
@@ -85,6 +86,7 @@ class Desk:
         self.index = transcripts.Index()
         self.titles = Titles()
         self.library = Library()
+        self.notes = Notes()
         self.terminals = Terminals(claude)
 
     def _require_session(self, session_id: str) -> dict:
@@ -135,6 +137,7 @@ class Desk:
     def sessions(self) -> dict:
         infos = self.index.scan()
         library = self.library.snapshot()
+        notes = self.notes.session_previews()
         out = []
         for info in infos:
             out.append({
@@ -142,6 +145,7 @@ class Desk:
                 "cwd_label": _home_label(info["cwd"]) or info["project"], "mtime": info["mtime"],
                 "first_prompt": info["first_prompt"], "last_prompt": info["last_prompt"],
                 "folder": library["folder_of"].get(info["id"]), "archived": info["id"] in library["archived"],
+                "note": notes.get(info["id"]),
             })
         known = {s["id"] for s in out}
         for term in self.terminals.all():
@@ -153,6 +157,7 @@ class Desk:
                     "first_prompt": None, "last_prompt": None,
                     "folder": library["folder_of"].get(term.session_id),
                     "archived": term.session_id in library["archived"],
+                    "note": notes.get(term.session_id),
                 })
         out.sort(key=lambda s: s["mtime"], reverse=True)
         return {"sessions": out, "folders": library["folders"], "home": str(Path.home()), **self.status()}
@@ -253,6 +258,7 @@ class Desk:
         self.library.forget(session_id)
         self.titles.set(session_id, None)
         shutil.rmtree(UPLOADS / session_id, ignore_errors=True)
+        self.notes.forget(session_id)
         term = self.terminals.get(session_id)
         if term is not None and not term.alive:
             self.terminals.stop(session_id)
@@ -289,6 +295,46 @@ class Desk:
         finally:
             part.unlink(missing_ok=True)
         return {"path": str(target)}
+
+    # -- notes (private: never written to a terminal or a transcript) ------------------------
+
+    def notes_of(self, session_id: str) -> dict:
+        return self.notes.get(session_id)
+
+    @staticmethod
+    def _note_body(body) -> str:
+        body = str(body or "").strip()
+        if len(body) > BODY_MAX:
+            raise HttpError(400, f"Notiz ist länger als {BODY_MAX} Zeichen")
+        return body
+
+    def set_session_note(self, session_id: str, body) -> dict:
+        return {"session": self.notes.set_session(session_id, self._note_body(body))}
+
+    def add_note(self, session_id: str, body: dict) -> dict:
+        text = self._note_body(body.get("body"))
+        anchor = str(body.get("anchor") or "")
+        role = body.get("role")
+        if not text:
+            raise HttpError(400, "Notiz ist leer")
+        if not re.fullmatch(r"[0-9a-f-]{36}#\d{1,4}", anchor) or role not in ("user", "assistant"):
+            raise HttpError(400, "Ungültige Nachricht")
+        preview = " ".join(str(body.get("preview") or "").split())[:PREVIEW_MAX]
+        return self.notes.add(session_id, anchor, role, preview, text)
+
+    def edit_note(self, session_id: str, note_id: str, body) -> dict:
+        text = self._note_body(body)
+        if not text:
+            raise HttpError(400, "Notiz ist leer")
+        note = self.notes.edit(session_id, note_id, text)
+        if note is None:
+            raise HttpError(404, "Notiz nicht gefunden")
+        return note
+
+    def delete_note(self, session_id: str, note_id: str) -> dict:
+        if not self.notes.remove(session_id, note_id):
+            raise HttpError(404, "Notiz nicht gefunden")
+        return {"ok": True}
 
     def stop_terminal(self, terminal_id: str) -> dict:
         if not self.terminals.stop(terminal_id):

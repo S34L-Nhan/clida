@@ -6,6 +6,11 @@ A desktop window for the Claude Code CLI, similar to Claude Desktop. It runs on 
 - **Rename chats**: pencil icon, double-click the title in the list or on a tab, or click the heading.
 - **Folders**: the folder icon at the top of the sidebar creates a folder. Drag chats into it, and drag them out again to put them back in the main list. Right-click a folder to rename or delete it. Deleting a folder moves its chats back to the main list.
 - **Right-click on a chat**: *Archivieren* (archive) takes it out of the list but keeps its history. It can be restored from the *Archiv* section at the bottom. *Löschen* (delete) asks first, then removes the chat from disk for good: transcript, tool output, file backups and env snapshot. A running session must be stopped first. Nothing else has a right-click menu, except text fields (paste, spelling).
+- **Notes**, private to you:
+  - A *session note* per chat (note icon in the header), e.g. "waits for review of MR 4027". It shows under the header in both views, marks the chat in the sidebar and sits in the tab's tooltip, so with several sessions running you see at once where each one stands.
+  - *Message notes*: hover a message in the history and click the note icon; the note sits right under the message.
+  - Both are markdown. Pasting rendered output keeps lists, bold and code: the converter is ported from Pablo Oliva's [Session Notes plugin for bb](https://github.com/pablooliva/bb-ide-session-notes-plugin) (MIT).
+  - Notes never reach Claude: CLIDA keeps them in its own store and never types them into a terminal or writes them to a transcript. They go when the chat is deleted and stay when it is archived.
 - **Attachments** in the terminal:
   - *Ctrl+V* (⌘V on a Mac) pastes a screenshot or a copied image file just as in the plain CLI: the CLI reads the clipboard itself, with the file's real path.
   - *Drag a file onto the terminal* or use the *paperclip* in the header. A browser never reveals where a file lives on disk, so CLIDA copies it into `~/.clida/uploads/<session>/` and pastes that path; images become `[Image #n]`.
@@ -95,7 +100,7 @@ The tooltips and the start page show the keys of the platform in use.
   - `terminals.py` starts each session with `pty.fork()` as the real `claude` CLI, with `--add-dir` on the session's upload folder so the CLI may read attached files. Up to 2 MB of output is buffered, so a newly opened tab can rebuild the screen. Each tab gets its own send queue, so a slow tab never stalls a session.
   - `transcripts.py` reads the transcripts in `~/.claude/projects/*/*.jsonl`. Files are read incrementally; the index is cached in `~/.clida/index.json`.
   - `registry.py` reads `~/.claude/sessions/<pid>.json`, where every running CLI reports its state (busy/idle/waiting). It checks that the process still lives via `/proc` on Linux and WSL, and via `ps` on macOS.
-  - `library.py` stores folders and the archive.
+  - `library.py` stores folders and the archive, `notes.py` the notes. A message note is anchored to the transcript entry's `uuid`, which stays stable across reloads, resumes and compactions.
   - `ws.py` is a minimal WebSocket implementation for the terminal stream.
 - `static/` is the frontend: vanilla JS, no build step. xterm.js, marked, DOMPurify and highlight.js come from `npm install` into `node_modules/` (`clida` does this on first start) and are served locally.
 
@@ -125,6 +130,7 @@ One limit comes from the browser: cookies do not distinguish ports, so other loc
 | `~/.clida/index.json` | Chat index cache (safe to delete) |
 | `~/.clida/titles.json` | Titles set in CLIDA |
 | `~/.clida/library.json` | Folders and archived chats |
+| `~/.clida/notes.json` | Session and message notes |
 | `~/.clida/uploads/` | Copies of attached files, one folder per session (removed when the chat is deleted) |
 | `~/.clida/token` | Login token of the window |
 
