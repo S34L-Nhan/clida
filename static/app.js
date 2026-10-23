@@ -69,6 +69,8 @@ const state = {
   dragging: null,   // session id while a chat is dragged
   menu: null,       // open context menu
   sessionsSeq: 0,   // numbers sidebar loads, so a late answer cannot undo a newer state
+  tabPress: null,   // pressed or dragged tab (see tabPointerDown)
+  tabSettle: null,  // a dropped tab still gliding into its slot
   online: true,
 };
 
@@ -838,6 +840,11 @@ function cycleTab(step) {
 
 function renderTabs() {
   if (state.renaming && document.activeElement?.closest('#tabs')) return;
+  // A rebuild would pull the pressed, dragged or gliding tab away; only the active mark changes.
+  if (state.tabPress || state.tabSettle) {
+    syncTabClasses();
+    return;
+  }
   // Polling repaints every 2 s; rebuilding unchanged tabs would only throw away focus and hover.
   const signature = JSON.stringify(state.tabs.map((tab) => {
     const sid = tabSession(tab);
@@ -871,12 +878,129 @@ function renderTabs() {
     node.onclick = () => activate(tab.id);
     node.onauxclick = (ev) => { if (ev.button === 1) closeTab(tab); };
     node.onkeydown = (ev) => onItemKey(ev, node, () => activate(tab.id), () => startRename(label, sid));
+    node.onpointerdown = (ev) => tabPointerDown(ev, tab, node);
     node.append(dot, label, close);
     return node;
   });
   $('#tabs').replaceChildren(...nodes);
   const again = focusId && $(`#tabs .tab[data-id="${focusId}"]`);
   if (again) (focusClose ? again.querySelector('.icon-btn') : again).focus();
+}
+
+// ---- tab order: drag tabs like in Chrome -------------------------------------------------
+// Pressing a tab activates it, the pressed tab follows the pointer, the others slide aside, and on
+// release it glides into its new slot. Meanwhile the 2 s repaint leaves the tab nodes alone.
+
+const TAB_DRAG_START = 4;  // px of movement before a press becomes a drag (a click stays a click)
+const TAB_SLIDE_MS = 150;
+
+function tabPointerDown(ev, tab, node) {
+  if (ev.button !== 0 || ev.target.closest('button, input')) return;
+  settleTabs();  // a tab still gliding stops in its slot, so this press sees the real layout
+  state.tabPress = { id: tab.id, node, startX: ev.clientX, pointerId: ev.pointerId, dragging: false };
+  if (state.active !== tab.id) activate(tab.id);
+}
+
+function syncTabClasses() {
+  for (const node of document.querySelectorAll('#tabs .tab')) {
+    const on = node.dataset.id === state.active;
+    node.classList.toggle('active', on);
+    node.setAttribute('aria-selected', String(on));
+  }
+}
+
+// End the glide of a dropped tab at once. The DOM is already in the new order, so nothing is rebuilt
+// here: a press that comes in meanwhile keeps the node it grabbed.
+function settleTabs() {
+  const settle = state.tabSettle;
+  if (!settle) return;
+  clearTimeout(settle.timer);
+  for (const node of settle.nodes) {
+    node.classList.remove('sliding', 'landing');
+    node.style.transform = '';
+  }
+  state.tabSettle = null;
+}
+
+function startTabDrag(press) {
+  const slots = [...document.querySelectorAll('#tabs .tab')].map((node) => {
+    const box = node.getBoundingClientRect();
+    return { node, left: box.left, width: box.width };
+  });
+  press.from = slots.findIndex((slot) => slot.node === press.node);
+  press.slot = slots[press.from];
+  press.others = slots.filter((slot) => slot.node !== press.node);
+  press.step = press.slot.width + (parseFloat(getComputedStyle($('#tabs')).columnGap) || 0);
+  const last = slots[slots.length - 1];
+  press.minDx = slots[0].left - press.slot.left;
+  press.maxDx = last.left + last.width - (press.slot.left + press.slot.width);
+  press.target = press.from;
+  press.dragging = true;
+  try { press.node.setPointerCapture(press.pointerId); } catch { /* pointer already gone */ }
+  $('#tabs').classList.add('dragging');  // no hover effects on the tabs that slide by
+  press.node.classList.add('lifted');
+  for (const other of press.others) other.node.classList.add('sliding');
+}
+
+function tabPointerMove(ev) {
+  const press = state.tabPress;
+  if (!press || ev.pointerId !== press.pointerId) return;
+  const dx = ev.clientX - press.startX;
+  if (!press.dragging) {
+    if (Math.abs(dx) < TAB_DRAG_START) return;
+    startTabDrag(press);
+  }
+  const offset = Math.max(press.minDx, Math.min(press.maxDx, dx));
+  press.node.style.transform = `translateX(${offset}px)`;
+  // A neighbour makes room once the leading edge passes its middle: the left edge for tabs on
+  // the left, the right edge for tabs on the right. Middles alone fail for tabs of other widths.
+  const left = press.slot.left + offset;
+  const right = left + press.slot.width;
+  press.target = press.others.filter((other, i) => {
+    const middle = other.left + other.width / 2;
+    return i < press.from ? left >= middle : right > middle;
+  }).length;
+  press.others.forEach((other, i) => {
+    let shift = 0;
+    if (press.target > press.from && i >= press.from && i < press.target) shift = -press.step;
+    if (press.target < press.from && i >= press.target && i < press.from) shift = press.step;
+    other.node.style.transform = shift ? `translateX(${shift}px)` : '';
+  });
+}
+
+function tabPointerUp(ev) {
+  const press = state.tabPress;
+  if (!press || ev.pointerId !== press.pointerId) return;
+  if (!press.dragging) {
+    state.tabPress = null;
+    return;
+  }
+  // Every tab glides from where it is on screen right now - the dropped one from the pointer,
+  // the others from wherever their slide had got to - into its new slot (FLIP).
+  const nodes = [press.node, ...press.others.map((other) => other.node)];
+  const onScreen = nodes.map((node) => node.getBoundingClientRect().left);
+  $('#tabs').classList.remove('dragging');
+  state.tabs.splice(press.target, 0, state.tabs.splice(press.from, 1)[0]);
+  $('#tabs').insertBefore(press.node, press.others[press.target]?.node || null);
+  press.node.classList.replace('lifted', 'landing');
+  for (const node of nodes) {
+    node.classList.remove('sliding');
+    node.style.transform = '';
+  }
+  const slots = nodes.map((node) => node.getBoundingClientRect().left);
+  nodes.forEach((node, i) => { node.style.transform = `translateX(${onScreen[i] - slots[i]}px)`; });
+  press.node.getBoundingClientRect();  // apply these start positions before the transition begins
+  for (const node of nodes) {
+    node.classList.add('sliding');
+    node.style.transform = '';
+  }
+  state.tabPress = null;
+  saveTabs();
+  const timer = setTimeout(() => {
+    settleTabs();
+    renderTabs();
+  }, TAB_SLIDE_MS + 20);
+  state.tabSettle = { nodes, timer };
 }
 
 function paintView(tab) {
@@ -1288,6 +1412,9 @@ function wire() {
   $('#delete-cancel').onclick = () => $('#delete-dialog').close('cancel');
   $('#delete-confirm').onclick = () => $('#delete-dialog').close('delete');
   dropZone($('#session-list'), null);
+  window.addEventListener('pointermove', tabPointerMove);
+  window.addEventListener('pointerup', tabPointerUp);
+  window.addEventListener('pointercancel', tabPointerUp);
 
   // Only chats and folders have a menu. Text fields keep the browser's own (paste, spelling).
   document.addEventListener('contextmenu', (ev) => {

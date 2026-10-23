@@ -76,6 +76,7 @@ WSL shuts down once no `wsl.exe` is left on the Windows side, and takes the serv
 | Ctrl+C with a selection | ⌘C | Copy. On Windows, Ctrl+C without a selection goes to the CLI; on macOS Ctrl+C always does. |
 | Ctrl+V | ⌘V | Paste. On macOS, Ctrl+V goes to the CLI (for pasting images). |
 | Middle-click on a tab | Middle-click on a tab | Close tab |
+| Drag a tab left or right | Drag a tab left or right | Reorder tabs (the order is kept) |
 | Tab key, then Enter | Tab key, then Enter | Open a chat or tab with the keyboard |
 | F2 | F2 | Rename the selected chat or tab |
 
