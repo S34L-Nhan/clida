@@ -21,6 +21,7 @@ MAX_FILES = 200
 MAX_REPOS = 5
 OUTSIDE_TTL = 10  # seconds a folder counts as outside any repository before git is asked again
 TOP_TTL = 60  # seconds a folder's repository is kept
+FAILED_TTL = 30  # seconds a result that git failed on is kept: retried, but not on every refresh
 DIFF_CACHE_ROWS = 200_000  # diff rows kept in memory over all files (each diff has at most 3001)
 
 
@@ -147,11 +148,12 @@ class RepoChanges:
             head = (git(top, "rev-parse", "--verify", "-q", "HEAD") or "").strip()
             status = git(top, "status", "--porcelain=v1", "-z", "--untracked-files=all") or ""
             key = (head, status, tuple(sorted(members)))
-            hit = self._states.get((top, start), key)
+            failed_key = ("failed", key, int(time.monotonic() // FAILED_TTL))
+            hit = self._states.get((top, start), key) or self._states.get((top, start), failed_key)
             if hit is None:
                 hit, complete = _states(top, start, head, status, members)
-                if complete:  # without the commits (git failed), asked again next time
-                    self._states.put((top, start), key, hit)
+                # Incomplete (git failed somewhere): asked again after a while, not kept for good.
+                self._states.put((top, start), key if complete else failed_key, hit)
             out.update(hit)
         return out
 
@@ -186,11 +188,13 @@ class RepoChanges:
         stamps = {rel: _changed_at(os.path.join(top, rel)) for _, rel in entries}
         state = (head, status, tuple(stamps.values()))
         slot = (top, start, end)
-        hit = self._selections.get(slot, state)
+        failed_key = ("failed", state, int(time.monotonic() // FAILED_TTL))
+        hit = self._selections.get(slot, state) or self._selections.get(slot, failed_key)
         if hit is None:
             hit = _select(top, start, end, head, entries, stamps)
-            if not hit.get("failed"):  # a passing git failure is asked again, not kept
-                self._selections.put(slot, state, hit)
+            # A git failure is asked again after a while: it may pass, and a repository where it
+            # keeps failing (a timeout) should not wait it out on every refresh.
+            self._selections.put(slot, failed_key if hit.get("failed") else state, hit)
         return hit
 
     def _diff(self, top: str, base, picked: dict) -> dict:
@@ -207,11 +211,15 @@ class RepoChanges:
 def _select(top, start, end, head, entries, stamps) -> dict:
     """The files that changed during the chat, with their status, and the commits made during it."""
     until = None if end is None else end + MARGIN
+    # Any git step that fails leaves the repository out: better nothing than wrong (the whole
+    # history as the chat's, commits after the chat, or no changes at all).
+    failed = {"files": [], "commits": [], "base": None, "failed": True}
     base = _head_at(top, start) if head else ""
     if base is None:
-        # Where the chat started is not known (git failed): better nothing than the whole history.
-        return {"files": [], "commits": [], "base": None, "failed": True}
-    last = head if until is None or not head else (_head_at(top, until) or head)
+        return failed
+    last = head if until is None or not head else _head_at(top, until)  # "": no commit yet when it ended
+    if last is None:
+        return failed
 
     def written_during(rel):
         when = stamps[rel] if rel in stamps else _changed_at(os.path.join(top, rel))
@@ -220,14 +228,19 @@ def _select(top, start, end, head, entries, stamps) -> dict:
     # What differs from the start, as the disk is now (tracked files). Mode changes (chmod) and
     # submodule pointers have no text to show, so they do not count.
     against = git(top, "-c", "core.fileMode=false", "diff", "--name-status", "-z", "--no-renames",
-                  "--ignore-submodules", base or EMPTY_TREE) or ""
+                  "--ignore-submodules", base or EMPTY_TREE)
+    if against is None:
+        return failed
     differs = _name_status(against)
     # What HEAD moving during the chat changed: commits, reset, checkout, pull, merge, rebase.
     moved, commits = set(), []
     if last and last != base:
-        moved = set(_name_status(git(top, "-c", "core.fileMode=false", "diff", "--name-status", "-z", "--no-renames",
-                                     "--ignore-submodules", base or EMPTY_TREE, last) or ""))
-        log = git(top, "log", "-n", "100", "--format=%H%x09%ct%x09%s", f"{base}..{last}" if base else last) or ""
+        between = git(top, "-c", "core.fileMode=false", "diff", "--name-status", "-z", "--no-renames",
+                      "--ignore-submodules", base or EMPTY_TREE, last)
+        log = git(top, "log", "-n", "100", "--format=%H%x09%ct%x09%s", f"{base}..{last}" if base else last)
+        if between is None or log is None:
+            return failed
+        moved = set(_name_status(between))
         for line in log.splitlines():
             sha, when, subject = (line.split("\t", 2) + ["", ""])[:3]
             commits.append({"sha": sha[:9], "time": int(when or 0), "subject": subject})
@@ -281,16 +294,17 @@ def _states(top, start, head, status, paths) -> dict:
     # Ignored files are not in the status; check-ignore names those of ours that are (exit 1: none).
     # A path outside the repository would make check-ignore fail for all of them.
     loose = [rel for rel in rels.values() if rel not in codes and rel != os.pardir and not rel.startswith(os.pardir + os.sep)]
-    ignored = set(filter(None, (git(top, "check-ignore", "-z", "--stdin", stdin="\0".join(loose).encode() + b"\0",
-                                    ok=(0, 1)) or "").split("\0"))) if loose else set()
+    checked = git(top, "check-ignore", "-z", "--stdin", stdin="\0".join(loose).encode() + b"\0", ok=(0, 1)) if loose else ""
+    ignored = set(filter(None, (checked or "").split("\0")))
     # The newest commit during the chat that touched each file (log lists newest first).
     commits = {}
     # Only commits since the chat started; without that start, none can be named the chat's. A
     # repository that had no commit yet when the chat started has only commits of the chat.
     base = _head_at(top, start) if head and start else None
-    complete = not (head and start and base is None)
+    complete = checked is not None and not (head and start and base is None)
     if head and start and base is not None and base != head:  # None: git could not tell; "": no commit yet
         log = git(top, "log", "-n", "500", "--format=%x00%H%x09%s", "--name-only", "-z", f"{base}..HEAD" if base else "HEAD")
+        complete = complete and log is not None  # no log is not "no commits"
         current = None
         for part in (log or "").split("\0"):
             part = part.strip("\n")
