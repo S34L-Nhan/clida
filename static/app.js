@@ -1686,6 +1686,26 @@ function toolInput(item) {
 
 const DIFF_COLLAPSE_ROWS = 800;  // a diff with more rows starts collapsed
 const SCROLL_ANCHORING = CSS.supports('overflow-anchor', 'auto');
+// A step's line height and its extra height (heading, margins, padding), measured once.
+let stepPx = null;
+function stepSizes() {
+  if (!stepPx) {
+    const probe = el('div', 'mr-file');
+    probe.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;width:600px';
+    const measure = (lines) => {
+      const step = stepBlock({ tool: 'Edit', ts: null, lines: Array(lines).fill('x'), replaced: false });
+      probe.replaceChildren(step);
+      return step.getBoundingClientRect().height;
+    };
+    document.body.append(probe);
+    const one = measure(1);
+    const eleven = measure(11);
+    probe.remove();
+    stepPx = { line: (eleven - one) / 10 || 15, extra: one - (eleven - one) / 10 || 40 };
+  }
+  return stepPx;
+}
+
 // The height of one diff row as the stylesheet draws it, measured once.
 let diffRowPx = 0;
 function rowHeight() {
@@ -1723,7 +1743,7 @@ async function loadChanges(tab) {
     tab.changes = data;
     const signature = JSON.stringify([language(), data]);
     // A comment being written stays: the view catches up once it is saved or dropped.
-    if (tab.changesInner.querySelector('.cform')) tab.changesStale ||= signature !== tab.changesSignature;
+    if (tab.changesInner.querySelector('.cform') || tab.mrDragging) tab.changesStale ||= signature !== tab.changesSignature;
     else if (signature !== tab.changesSignature) renderChanges(tab);  // unchanged: keep scroll and open files
     tab.changesSignature = signature;
   }
@@ -1999,7 +2019,7 @@ function middleEllipsis(name) {
 }
 
 // Where a file stands in git, for "will it be committed?": a small mark in the file list ...
-const GIT_MARKS = { committed: '✓', staged: '+', partly: '±', unstaged: '●', untracked: '?', ignored: '⊘' };
+const GIT_MARKS = { committed: '✓', staged: '+', partly: '±', unstaged: '●', untracked: '?', ignored: '⊘', unknown: '…' };
 
 function gitState(file) {
   return file.repo ? file.state : 'outside';
@@ -2083,8 +2103,10 @@ function fileBlock(tab, file) {
   const body = el('div', 'mr-file-body');
   // Until drawn, a body holds about its height (rows × row height): without it all the empty
   // blocks would fit on screen at once and the observer would draw every one of them.
-  const rows = file.net?.length || (!file.known ? file.steps.reduce((n, step) => n + step.lines.length + 2, 0) : 0);
-  body.style.minHeight = `${Math.max(rows * rowHeight(), 40)}px`;
+  const steps = !file.net?.length && !file.known ? file.steps : [];
+  const height = (file.net?.length || 0) * rowHeight()
+    + steps.reduce((sum, step) => sum + step.lines.length * stepSizes().line + stepSizes().extra, 0);
+  body.style.minHeight = `${Math.max(height, 40)}px`;
   block.append(head, body);
   const showCollapsed = (collapsed) => {
     block.classList.toggle('collapsed', collapsed);
@@ -2107,7 +2129,8 @@ function fileBlock(tab, file) {
     // Drawn above the view, the browser keeps the view in place (scroll anchoring); Safari has
     // none, so there the view moves along by as much as the diff grew.
     const main = tab.mrMain;
-    const above = !SCROLL_ANCHORING && main && block.getBoundingClientRect().top < main.getBoundingClientRect().top;
+    // Only a diff wholly above the view: inside one that reaches into it, the reader is in it.
+    const above = !SCROLL_ANCHORING && main && block.getBoundingClientRect().bottom <= main.getBoundingClientRect().top + 1;
     const before = block.offsetHeight;
     fillFile(tab, file, body);
     body.style.minHeight = '';
@@ -2171,10 +2194,12 @@ function diffTable(tab, file) {
     gutter.append(add);
     gutter.onpointerdown = (ev) => {
       if (ev.button !== 0) return;
-      ev.preventDefault();  // no text selection, and the textarea that opens keeps the focus
+      ev.preventDefault();  // no text selection
       if (ev.shiftKey) selectRows(tab, file, i, true);
-      else dragRows(tab, file, i);
+      else dragRows(tab, file, i, gutter, ev.pointerId);
     };
+    // The mouse's own default (focus to the clicked button) would take the focus from the new box.
+    gutter.onmousedown = (ev) => ev.preventDefault();
     row.append(gutter, el('span', 'sign', kind === ' ' ? '' : kind), el('span', 'code', text));
     return row;
   });
@@ -2201,8 +2226,10 @@ function selectRows(tab, file, index, extend) {
 
 // Press on a line number and drag over the lines, as in GitLab: the range follows the pointer
 // and the comment box opens on release. Near the top or bottom edge the diffs scroll along.
-function dragRows(tab, file, start) {
+function dragRows(tab, file, start, handle, pointerId) {
   closeCommentForm(tab);
+  // Captured: the release arrives even outside the window, so a drag never stays stuck.
+  try { handle.setPointerCapture(pointerId); } catch { /* the pointer is already gone */ }
   const main = tab.mrMain;
   let end = start;
   let lastY = null;
@@ -2229,20 +2256,20 @@ function dragRows(tab, file, start) {
     lastY = ev.clientY;
     follow(ev.clientY);
   };
-  const up = () => {
+  const up = (ev) => {
+    if (!tab.mrDragging) return;
     tab.mrDragging = false;
     document.body.classList.remove('mr-dragging');
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
-    window.removeEventListener('pointercancel', up);
-    selectRange(tab, file, start, end);
+    for (const [type, fn] of events) handle.removeEventListener(type, fn);
+    if (ev.type === 'pointerup') selectRange(tab, file, start, end);
+    else markRows(file, -1, -1);  // cancelled (the capture got lost): no comment box
+    if (tab.changesStale) renderChanges(tab);  // a refresh that came during the drag
   };
+  const events = [['pointermove', move], ['pointerup', up], ['pointercancel', up], ['lostpointercapture', up]];
   tab.mrDragging = true;
   document.body.classList.add('mr-dragging');  // no text selection on the way
   mark();
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
-  window.addEventListener('pointercancel', up);
+  for (const [type, fn] of events) handle.addEventListener(type, fn);
   requestAnimationFrame(edge);
 }
 
@@ -2267,7 +2294,9 @@ function selectRange(tab, file, start, end) {
     afterReviewChange(tab, file);
   });
   file.nodes[to].after(form);
-  form.querySelector('textarea').focus();
+  const area = form.querySelector('textarea');
+  area.focus();
+  requestAnimationFrame(() => { if (area.isConnected) area.focus(); });  // after the click's own handling
 }
 
 function codeLines(rows, from, to) {
@@ -2310,6 +2339,8 @@ const rangeText = (comment) => {
   const old = comment.from.side === 'old' && comment.to.side === 'old';
   const from = comment.from.line;
   const to = comment.to.line;
+  // Removed line 12 and added line 12 (a replaced line) are two rows: "line 12 (before and after)".
+  if (from === to && comment.from.side !== comment.to.side) return t('review.lineBoth', { line: from });
   return t('review.lines', { from, to, same: from === to }) + (old ? t('review.oldSide') : '');
 };
 
@@ -2397,6 +2428,13 @@ const sleep = (ms) => new Promise((done) => { setTimeout(done, ms); });
 // same conversation) once the CLI is ready for input.
 async function sendReview(tab) {
   const sid = tabSession(tab);
+  // A comment being written is not in the prompt: sending now would drop it without a word.
+  const draft = [...tab.changesInner.querySelectorAll('.cform textarea')].find((area) => area.value.trim());
+  if (draft) {
+    toast(t('review.unsaved'));
+    draft.focus();
+    return;
+  }
   if (state.external.has(sid) && !state.bySession.has(sid)) {
     toast(t('review.external'));
     return;
