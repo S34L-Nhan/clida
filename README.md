@@ -77,6 +77,7 @@ Both are Markdown. Pasting rendered text keeps lists, bold and code (converter f
 *Einstellungen* (settings) at the bottom of the sidebar. Changes apply at once.
 
 - **Sprache** (language): German or English. Claude still answers in the language you write in.
+- **Benachrichtigungen** (notifications): while CLIDA is not in front, a system notification when a session waits for you, and by default also when one is done. A click on it opens the chat. The browser asks once whether CLIDA may show them; on Windows they appear in the notification center (unless Focus Assist holds them back).
 - **Farbschema** (color theme): System, light, dark, Solarized, Catppuccin, Nord, Dracula, Gruvbox and Tokyo Night. It colors the terminal too. Set the CLI's own theme once with `/theme` to *Auto (match terminal)*.
 - **Diff-Farben** (diff colors): how strongly added and removed lines are tinted, from subtle to very strong. Comments and selected lines have their own color.
 
@@ -129,7 +130,7 @@ Tabs can be reordered by dragging. Browser shortcuts that make no sense in an ap
   - `registry.py` reads the state each running CLI reports in `~/.claude/sessions/`.
   - `worktrees.py` makes, merges and removes the worktrees of chats started in one.
   - `library.py` (folders, archive), `notes.py`, `settings.py`, `ws.py` (WebSocket for the terminal).
-- `static/`: the frontend, plain JavaScript without a build step. `i18n.js` holds all texts in both languages.
+- `static/`: the frontend, plain JavaScript without a build step. `i18n.js` holds all texts in both languages. `tick.js` is a worker that times the status poll, so a minimized window still notices a session that waits.
 - `bin/clida`: the launcher, plain bash that also runs on macOS's bash 3.2.
 
 ### Adding a setting

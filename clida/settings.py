@@ -15,6 +15,7 @@ SCHEMA = {
     "theme": {"choices": ("system", "light", "dark", "solarized-light", "solarized-dark", "catppuccin-latte",
                           "catppuccin-mocha", "nord", "dracula", "gruvbox-dark", "tokyo-night"), "default": "system"},
     "diffColors": {"choices": ("subtle", "normal", "strong", "vivid"), "default": "normal"},
+    "notifications": {"choices": ("all", "waiting", "off"), "default": "all"},
 }
 
 _language = "de"  # what tr() answers in; read by every request thread

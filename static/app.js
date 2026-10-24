@@ -92,6 +92,7 @@ const state = {
   external: new Map(),    // session id -> CLI running outside CLIDA
   lastStatus: new Map(),  // terminal id -> previous status, to notice "finished"
   attention: new Set(),   // terminal ids that finished or need input while unseen
+  notices: new Map(),     // terminal id -> its system notification, closed once the tab is seen
   tabs: [],
   active: null,
   home: '',
@@ -241,7 +242,10 @@ function applyStatus(data) {
     if (prev && prev !== row.status) {
       const done = row.status === 'waiting' || row.status === 'exited' || (prev === 'busy' && row.status === 'idle');
       if (done && (state.active !== row.id || document.hidden)) state.attention.add(row.id);
-      if (done) finished = true;
+      if (done) {
+        finished = true;
+        notify(row);
+      }
     }
     state.lastStatus.set(row.id, row.status);
   }
@@ -1005,6 +1009,7 @@ function activate(id) {
   if (!tab) return;
   state.active = id;
   if (!document.hidden) state.attention.delete(id);
+  closeNotice(id);
   for (const other of state.tabs) other.root.classList.toggle('active', other === tab);
   saveTabs();
   paint();
@@ -1278,6 +1283,77 @@ function paint() {
   }
   const waiting = state.attention.size;
   document.title = waiting ? `(${waiting}) CLIDA` : 'CLIDA';
+}
+
+// ---- system notifications -----------------------------------------------------------------
+// While CLIDA is not in front, a session that waits for an answer (or, by the setting, one that is
+// done) says so with a system notification. A click on it brings the window up on that chat.
+
+let notifyLevel = store.get('notifications', 'all');
+
+const notifySupported = () => 'Notification' in window;
+
+function applyNotifications(level) {
+  notifyLevel = level;
+  store.set('notifications', level);
+  askNotifyPermission();
+}
+
+// Browsers ask for the permission only on a click or key press, so the question waits for one.
+function askNotifyPermission() {
+  if (notifyLevel === 'off' || !notifySupported() || Notification.permission !== 'default' || state.notifyAsking) return;
+  state.notifyAsking = true;
+  const request = () => {
+    window.removeEventListener('pointerdown', request, true);
+    window.removeEventListener('keydown', request, true);
+    Notification.requestPermission().catch(() => {}).finally(() => {
+      state.notifyAsking = false;
+      if ($('#settings-dialog').open) renderSettings();  // its hint says whether they are allowed
+    });
+  };
+  window.addEventListener('pointerdown', request, true);
+  window.addEventListener('keydown', request, true);
+}
+
+function notify(row) {
+  if (notifyLevel === 'off' || !notifySupported() || Notification.permission !== 'granted') return;
+  if (document.hasFocus() && !document.hidden) return;  // in front, the tab and its dot say it already
+  const waiting = row.status === 'waiting';
+  if (!waiting && notifyLevel !== 'all') return;
+  const body = t(waiting ? 'notify.waitingBody' : row.status === 'exited' ? 'notify.exitedBody' : 'notify.doneBody');
+  try {
+    // One per terminal: the tag replaces an older notice of the same session.
+    const notice = new Notification(titleOf(row.session_id), { body, tag: row.id, icon: '/static/icon-1024.png' });
+    notice.onclick = () => {
+      window.focus();
+      notice.close();
+      if (findTab(row.id)) activate(row.id);
+      else openSession(row.session_id);
+    };
+    notice.onclose = () => { if (state.notices.get(row.id) === notice) state.notices.delete(row.id); };
+    state.notices.set(row.id, notice);
+  } catch { /* a browser that allows notifications only from a service worker */ }
+}
+
+function closeNotice(id) {
+  state.notices.get(id)?.close();
+  state.notices.delete(id);
+}
+
+// The status poll's clock (see tick.js); the page's own timer where there are no workers.
+function everyTwoSeconds(fn) {
+  let fallback = null;
+  const useTimer = () => { fallback ||= setInterval(fn, 2000); };
+  try {
+    const worker = new Worker('/static/tick.js');
+    worker.onmessage = fn;
+    worker.onerror = () => {  // a server from before tick.js
+      worker.terminate();
+      useTimer();
+    };
+  } catch {
+    useTimer();
+  }
 }
 
 // ---- the chat's own worktree --------------------------------------------------------------
@@ -2944,6 +3020,9 @@ const SETTINGS = [
     items: [
       { key: 'language', label: 'settings.language', hint: 'settings.languageHint',
         choices: () => Object.entries(LANGUAGES), value: language, apply: applyLanguage },
+      { key: 'notifications', label: 'settings.notifications', hint: 'settings.notificationsHint', note: notifyNote,
+        choices: () => ['all', 'waiting', 'off'].map((level) => [level, t(`notify.${level}`)]),
+        value: () => notifyLevel, apply: applyNotifications },
     ],
   },
   {
@@ -2958,6 +3037,15 @@ const SETTINGS = [
     ],
   },
 ];
+
+// Why notifications cannot show, if they cannot: the setting alone does not make them appear.
+function notifyNote() {
+  if (notifyLevel === 'off') return null;
+  if (!notifySupported()) return t('notify.unsupported');
+  if (Notification.permission === 'denied') return t('notify.denied');
+  if (Notification.permission === 'default') return t('notify.ask');
+  return null;
+}
 
 // How strongly the changes view tints added and removed lines (data-diffs on <html>, see app.css).
 let diffColors = store.get('diffColors', 'normal');
@@ -3039,6 +3127,8 @@ function renderSettings(focusKey = null) {
         hint.append(...textWith(item.hint, item.hintNodes?.() || {}));  // {placeholders} become those nodes
         text.append(hint);
       }
+      const note = item.note?.();
+      if (note) text.append(el('p', 'settings-hint settings-warn', note));
       const select = el('select');
       select.id = `setting-${item.key}`;
       for (const [value, name] of item.choices()) {
@@ -3328,7 +3418,8 @@ async function start() {
   else if (wantedSid && findTab(wantedSid)) activate(wantedSid);
   else if (state.tabs.length) activate(state.tabs[0].id);
   paint();
-  setInterval(refreshStatus, 2000);
+  askNotifyPermission();
+  everyTwoSeconds(refreshStatus);
   setInterval(refreshSessions, 20000);
 }
 

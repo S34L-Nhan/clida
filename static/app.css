@@ -823,6 +823,7 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
 .settings-text { flex: 1; min-width: 0; }
 .dialog .settings-text label { margin: 0; font-size: 14px; }
 .dialog .settings-hint { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; white-space: pre-line; }
+.dialog .settings-warn { color: color-mix(in srgb, var(--warn) 55%, var(--text)); }
 .settings-hint code {
   padding: 1px 5px;
   border: 1px solid var(--border);
