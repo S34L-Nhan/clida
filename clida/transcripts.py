@@ -607,6 +607,7 @@ class ChangesCache:
         self._parsed = {}  # transcript path -> (size, mtime, changes())
         self._nets = {}  # file path -> (key, result)
         self._laters = Lru(2000)  # (backup folder, backup) -> True once later backups were seen
+        self._no_laters = Lru(2000)  # the same slot -> False, for LATER_NO_TTL
 
     def _parse(self, path: str) -> dict:
         try:
@@ -670,10 +671,13 @@ class ChangesCache:
         if self._laters.get(slot, True):
             return True
         window = int(time.monotonic() // LATER_NO_TTL)
-        if self._laters.get(slot, window) is False:
+        if self._no_laters.get(slot, window) is False:
             return False
         found = bool(glob.glob(os.path.join(glob.escape(str(first.parent)), glob.escape(changed["backup"]) + "@v*")))
-        self._laters.put(slot, True if found else window, found)
+        if found:
+            self._laters.put(slot, True, True)
+        else:
+            self._no_laters.put(slot, window, False)
         return found
 
     @staticmethod
