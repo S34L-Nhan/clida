@@ -2169,7 +2169,12 @@ function diffTable(tab, file) {
     add.title = t('review.addHint');
     add.append(icon('comment'));
     gutter.append(add);
-    gutter.onclick = (ev) => selectRows(tab, file, i, ev.shiftKey);
+    gutter.onpointerdown = (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();  // no text selection, and the textarea that opens keeps the focus
+      if (ev.shiftKey) selectRows(tab, file, i, true);
+      else dragRows(tab, file, i);
+    };
     row.append(gutter, el('span', 'sign', kind === ' ' ? '' : kind), el('span', 'code', text));
     return row;
   });
@@ -2187,13 +2192,71 @@ function diffTable(tab, file) {
   return box;
 }
 
+// Shift+click: from the line clicked before to this one.
 function selectRows(tab, file, index, extend) {
   const prev = tab.mrSelection;
-  const from = extend && prev && prev.path === file.path ? Math.min(prev.from, index) : index;
-  const to = extend && prev && prev.path === file.path ? Math.max(prev.from, index) : index;
+  const start = extend && prev && prev.path === file.path ? prev.start : index;
+  selectRange(tab, file, start, index);
+}
+
+// Press on a line number and drag over the lines, as in GitLab: the range follows the pointer
+// and the comment box opens on release. Near the top or bottom edge the diffs scroll along.
+function dragRows(tab, file, start) {
   closeCommentForm(tab);
-  tab.mrSelection = { path: file.path, from, to };
+  const main = tab.mrMain;
+  let end = start;
+  let lastY = null;
+  const mark = () => markRows(file, Math.min(start, end), Math.max(start, end));
+  const follow = (y) => {
+    const row = document.elementFromPoint(main.getBoundingClientRect().left + 30, y)?.closest('.dl');
+    const index = row ? file.nodes.indexOf(row) : -1;
+    if (index >= 0 && index !== end) {
+      end = index;
+      mark();
+    }
+  };
+  // While held near an edge, the view keeps scrolling even without moving the pointer.
+  const edge = () => {
+    if (!tab.mrDragging) return;
+    const box = main.getBoundingClientRect();
+    if (lastY !== null && (lastY < box.top + 40 || lastY > box.bottom - 40)) {
+      main.scrollTop += lastY < box.top + 40 ? -18 : 18;
+      follow(Math.min(Math.max(lastY, box.top + 2), box.bottom - 2));
+    }
+    requestAnimationFrame(edge);
+  };
+  const move = (ev) => {
+    lastY = ev.clientY;
+    follow(ev.clientY);
+  };
+  const up = () => {
+    tab.mrDragging = false;
+    document.body.classList.remove('mr-dragging');
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', up);
+    selectRange(tab, file, start, end);
+  };
+  tab.mrDragging = true;
+  document.body.classList.add('mr-dragging');  // no text selection on the way
+  mark();
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
+  requestAnimationFrame(edge);
+}
+
+function markRows(file, from, to) {
   file.nodes.forEach((node, i) => node.classList.toggle('sel', i >= from && i <= to && file.net[i][0] !== '@'));
+}
+
+// Lines from..to (either order) selected, with the comment box under the last of them.
+function selectRange(tab, file, start, end) {
+  const from = Math.min(start, end);
+  const to = Math.max(start, end);
+  closeCommentForm(tab);
+  tab.mrSelection = { path: file.path, start, from, to };
+  markRows(file, from, to);
   const rows = file.net;
   const ends = [rows.slice(from, to + 1).find((r) => r[0] !== '@'), [...rows.slice(from, to + 1)].reverse().find((r) => r[0] !== '@')];
   if (!ends[0]) return;
