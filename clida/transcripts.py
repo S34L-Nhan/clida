@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import traceback
 
 from pathlib import Path
@@ -451,6 +452,7 @@ def render(path: str) -> dict:
 FILE_HISTORY = CLAUDE_HOME / "file-history"
 STEP_LINE_LIMIT = 400  # per tool call
 NET_LINE_LIMIT = 3000  # per file
+LATER_NO_TTL = 5  # seconds a "no later backups" answer is kept
 NET_SIZE_LIMIT = 512 * 1024  # larger files get no diff: difflib grows fast with size
 _EDIT_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 _SNAPSHOT = b'{"type":"file-history-snapshot"'
@@ -656,18 +658,22 @@ class ChangesCache:
     def _later(self, first, changed) -> bool:
         """Whether the file has backups after @v1 but not @v1: the chat created it.
 
-        A yes is kept (backups are added, not taken back, until the CLI cleans the whole history
-        up: first.exists() and the key in _net notice that); a no is asked again, since a backup
-        may appear within the same second, which coarse folder times (/mnt on WSL) cannot tell.
+        A yes holds while the session's backup folder is there (the CLI's cleanup takes the whole
+        folder); a no for a few seconds only, since a backup may appear within the same second,
+        which coarse folder times (/mnt on WSL) cannot tell.
         """
         if first is None or first.exists():
+            return False
+        if not first.parent.is_dir():
             return False
         slot = (str(first.parent), changed["backup"])
         if self._laters.get(slot, True):
             return True
+        window = int(time.monotonic() // LATER_NO_TTL)
+        if self._laters.get(slot, window) is False:
+            return False
         found = bool(glob.glob(os.path.join(glob.escape(str(first.parent)), glob.escape(changed["backup"]) + "@v*")))
-        if found:
-            self._laters.put(slot, True, True)
+        self._laters.put(slot, True if found else window, found)
         return found
 
     @staticmethod

@@ -38,7 +38,7 @@ def git(cwd, *args, binary=False, timeout=10, stdin=None, ok=(0,)):
 
 
 def _head_at(top: str, when: float):
-    """The commit HEAD pointed to at a time.
+    """The commit HEAD pointed to at a time: "" if there was none yet, None if git could not tell.
 
     The reflog knows where HEAD was at any time, but only since the clone; before that, the
     newest commit of the current history made before then stands in.
@@ -53,8 +53,8 @@ def _head_at(top: str, when: float):
             continue
     if entries and entries[-1][1] <= when:
         return next(sha for sha, at in entries if at <= when)  # newest first
-    sha = (git(top, "rev-list", "-1", f"--before={int(when)}", "HEAD") or "").strip()
-    return sha or None
+    found = git(top, "rev-list", "-1", f"--before={int(when)}", "HEAD")
+    return None if found is None else found.strip()  # a timeout or error is not "no commit yet"
 
 
 def _name_status(text: str) -> dict:
@@ -154,7 +154,7 @@ class RepoChanges:
         only the folders it worked in (a chat in ~ that edits ~/project). end None: still running."""
         tops = []
         for d in dirs:
-            top = (git(d, "rev-parse", "--show-toplevel") or "").strip()
+            top = self._top(d)
             if top and top not in tops:
                 tops.append(top)
             if len(tops) == MAX_REPOS:
@@ -200,7 +200,10 @@ class RepoChanges:
 def _select(top, start, end, head, entries, stamps) -> dict:
     """The files that changed during the chat, with their status, and the commits made during it."""
     until = None if end is None else end + MARGIN
-    base = _head_at(top, start) if head else None
+    base = _head_at(top, start) if head else ""
+    if base is None:
+        # Where the chat started is not known (git failed): better nothing than the whole history.
+        return {"files": [], "commits": [], "base": None}
     last = head if until is None or not head else (_head_at(top, until) or head)
 
     def written_during(rel):
@@ -270,7 +273,7 @@ def _states(top, start, head, status, paths) -> dict:
             for path in paths}
     # Ignored files are not in the status; check-ignore names those of ours that are (exit 1: none).
     # A path outside the repository would make check-ignore fail for all of them.
-    loose = [rel for rel in rels.values() if rel not in codes and not rel.startswith("..")]
+    loose = [rel for rel in rels.values() if rel not in codes and rel != os.pardir and not rel.startswith(os.pardir + os.sep)]
     ignored = set(filter(None, (git(top, "check-ignore", "-z", "--stdin", stdin="\0".join(loose).encode() + b"\0",
                                     ok=(0, 1)) or "").split("\0"))) if loose else set()
     # The newest commit during the chat that touched each file (log lists newest first).
@@ -278,7 +281,7 @@ def _states(top, start, head, status, paths) -> dict:
     # Only commits since the chat started; without that start, none can be named the chat's. A
     # repository that had no commit yet when the chat started has only commits of the chat.
     base = _head_at(top, start) if head and start else None
-    if head and start and base != head:
+    if head and start and base is not None and base != head:  # None: git could not tell; "": no commit yet
         log = git(top, "log", "-n", "500", "--format=%x00%H%x09%s", "--name-only", "-z", f"{base}..HEAD" if base else "HEAD")
         current = None
         for part in (log or "").split("\0"):

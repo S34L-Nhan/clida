@@ -1685,6 +1685,7 @@ function toolInput(item) {
 // session as one prompt, resuming it first if it is not running.
 
 const DIFF_COLLAPSE_ROWS = 800;  // a diff with more rows starts collapsed
+const SCROLL_ANCHORING = CSS.supports('overflow-anchor', 'auto');
 const PROMPT_CODE_LINES = 60;    // code lines quoted per comment in the prompt
 
 // Without the diffs unless the view is shown: the other tabs only need the counts, and showing
@@ -1744,7 +1745,15 @@ function renderChanges(tab) {
     button.append(icon(mode === 'tree' ? 'tree' : 'list'));
     button.onclick = () => {
       store.set('changesTree', mode === 'tree');
-      renderChanges(tab);  // the diffs take the list's order too
+      for (const other of modes.children) other.classList.toggle('on', other === button);
+      // The diffs take the list's order too, but not over a comment being written: they follow
+      // once it is saved or dropped, as after a refresh.
+      if (tab.changesInner.querySelector('.cform')) {
+        tab.changesStale = true;
+        renderFileList(tab);
+      } else {
+        renderChanges(tab);
+      }
     };
     modes.append(button);
   }
@@ -1779,7 +1788,7 @@ function renderChanges(tab) {
   tab.mrBlocks = new Map();
   // In the order of the file list: repository by repository, files outside any last, and in each
   // the tree's order (folders before the files next to them) or, as a list, by path.
-  const byPath = store.get('changesTree', true) ? treeCompare : (a, b) => a.localeCompare(b);
+  const byPath = pathCompare();
   const ordered = [...files].sort((a, b) => (!a.repo) - (!b.repo) || (a.repo?.top || '').localeCompare(b.repo?.top || '')
     || byPath(groupPath(a), groupPath(b)));
   for (const file of ordered) {
@@ -1869,10 +1878,13 @@ function renderFileList(tab) {
     }
     rows.push(head);
     rows.push(...(store.get('changesTree', true) ? treeRows(tab, group.files)
-      : [...group.files].sort((a, b) => groupPath(a).localeCompare(groupPath(b))).map((file) => fileRow(tab, file, groupPath(file), 0))));
+      : [...group.files].sort((a, b) => pathCompare()(groupPath(a), groupPath(b))).map((file) => fileRow(tab, file, groupPath(file), 0))));
   }
   list.replaceChildren(...rows);
 }
+
+// The order of the file list, which the diffs follow: the tree's, or by path as a list.
+const pathCompare = () => (store.get('changesTree', true) ? treeCompare : (a, b) => a.localeCompare(b));
 
 // The tree's order for two paths: by folder, a folder before the files beside it.
 function treeCompare(a, b) {
@@ -2049,7 +2061,13 @@ function fileBlock(tab, file) {
   block.fill = () => {
     if (block.dataset.filled || block.classList.contains('collapsed')) return;
     block.dataset.filled = '1';
-    fillFile(tab, file, body);  // drawn above the view, the browser keeps the view in place (scroll anchoring)
+    // Drawn above the view, the browser keeps the view in place (scroll anchoring); Safari has
+    // none, so there the view moves along by as much as the diff grew.
+    const main = tab.mrMain;
+    const above = !SCROLL_ANCHORING && main && block.getBoundingClientRect().bottom <= main.getBoundingClientRect().top + 1;
+    const before = block.offsetHeight;
+    fillFile(tab, file, body);
+    if (above) main.scrollTop += block.offsetHeight - before;
   };
   block.setCollapsed(tab.collapsed.has(file.path));
   return block;
@@ -2283,7 +2301,7 @@ async function sendReview(tab) {
     if (!state.bySession.has(sid)) await resumeTab(tab);
     let row = state.bySession.get(sid);
     for (let waited = 0; row && !(row.status === 'idle' && row.reported) && waited < 60000; waited += 500) {
-      if (row.status === 'exited') break;
+      if (row.status === 'exited' || (row.status === 'idle' && !row.reported)) break;  // waiting would not change it
       await sleep(500);
       await refreshStatus();
       row = state.bySession.get(sid);
@@ -2300,7 +2318,8 @@ async function sendReview(tab) {
     await api('POST', `/api/terminals/${row.id}/prompt`, { text });
     tab.review = [];
     saveReview(tab);
-    renderChanges(tab);
+    renderReviewBar(tab);
+    tab.changesSignature = null;  // the comment cards go when the view is shown again, from fresh data
     setView(tab, 'terminal');
   } catch (e) {
     toast(e.message);
