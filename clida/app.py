@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -25,7 +26,7 @@ UPLOAD_LIMIT = 50 * 1024 * 1024
 ANCHOR = re.compile(r"[0-9a-f-]{36}#\d{1,4}")  # a message in the history: entry uuid # its place in it
 REWIND_TIMEOUT = 120
 PROMPT_MAX = 100_000  # characters a prompt from the window may have
-TYPED_MAX = 8_000  # characters typed in rather than pasted (see send_prompt): a few seconds of typing
+TYPED_MAX = 8_000  # characters typed in rather than pasted (see send_prompt): a few seconds of typing; as in app.js
 WINDOW_TTL = 90  # seconds a window counts as open after its last request; a hidden one polls once a minute
 
 TITLES_FILE = STATE_DIR / "titles.json"
@@ -134,10 +135,7 @@ class Desk:
         return info
 
     def _require_session(self, session_id: str) -> dict:
-        info = self.index.get(session_id)
-        if info is None:
-            self.index.scan()
-            info = self.index.get(session_id)
+        info = self._info(session_id)
         if info is None:
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
         return info
@@ -210,7 +208,7 @@ class Desk:
         worktrees = self.worktrees.all()
         owners = {member: key for key, e in worktrees.items() for member in [key, *e.get("sessions", ())]}
 
-        def worktree_of(sid, cwd=None):
+        def worktree_of(sid):
             # Its own, or the one of the chat it went on from (/clear, /resume) or was forked from.
             entry = worktrees.get(owners.get(sid))
             return {"branch": entry["branch"], "repo": os.path.basename(entry["repo"])} if entry else None
@@ -223,7 +221,7 @@ class Desk:
                 "first_prompt": info["first_prompt"], "last_prompt": info["last_prompt"],
                 "folder": library["folder_of"].get(info["id"]), "archived": info["id"] in library["archived"],
                 "note": notes.get(info["id"]), "usage": usage["chats"].get(info["id"]),
-                "worktree": worktree_of(info["id"], info["cwd"]),
+                "worktree": worktree_of(info["id"]),
             })
         known = {s["id"] for s in out}
         for term in self.terminals.all():
@@ -236,7 +234,7 @@ class Desk:
                     "folder": library["folder_of"].get(term.session_id),
                     "archived": term.session_id in library["archived"],
                     "note": notes.get(term.session_id), "usage": None,
-                    "worktree": worktree_of(term.session_id, term.cwd),
+                    "worktree": worktree_of(term.session_id),
                 })
         for sid, entry in worktrees.items():
             if sid not in known:
@@ -247,17 +245,14 @@ class Desk:
                     "cwd_label": _home_label(entry["path"]), "mtime": entry["created"],
                     "first_prompt": None, "last_prompt": None, "folder": library["folder_of"].get(sid),
                     "archived": sid in library["archived"], "note": notes.get(sid), "usage": None,
-                    "worktree": worktree_of(sid, None),
+                    "worktree": worktree_of(sid),
                 })
         out.sort(key=lambda s: s["mtime"], reverse=True)
         return {"sessions": out, "folders": library["folders"], "home": str(Path.home()),
                 "cost_today": usage["today"], **self.status()}
 
     def messages(self, session_id: str) -> dict:
-        info = self.index.get(session_id)
-        if info is None:
-            self.index.scan()
-            info = self.index.get(session_id)
+        info = self._info(session_id)
         if info is None:
             if any(t.session_id == session_id for t in self.terminals.all()) or self.worktrees.get(session_id):
                 return {"items": [], "truncated": False}
@@ -268,7 +263,8 @@ class Desk:
         """The chats whose messages hold every word of query, each with its best match."""
         # Only the transcript each chat's history shows: a hit elsewhere could not be opened.
         shown = {info["path"] for info in self.index.scan()}
-        return {"hits": self.search.find(str(query or "")[:200], shown)}
+        hits = self.search.find(str(query or "")[:200], shown)
+        return {"hits": hits or {}, "indexing": hits is None}
 
     def changes(self, session_id: str, brief: bool = False) -> dict:
         """What the chat changed, like a merge request: each file as before the chat against now.
@@ -278,10 +274,7 @@ class Desk:
         leave no other trace). For a file in both, the CLI's own backup gives the state before.
         brief leaves the diffs and steps out: the header and the switch only need the counts.
         """
-        info = self.index.get(session_id)
-        if info is None:
-            self.index.scan()
-            info = self.index.get(session_id)
+        info = self._info(session_id)
         cwd = self._chat_cwd(session_id, info)
         if info is None and cwd is None:
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
@@ -382,7 +375,11 @@ class Desk:
             info = self._info(resume)
             worktree = self.worktrees.get(resume)
             if info is None and worktree and os.path.isdir(worktree["path"]):
-                # Stopped before its first message, so nothing to resume: a new CLI under its id, in its worktree.
+                # Stopped before its first message, so nothing to resume: a new CLI under its id, in
+                # its worktree, unless one of ours runs it already (two windows, a double click).
+                for row in self.status()["terminals"]:
+                    if row["session_id"] == resume and row["status"] != "exited":
+                        return {"id": row["id"], "session_id": resume, "cwd": row["cwd"]}
                 term = self.terminals.start(worktree["path"], session_id=resume)
                 return {"id": term.id, "session_id": term.session_id, "cwd": term.cwd}
             info = info or self._require_session(resume)
@@ -408,7 +405,9 @@ class Desk:
             session_id = str(uuid.uuid4())
             if body.get("worktree"):
                 try:
-                    cwd = self.worktrees.create(session_id, cwd, title)
+                    # Never a folder a chat worked in: resuming that chat would work in the new one's.
+                    used = [info["cwd"] for info in self.index.scan()] + [t.cwd for t in self.terminals.all()]
+                    cwd = self.worktrees.create(session_id, cwd, title, used)
                 except WorktreeError as e:
                     raise HttpError(400, tr("Worktree ließ sich nicht anlegen: ", "Could not create the worktree: ") + str(e))
             try:
@@ -424,6 +423,8 @@ class Desk:
                 self.titles.set(term.session_id, title)
             if isinstance(folder, str) and folder:
                 self.library.move(term.session_id, folder)  # a folder deleted meanwhile is skipped
+            # Said back, so a window newer than this server notices a worktree it asked for in vain.
+            return {"id": term.id, "session_id": term.session_id, "cwd": term.cwd, "worktree": bool(body.get("worktree"))}
         return {"id": term.id, "session_id": term.session_id, "cwd": term.cwd}
 
     # -- the chat's own worktree ------------------------------------------------------------
@@ -432,29 +433,36 @@ class Desk:
         """The worktree record a chat works in (see Worktrees.key_for)."""
         return self.worktrees.key_for(session_id) or session_id
 
-    def _running_in(self, folder: str, inside_only: bool = True) -> bool:
-        """Whether a CLI works in folder (ours or another terminal's), whatever its session id;
-        inside_only False: also in a folder around it, whose files include folder's."""
+    def _running_in(self, folder: str) -> bool:
+        """Whether a CLI works in folder or below it (ours or another terminal's), whatever its
+        session id: after /clear or /resume a chat's CLI goes on under another."""
         root = os.path.realpath(folder) + "/"
         status = self.status()
         cwds = ([t["cwd"] for t in status["terminals"] if t["status"] != "exited"]
                 + [e.get("cwd") for e in status["external"]])
         for cwd in filter(None, cwds):
             real = os.path.realpath(cwd) + "/"
-            if real.startswith(root) or (not inside_only and root.startswith(real)):
+            if real.startswith(root):
                 return True
         return False
 
+    def _require_worktree(self, session_id: str) -> str:
+        key = self._worktree_key(session_id)
+        if self.worktrees.get(key) is None:
+            raise HttpError(404, tr("Dieser Chat hat keinen eigenen Worktree.", "This chat has no worktree of its own."))
+        return key
+
     def merge_worktree(self, session_id: str) -> dict:
+        key = self._require_worktree(session_id)
         try:
-            return self.worktrees.merge(self._worktree_key(session_id))
+            return self.worktrees.merge(key)
         except WorktreeError as e:
             raise HttpError(409, str(e))
 
     def remove_worktree(self, session_id: str) -> dict:
         """Delete the chat's worktree and branch; only while no CLI works in it, under whatever
         session id (after /clear the terminal's is another)."""
-        key = self._worktree_key(session_id)
+        key = self._require_worktree(session_id)
         entry = self.worktrees.get(key)
         if entry:
             if self._running(key) or self._running_in(entry["path"]):
@@ -541,7 +549,7 @@ class Desk:
                 raise HttpError(423, tr("Die Dateien werden gerade schon zurückgesetzt.",
                                         "The files are being restored already."))
             # By folder too: after /clear the CLI works on there under another id.
-            if self._running(session_id) or self._running_in(info["cwd"], inside_only=False):
+            if self._running(session_id) or self._running_in(info["cwd"]):
                 raise HttpError(409, tr("Diese Sitzung läuft noch. Bitte zuerst beenden.",
                                         "This session is still running. Please stop it first."))
             self._rewinding.add(session_id)
@@ -555,15 +563,29 @@ class Desk:
         # Checkpoints are on in the interactive CLI; a run like this one needs to ask for them.
         env = {**child_env(), "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1"}
         try:
-            out = subprocess.run([self.terminals.claude, "--resume", session_id, "--rewind-files", message],
-                                 cwd=info["cwd"], env=env, stdin=subprocess.DEVNULL, capture_output=True,
-                                 timeout=REWIND_TIMEOUT)
-        except (OSError, subprocess.TimeoutExpired) as e:
+            proc = subprocess.Popen([self.terminals.claude, "--resume", session_id, "--rewind-files", message],
+                                    cwd=info["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, start_new_session=True)
+        except OSError as e:
             raise HttpError(500, tr("Die CLI ließ sich nicht starten: ", "The CLI did not run: ") + str(e))
-        said = transcripts.strip_ansi((out.stderr or out.stdout).decode("utf-8", "replace")).strip()
-        if out.returncode != 0:
+        try:
+            stdout, stderr = proc.communicate(timeout=REWIND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # with whatever it started
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            raise HttpError(504, tr(f"Die CLI hat nach {REWIND_TIMEOUT} s nicht geantwortet; abgebrochen.",
+                                    f"The CLI did not answer within {REWIND_TIMEOUT} s; stopped."))
+        said = transcripts.strip_ansi((stderr or stdout).decode("utf-8", "replace")).strip()
+        if proc.returncode != 0:
+            last = said.splitlines()[-1] if said else f"exit {proc.returncode}"
+            if "unknown option" in said:  # --rewind-files is the CLI's own, not documented: it may go
+                last += tr(" (diese CLI kennt das nicht: bitte die claude-CLI aktualisieren)",
+                           " (this CLI does not know it: please update the claude CLI)")
             raise HttpError(409, tr("Die CLI hat die Dateien nicht zurückgesetzt: ", "The CLI did not restore the files: ")
-                            + (said.splitlines()[-1] if said else f"exit {out.returncode}"))
+                            + last)
         return {"ok": True}
 
     def create_folder(self, name) -> dict:
@@ -611,7 +633,7 @@ class Desk:
                 transcripts.delete_session_files(session_id, self.index.paths(session_id))
             except (OSError, ValueError) as e:
                 raise HttpError(500, tr("Löschen fehlgeschlagen: ", "Deleting failed: ") + str(e))
-        if self.worktrees.let_go(session_id) == "own":
+        if self.worktrees.let_go(session_id, listed=lambda sid: self.index.get(sid) is not None) == "own":
             self.worktrees.forget(session_id)  # folder and branch stay: asked for, or gone already
         self.library.forget(session_id)
         self.titles.set(session_id, None)
@@ -701,7 +723,7 @@ class Desk:
         role = body.get("role")
         if not text:
             raise HttpError(400, tr("Notiz ist leer", "The note is empty"))
-        if not re.fullmatch(r"[0-9a-f-]{36}#\d{1,4}", anchor) or role not in ("user", "assistant"):
+        if not ANCHOR.fullmatch(anchor) or role not in ("user", "assistant"):
             raise HttpError(400, tr("Ungültige Nachricht", "Invalid message"))
         preview = " ".join(str(body.get("preview") or "").split())[:PREVIEW_MAX]
         return self.notes.add(session_id, anchor, role, preview, text)

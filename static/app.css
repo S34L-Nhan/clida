@@ -125,6 +125,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
   font-weight: 600;
 }
 .list-empty { padding: 24px 8px; color: var(--muted); text-align: center; }
+.list-note { padding: 8px 8px 4px; color: var(--muted); font-size: 12px; font-style: italic; }
 .item {
   display: flex;
   align-items: center;

@@ -9,6 +9,7 @@ the folder and the branch.
 
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -46,7 +47,7 @@ def _run(cwd, *args, timeout=30, ok=(0,)):
         proc = subprocess.Popen(["git", "-C", cwd, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 start_new_session=True)
     except OSError as e:
-        raise WorktreeError(f"git {args[0]}: {e}")
+        raise WorktreeError(tr(f"git {args[0]} ließ sich nicht starten: {e}", f"git {args[0]} did not start: {e}"))
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -55,12 +56,14 @@ def _run(cwd, *args, timeout=30, ok=(0,)):
         except ProcessLookupError:
             pass
         proc.communicate()
-        raise WorktreeError(f"git {args[0]}: timed out after {timeout} s")
+        raise WorktreeError(tr(f"git {args[0]} brauchte länger als {timeout} s und wurde abgebrochen.",
+                               f"git {args[0]} took longer than {timeout} s and was stopped."))
     out = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     if out.returncode not in ok:
         lines = (out.stderr or out.stdout).decode("utf-8", "replace").strip().splitlines()
         message = "\n".join(line for line in lines if not line.startswith("Preparing worktree"))
-        raise WorktreeError(message or f"git {args[0]} failed ({out.returncode})")
+        raise WorktreeError(message or tr(f"git {args[0]} schlug fehl ({out.returncode})",
+                                          f"git {args[0]} failed ({out.returncode})"))
     return out.stdout.decode("utf-8", "replace")
 
 
@@ -151,9 +154,10 @@ class Worktrees:
             self._data[key].setdefault("sessions", []).append(new_id)
             self._save()
 
-    def let_go(self, session_id: str) -> str:
-        """The chat is deleted: another of the record's chats takes it over. "kept" if one did,
-        "dropped" if it was only one of them, "own" if it holds the record alone, "" if none."""
+    def let_go(self, session_id: str, listed=lambda sid: True) -> str:
+        """The chat is deleted: another of the record's chats takes it over, one that listed()
+        says has a history if there is one. "kept" if one did, "dropped" if it was only one of
+        them, "own" if it holds the record alone, "" if none."""
         with self._lock:
             key = self._key(session_id)
             if key is None:
@@ -165,17 +169,24 @@ class Worktrees:
                 return "dropped"
             if not others:
                 return "own"
+            heir = next((sid for sid in others if listed(sid)), others[0])
             entry = self._data.pop(key)
-            self._data[others[0]] = {**entry, "sessions": others[1:]}
+            self._data[heir] = {**entry, "sessions": [sid for sid in others if sid != heir]}
             self._save()
             return "kept"
 
     def _save(self):
         storage.save(WORKTREES_FILE, self._data)
 
-    def create(self, session_id: str, cwd: str, name: str) -> str:
+    def create(self, session_id: str, cwd: str, name: str, used=()) -> str:
         """Make the chat's worktree from where cwd's repository stands; returns the folder the chat
-        starts in (the same place inside the new worktree as cwd is inside its repository)."""
+        starts in (the same place inside the new worktree as cwd is inside its repository).
+
+        used: the folders chats have worked in. A folder in one of them is not given out again,
+        even with its worktree long removed: resuming that chat, or restoring its files, would
+        work in the new chat's worktree."""
+        if not shutil.which("git"):
+            raise WorktreeError(tr("git ist nicht installiert.", "git is not installed."))
         top = (git(cwd, "rev-parse", "--show-toplevel") or "").rstrip("\n")  # a folder may end in a space
         if not top:
             raise WorktreeError(tr("Der Ordner liegt in keinem Git-Repository.", "The folder is not in a git repository."))
@@ -196,12 +207,15 @@ class Worktrees:
         with self._creating:
             # Nor a folder another chat's record names: deleted by hand, it would be found for both.
             recorded = {e["path"] for e in self.all().values()}
+            used = [u.rstrip("/") for u in used if u]
             for n in range(1, 100):
                 candidate = slug if n == 1 else f"{slug}-{n}"
                 branch = BRANCH_PREFIX + candidate
                 path = os.path.join(home, candidate)
+                worked_in = any(u == path or u.startswith(path + "/") for u in used)
                 taken = git(top, "rev-parse", "--verify", "-q", f"refs/heads/{branch}", ok=(0, 1))
-                if path not in recorded and not os.path.exists(path) and taken is not None and not taken.strip():
+                if (path not in recorded and not worked_in and not os.path.exists(path)
+                        and taken is not None and not taken.strip()):
                     break
             else:
                 raise WorktreeError(tr("Kein freier Name für den Worktree.", "No free name for the worktree."))
@@ -211,7 +225,7 @@ class Worktrees:
                 raise WorktreeError(f"{home}: {e.strerror}")
             try:
                 _run(top, "worktree", "add", "-b", branch, path, head, timeout=120)
-            except WorktreeError:
+            except WorktreeError as failed:
                 # A failing post-checkout hook (git-lfs missing, say) or the timeout can leave the
                 # folder and the branch behind; nothing would list them, so they go again.
                 # Twice --force: an interrupted add leaves the worktree locked ("initializing").
@@ -221,6 +235,9 @@ class Worktrees:
                     os.rmdir(home)  # if this was to be its first worktree
                 except OSError:
                     pass
+                if os.path.exists(path):  # the cleanup failed too (a slow drive): say what is left
+                    raise WorktreeError(f"{failed} " + tr(f"Übrig blieb der Ordner {path}; bitte selbst löschen.",
+                                                          f"The folder {path} was left behind; please delete it."))
                 raise
             with self._lock:
                 self._data[session_id] = {"repo": main, "path": path, "branch": branch, "base": base,
@@ -280,7 +297,9 @@ class Worktrees:
         if state["base_missing"]:
             raise WorktreeError(tr(f"Den Branch {base} gibt es nicht mehr; bitte selbst mergen.",
                                    f"The branch {base} no longer exists; please merge it yourself."))
-        n = state["dirty"]
+        # Untracked files do not count here: the merge takes the branch, not the folder.
+        tracked = git(entry["path"], "status", "--porcelain=v1", "--untracked-files=no", timeout=5)
+        n = None if tracked is None else len(tracked.splitlines())
         if n is None:
             raise WorktreeError(tr("Git antwortet nicht auf den Status des Worktrees; bitte gleich noch einmal versuchen.",
                                    "git does not report the worktree's status; please try again in a moment."))

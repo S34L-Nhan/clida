@@ -1,4 +1,4 @@
-"""Index and render Claude Code transcripts (~/.claude/projects/<project>/<session>.jsonl).
+"""Index, render and fork Claude Code transcripts (~/.claude/projects/<project>/<session>.jsonl).
 
 Transcripts are append-only JSONL files that can grow to tens of megabytes, so the
 index remembers how far it has read each file and only parses what was appended.
@@ -344,6 +344,13 @@ def _line_of(path: str, uuid: str, until=None):
     return found
 
 
+def _link_or_copy(src, dst):
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
 def fork(path: str, message: str, before: bool, new_id: str) -> str:
     """Copy a chat up to one of its messages into a new chat new_id, as `claude --fork-session`
     would, but cut there: up to and including the message, or, with before, up to the entry the
@@ -383,7 +390,8 @@ def fork(path: str, message: str, before: bool, new_id: str) -> str:
                     out.write(line.replace(old, b'"sessionId":"' + new_id.encode() + b'"'))
         # The backups first: if they fail, no chat appears that is half there.
         if backups.is_dir():
-            shutil.copytree(backups, FILE_HISTORY / new_id, dirs_exist_ok=True)
+            # Linked where the file system allows: the CLI writes a backup once and never changes it.
+            shutil.copytree(backups, FILE_HISTORY / new_id, dirs_exist_ok=True, copy_function=_link_or_copy)
         os.replace(tmp, target)
     except BaseException:
         shutil.rmtree(FILE_HISTORY / new_id, ignore_errors=True)

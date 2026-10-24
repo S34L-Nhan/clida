@@ -210,12 +210,13 @@ const staleServer = (status, data) => status === 404 && (data?.code === 'no_rout
 const WINDOW_ID = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 // timeout (ms): give up on an answer that does not come, as WSL's localhost relay can hang.
-async function api(method, path, body, { timeout = 0 } = {}) {
+// signal: to call a request off that is no longer needed.
+async function api(method, path, body, { timeout = 0, signal = null } = {}) {
   const res = await fetch(path, {
     method,
     headers: { 'X-Clida-Window': WINDOW_ID, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
-    signal: timeout && AbortSignal.timeout ? AbortSignal.timeout(timeout) : undefined,  // Chrome 103+
+    signal: signal || (timeout && AbortSignal.timeout ? AbortSignal.timeout(timeout) : undefined),  // Chrome 103+
   });
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
@@ -508,13 +509,23 @@ function searchMessages() {
   if (!query.split(/\s+/).some((word) => word.length >= SEARCH_MIN)) return;  // the server looks words up from three on
   searchTimer = setTimeout(async () => {
     const seq = ++state.hitsSeq;
+    // The one before goes: the browser keeps only six requests to the server open at a time.
+    state.searchAbort?.abort();
+    const abort = state.searchAbort = new AbortController();
     let data;
     try {
-      data = await api('GET', `/api/search?q=${encodeURIComponent(query)}`);
+      data = await api('GET', `/api/search?q=${encodeURIComponent(query)}`, null, { signal: abort.signal });
     } catch {
-      return;  // a server from before the search: titles only
+      return;  // called off, or a server from before the search: titles only
     }
     if (seq !== state.hitsSeq || searchQuery() !== query) return;  // typed on meanwhile
+    state.searchIndexing = data.indexing ? query : null;
+    if (data.indexing) {
+      // The first start reads every chat once; asked again shortly, the titles found meanwhile.
+      searchTimer = setTimeout(searchMessages, 1500);
+      if (!state.renaming && !state.dragging) renderSidebar();
+      return;
+    }
     state.hits = { query, map: new Map(Object.entries(data.hits)) };
     if (!state.renaming && !state.dragging) {
       renderSidebar();
@@ -582,7 +593,7 @@ function markWords(node, query) {
 
 function renderSidebar() {
   const list = $('#session-list');
-  const query = $('#search').value.trim().toLowerCase();
+  const query = searchQuery();
   const collapsedFolders = store.get('collapsedFolders', {});
   const byFolder = new Map(state.folders.map((f) => [f.id, []]));
   const loose = [];
@@ -609,6 +620,7 @@ function renderSidebar() {
     nodes.push(sessionItem(s));
   }
   if (archived.length) nodes.push(archiveNode(archived, query ? true : store.get('archiveOpen', false)));
+  if (query && state.searchIndexing === query) nodes.unshift(el('div', 'list-note', t('search.indexing')));
   if (!nodes.length) nodes.push(el('div', 'list-empty', t(query ? 'list.noMatches' : 'list.empty')));
   const focused = document.activeElement?.closest('#session-list .item, #session-list .folder-head, #session-list .archive-head');
   const focusKey = focused && (focused.dataset.id || focused.dataset.folder || 'archive');
@@ -1490,6 +1502,8 @@ function askNotifyPermission() {
 
 function notify(row) {
   if (notifyLevel === 'off' || !notifySupported() || Notification.permission !== 'granted') return;
+  // Only by the CLI's own report: without it, "done" is merely quiet output, as a long tool run is.
+  if (!row.reported && row.status !== 'exited') return;
   if (document.hasFocus() && !document.hidden) return;  // in front, the tab and its dot say it already
   const waiting = row.status === 'waiting';
   if (!waiting && notifyLevel !== 'all') return;
@@ -1615,6 +1629,8 @@ async function mergeWorktree(tab) {
 }
 
 async function removeWorktree(tab) {
+  // Asked anew: commits or edits made from a shell since the last load must be in the question.
+  await loadChanges(tab);
   const wt = tab.changesCounts?.worktree;
   if (!wt) return;
   const text = [...textWith('worktree.removeText', { branch: el('strong', '', wt.branch), path: el('code', '', wt.path) })];
@@ -1870,7 +1886,7 @@ function withNotes(tab, item) {
   if (!item.uid || (item.k !== 'user' && item.k !== 'assistant')) return [node];
   const wrap = el('div', `msg-wrap ${item.k}`);
   wrap.dataset.uid = item.uid;
-  const add = el('button', 'icon-btn note-add');
+  const add = el('button', 'icon-btn');
   add.title = t('note.message');
   add.append(icon('note'));
   add.onclick = () => {
@@ -2089,7 +2105,7 @@ async function forkAt(tab, item) {
   if (before) typeWhenReady(started.id, item.text);
 }
 
-const TYPED_MAX = 8000;  // longer prompts go to the clipboard: typing them in would take too long
+const TYPED_MAX = 8000;  // longer prompts go to the clipboard: typing them in would take too long (as in app.py)
 
 // Type a prompt into a session that is starting, unsent, once its CLI says it is ready. If it
 // never does, the text goes to the clipboard instead.
@@ -3298,6 +3314,7 @@ async function submitNewChat(ev) {
     // The folder asked for, not the worktree's: the next chat starts from the repository again.
     store.set('lastCwd', worktree ? cwd : started.cwd);
     store.set('newWorktree', worktree);
+    if (worktree && !started.worktree) toast(t('worktree.notMade'));  // a server older than this page
     $('#new-dialog').close();
     if (folder) expandFolder(folder);
     await refreshSessions();

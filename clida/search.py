@@ -54,6 +54,7 @@ class Search:
         self._lock = threading.Lock()
         self._db = None
         self._fts = False
+        self._failed = {}  # transcript -> (size, mtime) it failed at: not read again until it changes
 
     # -- the database -----------------------------------------------------------------------
 
@@ -83,6 +84,9 @@ class Search:
 
     def _connect(self):
         db = sqlite3.connect(str(DB_FILE), check_same_thread=False)  # used under self._lock only
+        # A cache, rebuilt if lost: no waiting for the disk on every transcript's commit (ten times
+        # faster for a first build of thousands of chats).
+        db.execute("PRAGMA synchronous = OFF")
         # SQLite's own lower() and LIKE fold ASCII only; the plain table's search needs Ä and ä alike.
         db.create_function("pylower", 1, lambda text: text.lower() if isinstance(text, str) else text,
                            deterministic=True)
@@ -139,12 +143,15 @@ class Search:
                     st = path.stat()
                 except OSError:
                     continue
+                if self._failed.get(key) == (st.st_size, st.st_mtime):
+                    continue
                 try:
                     self._read(db, key, path.stem, st, known.get(key))
                 except Exception as e:  # one odd file must not stop the search
                     if isinstance(e, sqlite3.DatabaseError) and _damaged(e):
                         raise
-                    db.rollback()  # none of it half taken in: the file is read again next time
+                    db.rollback()  # none of it half taken in
+                    self._failed[key] = (st.st_size, st.st_mtime)  # again once it changes
                     traceback.print_exc()
         for key in set(known) - seen:
             self._drop(db, key)
@@ -160,56 +167,73 @@ class Search:
     def _read(self, db, key, session_id, st, known):
         offset = 0
         try:
-            with open(key, "rb") as f:
-                if known:
-                    old_offset, size, mtime, tail = known
-                    if (size, mtime) == (st.st_size, st.st_mtime):
-                        return
-                    # Grown: read on from where it was, if the bytes before that place are still the
-                    # same. Shorter, or written anew: from the start.
-                    if st.st_size > size and st.st_size >= old_offset:
-                        f.seek(old_offset - len(tail or b""))
-                        if f.read(len(tail or b"")) == (tail or b""):
-                            offset = old_offset
-                    if not offset:
-                        self._drop(db, key)
-                f.seek(offset)
-                data = f.read()
+            f = open(key, "rb")
         except OSError:
             return
-        end = data.rfind(b"\n") + 1  # only complete lines; the writer may be mid-line
-        rows = []
-        for line in data[:end].split(b"\n"):
-            if (not line or line.startswith(_SKIP_PREFIXES) or line.startswith(_META_PREFIXES)
-                    or not any(kind in line for kind in _MESSAGE)):
-                continue
-            entry = _loads(line)
-            if entry is None or entry.get("isSidechain"):
-                continue
-            items = []
-            try:
-                _render_entry(entry, items, {})
-            except (AttributeError, TypeError, ValueError):
-                continue  # written by another program: skip what does not have the expected shape
-            # Written by another program: a lone surrogate (half an emoji) cannot be stored, a
-            # timestamp may be anything.
-            rows += [(item["text"].encode("utf-8", "replace").decode(), session_id, item["uid"], item["k"],
-                      item.get("ts") if isinstance(item.get("ts"), str) else None, key)
-                     for item in items if item["k"] in ("user", "assistant") and item.get("uid")]
-        if rows:
-            first = (db.execute("SELECT max(rowid) FROM msgs").fetchone()[0] or 0) + 1
-            db.executemany("INSERT INTO msgs (rowid, text, session_id, uid, role, ts, path) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                           [(first + n, *row) for n, row in enumerate(rows)])
-            db.execute("INSERT INTO spans (path, first, last) VALUES (?, ?, ?)", (key, first, first + len(rows) - 1))
-        tail = data[max(0, end - 64):end] if end else (known[3] if known and offset else b"")
+        with f:
+            if known:
+                old_offset, size, mtime, tail = known
+                if (size, mtime) == (st.st_size, st.st_mtime):
+                    return
+                # Grown: read on from where it was, if the bytes before that place are still the
+                # same. Shorter, or written anew: from the start.
+                if st.st_size > size:
+                    f.seek(old_offset - len(tail or b""))
+                    if f.read(len(tail or b"")) == (tail or b""):
+                        offset = old_offset
+                if not offset:
+                    self._drop(db, key)
+            f.seek(offset)
+            # Line by line, in batches: a transcript can be hundreds of MB.
+            read, last, rows = 0, b"", []
+            for line in f:
+                if not line.endswith(b"\n"):
+                    break  # only complete lines; the writer may be mid-line
+                read += len(line)
+                last = line[-64:] if len(line) >= 64 else (last + line)[-64:]
+                rows += self._rows(line[:-1], session_id, key)
+                if len(rows) >= 500:
+                    self._insert(db, key, rows)
+                    rows = []
+            self._insert(db, key, rows)
+        tail = last if read else (known[3] if known and offset else b"")
         db.execute("INSERT OR REPLACE INTO files (path, offset, size, mtime, tail) VALUES (?, ?, ?, ?, ?)",
-                   (key, offset + end, st.st_size, st.st_mtime, tail))
+                   (key, offset + read, st.st_size, st.st_mtime, tail))
         db.commit()  # file by file: a first build of many chats keeps what it has done
+
+    @staticmethod
+    def _rows(line: bytes, session_id: str, key: str) -> list:
+        if (not line or line.startswith(_SKIP_PREFIXES) or line.startswith(_META_PREFIXES)
+                or not any(kind in line for kind in _MESSAGE)):
+            return []
+        entry = _loads(line)
+        if entry is None or entry.get("isSidechain"):
+            return []
+        items = []
+        try:
+            _render_entry(entry, items, {})
+        except (AttributeError, TypeError, ValueError):
+            return []  # written by another program: skip what does not have the expected shape
+        # Written by another program: a lone surrogate (half an emoji) cannot be stored, a
+        # timestamp may be anything.
+        return [(item["text"].encode("utf-8", "replace").decode(), session_id, item["uid"], item["k"],
+                 item.get("ts") if isinstance(item.get("ts"), str) else None, key)
+                for item in items if item["k"] in ("user", "assistant") and item.get("uid")]
+
+    @staticmethod
+    def _insert(db, key, rows):
+        if not rows:
+            return
+        first = (db.execute("SELECT max(rowid) FROM msgs").fetchone()[0] or 0) + 1
+        db.executemany("INSERT INTO msgs (rowid, text, session_id, uid, role, ts, path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       [(first + n, *row) for n, row in enumerate(rows)])
+        db.execute("INSERT INTO spans (path, first, last) VALUES (?, ?, ?)", (key, first, first + len(rows) - 1))
 
     # -- searching ----------------------------------------------------------------------------
 
-    def find(self, query: str, paths=None) -> dict:
-        """session id -> its best matching message: uid, role, ts, snippet, and how many match.
+    def find(self, query: str, paths=None):
+        """session id -> its best matching message: uid, role, ts, snippet, and how many match;
+        None while the index is being built (the first time, that reads every transcript).
 
         Every word of three or more characters must occur in the message, in any case; shorter
         ones cannot be looked up. paths: only these transcripts (the ones the history shows).
@@ -219,8 +243,12 @@ class Search:
         terms = [w for w in dict.fromkeys(query.lower().split()) if len(w) >= MIN_TERM][:MAX_TERMS]
         if not terms:
             return {}
-        with self._lock:
+        if not self._lock.acquire(timeout=0.5):
+            return None  # a search waiting for the build would hold one of the window's connections
+        try:
             rows = self._guarded(lambda: self._find(terms, paths))
+        finally:
+            self._lock.release()
         return {sid: {"uid": uid, "role": role, "ts": ts, "count": n, **_snippet(text, terms)}
                 for sid, uid, role, ts, text, n in rows}
 
@@ -238,6 +266,16 @@ class Search:
             db.execute("DELETE FROM shown")
             db.executemany("INSERT OR IGNORE INTO shown (path) VALUES (?)", [(p,) for p in paths])
             where += " AND path IN (SELECT path FROM shown)"
+        if sqlite3.sqlite_version_info < (3, 25):  # no window functions: grouped here
+            found = db.execute(f"SELECT session_id, uid, role, ts, text FROM msgs WHERE {where} ORDER BY {order} "
+                               "LIMIT 20000", args).fetchall()
+            best, counts, newest = {}, {}, {}
+            for row in found:
+                best.setdefault(row[0], row)
+                counts[row[0]] = counts.get(row[0], 0) + 1
+                newest[row[0]] = max(newest.get(row[0]) or "", row[3] or "")
+            order_by = sorted(best, key=lambda sid: newest[sid], reverse=True)[:MAX_CHATS]
+            return [(*best[sid], counts[sid]) for sid in order_by]
         return db.execute(f"""
             SELECT session_id, uid, role, ts, text, n FROM (
                 SELECT session_id, uid, role, ts, text,

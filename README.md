@@ -20,7 +20,7 @@ clida
 ### Chats
 
 - **Sidebar**: all past chats from `~/.claude/projects`, grouped by date, with search.
-- **Search**: finds chats by title and folder, and also by what was said in them: every word of three or more letters must occur in one of your prompts or Claude's answers, in any case and also inside longer words. Chats with the newest matches come first. A found chat shows the passage; a click opens it at that message, with the words marked.
+- **Search**: finds chats by title and folder, and also by what was said in them: every word of three or more letters must occur in one of your prompts or Claude's answers, in any case and also inside longer words. With very many matches, the 300 chats with the newest ones are shown. A found chat shows the passage; a click opens it at that message, with the words marked.
 - **Rename**: double-click a title, use the pencil icon, or click the heading.
 - **Folders**: create one with the folder icon, then drag chats in and out. Right-click a folder to rename or delete it.
 - **Archive and delete**: right-click a chat. *Archivieren* (archive) hides it but keeps it; *Löschen* (delete) removes it from disk for good, after asking.
@@ -42,7 +42,7 @@ The switch in the header has three views:
 Hover a message in the history for two more buttons next to the note icon:
 
 - **Abzweigen** (fork): a new chat with the conversation up to that point starts in the terminal. From an answer it ends with that answer; from one of your prompts it ends just before it, and the prompt is typed in again, unsent, for you to change. The chat you forked from stays as it is.
-- **Dateien zurücksetzen** (restore files), on your prompts: what Claude changed with Edit or Write from that prompt on goes back to how it was before, from the CLI's own checkpoints (what `/rewind` uses). Files it created are deleted; changes made by shell commands stay. Only while the chat is stopped.
+- **Dateien zurücksetzen** (restore files), on your prompts: what Claude changed with Edit or Write from that prompt on goes back to how it was before, from the CLI's own checkpoints (what `/rewind` uses). Files it created are deleted; changes made by shell commands stay. Only while no CLI works in the chat's folder; this uses an option of the CLI that is not documented, so a future CLI may need an update of CLIDA.
 
 Together they are the CLI's `/rewind`, without losing the conversation as it was.
 
@@ -62,11 +62,11 @@ Files come from two sources: Claude's Edit and Write calls, and the git reposito
 Tick *In eigenem Git-Worktree* (in its own git worktree) when you start a chat, and it works on a branch of its own, `clida/<title>`, in a folder next to the repository: `<repo>.worktrees/<title>`. Parallel chats on one repository then never write into each other's files, and the changes view shows only that chat's work.
 
 - A bar under the header shows the branch, how many commits it is ahead, and what is not committed yet.
-- **In … mergen** (merge into …) merges the branch into the branch the chat started from, where that is checked out. Only committed work goes; a conflict aborts the merge and leaves everything as it was.
+- **In … mergen** (merge into …) merges the branch into the branch the chat started from, where that is checked out. It refuses while changes in the worktree are not committed; a conflict aborts the merge and leaves everything as it was.
 - **Worktree entfernen** (remove worktree) deletes the folder and the branch once no session works in it. The history stays; the question names any commits that no other branch has.
 - A chat that goes on under a new id (`/clear`, `/resume`) and a fork of the chat work in the same worktree and show the same bar. Deleting the chat hands the worktree to one of them; a chat that holds its worktree alone asks first, as without it CLIDA could not reach the worktree any more.
 
-Files git does not track (`.env`, `node_modules`) are not in a new worktree, and the CLI asks once whether you trust the new folder.
+Files git does not track (`.env`, `node_modules`) are not in a new worktree, and the CLI asks once whether you trust the new folder. On WSL, keep such repositories in the Linux file system: a worktree made from `/mnt/c/...` works in WSL, but Windows git and IDEs cannot use it, and checking out there is slow.
 
 ### Notes
 
@@ -88,7 +88,7 @@ Both are Markdown. Pasting rendered text keeps lists, bold and code (converter f
 *Einstellungen* (settings) at the bottom of the sidebar. Changes apply at once.
 
 - **Sprache** (language): German or English. Claude still answers in the language you write in.
-- **Benachrichtigungen** (notifications): while CLIDA is not in front, a system notification when a session waits for you, and by default also when one is done. A click on it opens the chat. The browser asks once whether CLIDA may show them; on Windows they appear in the notification center (unless Focus Assist holds them back).
+- **Benachrichtigungen** (notifications): while CLIDA is not in front, a system notification when a session waits for you, and by default also when one is done. A click on it opens the chat. They need a CLI that reports its state (any recent one). The browser asks on your first click whether CLIDA may show them (a dismissed question comes again a few times); on Windows they appear in the notification center (unless Focus Assist holds them back).
 - **Farbschema** (color theme): System, light, dark, Solarized, Catppuccin, Nord, Dracula, Gruvbox and Tokyo Night. It colors the terminal too. Set the CLI's own theme once with `/theme` to *Auto (match terminal)*.
 - **Diff-Farben** (diff colors): how strongly added and removed lines are tinted, from subtle to very strong. Comments and selected lines have their own color.
 
@@ -136,7 +136,7 @@ Tabs can be reordered by dragging. Browser shortcuts that make no sense in an ap
 
 - `clida/`: the server, Python stdlib only. It listens on `127.0.0.1:47321`.
   - `terminals.py` runs each session as the real `claude` CLI in a pty.
-  - `transcripts.py` indexes the transcripts in `~/.claude/projects/` incrementally, sums tokens and cost, and finds the files each chat edited.
+  - `transcripts.py` indexes the transcripts in `~/.claude/projects/` incrementally, sums tokens and cost, finds the files each chat edited, and copies a chat up to a message for a fork.
   - `search.py` keeps the full-text index of all prompts and answers (SQLite FTS5 with trigrams), read on incrementally like the chat index.
   - `gitrepo.py` adds what changed in the chat's git repositories. Every git call uses `--no-optional-locks`, so it never blocks Claude's own commits.
   - `registry.py` reads the state each running CLI reports in `~/.claude/sessions/`.
@@ -165,6 +165,6 @@ Anyone who reaches the server can start terminals, so:
 
 ### Data
 
-Everything CLIDA stores is in `~/.clida`: settings, titles, folders, notes, which chat has which worktree, the chat index and the search index (caches, safe to delete), uploads and the server log. The worktrees themselves live next to their repositories. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
+Everything CLIDA stores is in `~/.clida`: settings, titles, folders, notes, which chat has which worktree, the chat index and the search index (caches, safe to delete), uploads and the server log. The worktrees themselves live next to their repositories. A fork is a new transcript in `~/.claude/projects/` next to its original, with a copy of the original's file backups in `~/.claude/file-history/`. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
 
 `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE` (path to the CLI) change the port and paths.
