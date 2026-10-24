@@ -1224,7 +1224,7 @@ function paintView(tab) {
   const parts = [session?.cwd_label || row?.cwd || ''];
   if (row) parts.push(t(`status.${row.status}`));
   else if (ext) parts.push(t('status.elsewhere'));
-  const branch = tab.changes?.git?.branch;
+  const branch = tab.changesCounts?.git?.branch;
   if (branch) parts.push(t('view.branch', { branch }));
   const usage = session?.usage;
   if (usage?.cost) parts.push(`≈ ${money(usage.cost)}`);
@@ -1233,7 +1233,7 @@ function paintView(tab) {
     cost: money(usage.cost), input: count(usage.tokens.input_tokens), write: count(usage.tokens.cache_creation_input_tokens),
     read: count(usage.tokens.cache_read_input_tokens), output: count(usage.tokens.output_tokens),
   }) : '';
-  const files = tab.changes?.files.length || 0;
+  const files = tab.changesCounts?.files.length || 0;
   tab.changesBtn.textContent = files ? `${t('view.changes')} · ${files}` : t('view.changes');
   tab.histBtn.classList.toggle('on', !showTerm && !showChanges);
   tab.termBtn.classList.toggle('on', showTerm);
@@ -1700,8 +1700,11 @@ async function loadChanges(tab) {
     return;
   }
   if (seq !== tab.changesSeq) return;  // a newer load went out meanwhile
-  tab.changes = data;
+  // The header and the switch take the latest counts from either kind of load; the view is only
+  // ever drawn from a full one, which has the diffs and where each file stands in git.
+  tab.changesCounts = data;
   if (!brief) {
+    tab.changes = data;
     const signature = JSON.stringify([language(), data]);
     // A comment being written stays: the view catches up once it is saved or dropped.
     if (tab.changesInner.querySelector('.cform')) tab.changesStale ||= signature !== tab.changesSignature;
@@ -1741,8 +1744,7 @@ function renderChanges(tab) {
     button.append(icon(mode === 'tree' ? 'tree' : 'list'));
     button.onclick = () => {
       store.set('changesTree', mode === 'tree');
-      for (const other of modes.children) other.classList.toggle('on', other === button);
-      renderFileList(tab);
+      renderChanges(tab);  // the diffs take the list's order too
     };
     modes.append(button);
   }
@@ -1776,9 +1778,10 @@ function renderChanges(tab) {
   }, { root: main, rootMargin: '600px 0px' });
   tab.mrBlocks = new Map();
   // In the order of the file list: repository by repository, files outside any last, and in each
-  // the tree's order (folders before the files next to them).
+  // the tree's order (folders before the files next to them) or, as a list, by path.
+  const byPath = store.get('changesTree', true) ? treeCompare : (a, b) => a.localeCompare(b);
   const ordered = [...files].sort((a, b) => (!a.repo) - (!b.repo) || (a.repo?.top || '').localeCompare(b.repo?.top || '')
-    || treeCompare(groupPath(a), groupPath(b)));
+    || byPath(groupPath(a), groupPath(b)));
   for (const file of ordered) {
     const block = fileBlock(tab, file);
     tab.mrBlocks.set(file.path, block);
@@ -1866,7 +1869,7 @@ function renderFileList(tab) {
     }
     rows.push(head);
     rows.push(...(store.get('changesTree', true) ? treeRows(tab, group.files)
-      : group.files.map((file) => fileRow(tab, file, groupPath(file), 0))));
+      : [...group.files].sort((a, b) => groupPath(a).localeCompare(groupPath(b))).map((file) => fileRow(tab, file, groupPath(file), 0))));
   }
   list.replaceChildren(...rows);
 }
@@ -2046,13 +2049,7 @@ function fileBlock(tab, file) {
   block.fill = () => {
     if (block.dataset.filled || block.classList.contains('collapsed')) return;
     block.dataset.filled = '1';
-    // A diff drawn above what is in view would push it down (after a jump from the file list,
-    // the file jumped to): the view moves along by as much as the diff grew.
-    const main = tab.mrMain;
-    const above = main && block.getBoundingClientRect().bottom <= main.getBoundingClientRect().top + 1;
-    const before = block.offsetHeight;
-    fillFile(tab, file, body);
-    if (above) main.scrollTop += block.offsetHeight - before;
+    fillFile(tab, file, body);  // drawn above the view, the browser keeps the view in place (scroll anchoring)
   };
   block.setCollapsed(tab.collapsed.has(file.path));
   return block;
@@ -2285,11 +2282,16 @@ async function sendReview(tab) {
     const text = reviewPrompt(tab);
     if (!state.bySession.has(sid)) await resumeTab(tab);
     let row = state.bySession.get(sid);
-    for (let waited = 0; row && row.status !== 'idle' && waited < 60000; waited += 500) {
+    for (let waited = 0; row && !(row.status === 'idle' && row.reported) && waited < 60000; waited += 500) {
       if (row.status === 'exited') break;
       await sleep(500);
       await refreshStatus();
       row = state.bySession.get(sid);
+    }
+    if (row && row.status === 'idle' && !row.reported) {
+      // Without the CLI's own report, "idle" only means quiet output, as a permission prompt is.
+      toast(t('review.noReport'));
+      return;
     }
     if (!row || row.status !== 'idle') {
       toast(t('review.notReady'));
@@ -2298,9 +2300,7 @@ async function sendReview(tab) {
     await api('POST', `/api/terminals/${row.id}/prompt`, { text });
     tab.review = [];
     saveReview(tab);
-    // What tab.changes holds may be the counts only (loaded while the terminal was shown), so the
-    // view is redrawn from full data when it is shown again, not now.
-    tab.changesSignature = null;
+    renderChanges(tab);
     setView(tab, 'terminal');
   } catch (e) {
     toast(e.message);

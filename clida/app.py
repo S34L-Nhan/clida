@@ -145,6 +145,7 @@ class Desk:
             terminals.append({
                 "id": term.id, "session_id": term.session_id, "cwd": term.cwd,
                 "status": term.status(entry), "exit_code": term.exit_code, "started": term.started,
+                "reported": entry is not None,  # the CLI's own report, not CLIDA's guess from its output
             })
         live_ids = {t["session_id"] for t in terminals if t["status"] != "exited"}
         external = []

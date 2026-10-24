@@ -17,6 +17,7 @@ import traceback
 from pathlib import Path
 
 from . import CLAUDE_HOME, STATE_DIR
+from .lru import Lru
 from .settings import tr
 
 PROJECTS = CLAUDE_HOME / "projects"
@@ -603,7 +604,7 @@ class ChangesCache:
         self._lock = threading.Lock()
         self._parsed = {}  # transcript path -> (size, mtime, changes())
         self._nets = {}  # file path -> (key, result)
-        self._laters = {}  # (backup folder, backup) -> (folder mtime, has later backups)
+        self._laters = Lru(2000)  # (backup folder, backup) -> True once later backups were seen
 
     def _parse(self, path: str) -> dict:
         try:
@@ -653,22 +654,20 @@ class ChangesCache:
         return {**changed, **result}
 
     def _later(self, first, changed) -> bool:
-        """Whether the file has backups after @v1 but not @v1: the chat created it. Listed once per
-        change of the backup folder, not on every request."""
+        """Whether the file has backups after @v1 but not @v1: the chat created it.
+
+        A yes is kept (backups are added, not taken back, until the CLI cleans the whole history
+        up: first.exists() and the key in _net notice that); a no is asked again, since a backup
+        may appear within the same second, which coarse folder times (/mnt on WSL) cannot tell.
+        """
         if first is None or first.exists():
             return False
-        try:
-            stamp = os.stat(first.parent).st_mtime
-        except OSError:
-            return False
         slot = (str(first.parent), changed["backup"])
-        with self._lock:
-            hit = self._laters.get(slot)
-        if hit and hit[0] == stamp:
-            return hit[1]
+        if self._laters.get(slot, True):
+            return True
         found = bool(glob.glob(os.path.join(glob.escape(str(first.parent)), glob.escape(changed["backup"]) + "@v*")))
-        with self._lock:
-            self._laters[slot] = (stamp, found)
+        if found:
+            self._laters.put(slot, True, True)
         return found
 
     @staticmethod
