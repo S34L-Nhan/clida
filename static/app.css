@@ -378,7 +378,7 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .status-icon.unchanged { color: var(--muted); }
 
 .mr-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.mr-main { flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; padding: 16px 20px 80px; }  /* block.fill keeps the place */
+.mr-main { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px 80px; }
 .mr-top { margin-bottom: 12px; }
 .changes-sum { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 13px; }
 .changes-sum .muted, .mr-file-path .muted { color: var(--muted); }

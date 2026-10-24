@@ -10,15 +10,16 @@ anything else did in the same repository at that time counts too.
 
 import os
 import subprocess
-import threading
-from collections import OrderedDict
+import time
 
 from . import transcripts
+from .lru import Lru
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git's id of a tree with nothing in it
 MARGIN = 120  # seconds after the chat's last transcript write that still count as during the chat
 MAX_FILES = 200
 MAX_REPOS = 5
+OUTSIDE_TTL = 10  # seconds a folder counts as outside any repository before git is asked again
 DIFF_CACHE_ROWS = 200_000  # diff rows kept in memory over all files (each diff has at most 3001)
 
 
@@ -89,37 +90,6 @@ def _changed_at(path):
     return max(st.st_mtime, st.st_ctime)
 
 
-class _Lru:
-    """A small cache that forgets the least recently used entries: every chat opened adds some.
-
-    weight, if given, measures an entry (a diff: its rows), and the entries together stay under budget.
-    """
-
-    def __init__(self, size: int, budget: int = 0, weight=None):
-        self._size, self._items, self._lock = size, OrderedDict(), threading.Lock()
-        self._budget, self._weight, self._total = budget, weight, 0
-
-    def get(self, slot, key):
-        with self._lock:
-            hit = self._items.get(slot)
-            if hit is None or hit[0] != key:
-                return None
-            self._items.move_to_end(slot)
-            return hit[1]
-
-    def put(self, slot, key, value):
-        weigh = self._weight or (lambda value: 0)
-        with self._lock:
-            old = self._items.pop(slot, None)
-            if old is not None:
-                self._total -= weigh(old[1])
-            self._items[slot] = (key, value)
-            self._total += weigh(value)
-            while len(self._items) > 1 and (len(self._items) > self._size or (self._budget and self._total > self._budget)):
-                _, (_, dropped) = self._items.popitem(last=False)
-                self._total -= weigh(dropped)
-
-
 class RepoChanges:
     """Cached by the repository's state: the window asks again after every turn of every chat.
 
@@ -128,11 +98,11 @@ class RepoChanges:
     """
 
     def __init__(self):
-        self._selections = _Lru(32)  # (top, start, end) -> (state, selection)
+        self._selections = Lru(32)  # (top, start, end) -> (state, selection)
         # (top, base, rel) -> (stamp, diff fields); a diff can have thousands of rows, so by rows too
-        self._diffs = _Lru(400, budget=DIFF_CACHE_ROWS, weight=lambda fields: len(fields.get("net") or ()))
-        self._states = _Lru(32)  # (top, start) -> (repo state, git state of its files)
-        self._tops = _Lru(2000)  # folder -> its repository's top folder ("" outside one)
+        self._diffs = Lru(400, budget=DIFF_CACHE_ROWS, weight=lambda fields: len(fields.get("net") or ()))
+        self._states = Lru(32)  # (top, start) -> (repo state, git state of its files)
+        self._tops = Lru(2000)  # folder -> its repository's top folder ("" outside one, for OUTSIDE_TTL)
 
     def _top(self, folder: str) -> str:
         """The repository a folder is in; for a deleted file, its nearest folder that is still there."""
@@ -141,11 +111,14 @@ class RepoChanges:
             folder = "" if parent == folder else parent
         if not folder:
             return ""
+        # "Outside a repository" holds only a few seconds: the chat may run git init there.
+        window = int(time.monotonic() // OUTSIDE_TTL)
         top = self._tops.get(folder, None)
         if top is None:
+            top = self._tops.get(folder, window)
+        if top is None:
             top = (git(folder, "rev-parse", "--show-toplevel") or "").strip()
-            if top:  # "outside a repository" is asked again: the chat may run git init there
-                self._tops.put(folder, None, top)
+            self._tops.put(folder, None if top else window, top)
         return top
 
     def states(self, paths: list, start) -> dict:
@@ -155,9 +128,12 @@ class RepoChanges:
         "state": committed | staged | unstaged | partly | untracked | ignored | None,
         "commit": {"sha", "subject"} of the newest commit during the chat that touched it}
         """
-        by_top = {}
+        by_top, tops = {}, {}
         for path in paths:
-            by_top.setdefault(self._top(os.path.dirname(path)), []).append(path)
+            folder = os.path.dirname(path)
+            if folder not in tops:  # once per folder: a chat edits many files in few folders
+                tops[folder] = self._top(folder)
+            by_top.setdefault(tops[folder], []).append(path)
         out = {}
         for top, members in by_top.items():
             if not top:
@@ -288,18 +264,22 @@ def _states(top, start, head, status, paths) -> dict:
     branch = (git(top, "symbolic-ref", "--short", "-q", "HEAD", ok=(0, 1)) or "").strip() or None
     repo = {"top": top, "name": os.path.basename(top), "branch": branch}
     codes = dict((rel, code) for code, rel in _status_entries(status))
-    # By real path: git's top is one, and ~/work/x.py may be /mnt/d/work/x.py through a symlink.
-    rels = {path: os.path.relpath(os.path.realpath(path), top) for path in paths}
+    # By real path: git's top is one, and ~/work/x.py may be /mnt/d/work/x.py through a symlink. Only
+    # the folders are resolved: a file that is itself a symlink is tracked under its own name.
+    rels = {path: os.path.relpath(os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path)), top)
+            for path in paths}
     # Ignored files are not in the status; check-ignore names those of ours that are (exit 1: none).
-    loose = [rel for rel in rels.values() if rel not in codes]
+    # A path outside the repository would make check-ignore fail for all of them.
+    loose = [rel for rel in rels.values() if rel not in codes and not rel.startswith("..")]
     ignored = set(filter(None, (git(top, "check-ignore", "-z", "--stdin", stdin="\0".join(loose).encode() + b"\0",
                                     ok=(0, 1)) or "").split("\0"))) if loose else set()
     # The newest commit during the chat that touched each file (log lists newest first).
     commits = {}
-    # Only commits since the chat started; without that start, none can be named the chat's.
+    # Only commits since the chat started; without that start, none can be named the chat's. A
+    # repository that had no commit yet when the chat started has only commits of the chat.
     base = _head_at(top, start) if head and start else None
-    if base and base != head:
-        log = git(top, "log", "-n", "500", "--format=%x00%H%x09%s", "--name-only", "-z", f"{base}..HEAD")
+    if head and start and base != head:
+        log = git(top, "log", "-n", "500", "--format=%x00%H%x09%s", "--name-only", "-z", f"{base}..HEAD" if base else "HEAD")
         current = None
         for part in (log or "").split("\0"):
             part = part.strip("\n")
