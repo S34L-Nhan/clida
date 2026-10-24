@@ -216,7 +216,7 @@ function toast(message) {
 function applyStatus(data) {
   if (data.boot) {
     state.boot ||= data.boot;
-    if (data.boot !== state.boot) serverRestarted();
+    if (data.boot !== state.boot) reloadSafely();
   }
   state.terminals = new Map(data.terminals.map((row) => [row.id, row]));
   state.bySession = new Map(data.terminals.filter((row) => row.status !== 'exited').map((row) => [row.session_id, row]));
@@ -308,23 +308,15 @@ async function change(method, path, body) {
   return result;
 }
 
-// The server restarted, perhaps with new code: reload, so the page matches it. What is being
-// written is settled first: open notes are saved, a rename keeps the old name, and an open new
-// chat dialog starts nothing (the reload just drops it).
-async function serverRestarted() {
-  await reloadSafely();
-}
-
-// Reload the page once open notes are saved (also by F5); a note that cannot be saved does not
-// keep the page from reloading.
+// Reload the page: after a server restart, perhaps with new code, so the page matches it, and by
+// F5. What is being written is settled first: open notes are saved, a rename keeps the old name,
+// and an open new chat dialog starts nothing (the reload just drops it). Nothing that goes wrong
+// while settling keeps the page from reloading.
 async function reloadSafely() {
   if (state.reloading) return;
   state.reloading = true;
-  try {
-    await settleWriting();
-  } finally {
-    location.reload();
-  }
+  await settleWriting().catch(() => {});
+  location.reload();
 }
 
 // Before the page goes: open notes are saved, a rename keeps the old name, and an open new chat
@@ -1415,7 +1407,7 @@ function pasteAsMarkdown(ev) {
 }
 
 // flush(text): save the text as it stands, without touching the page; used before a reload
-// (see serverRestarted). It skips empty text, so a cleared editor never deletes a stored note.
+// (see reloadSafely). It skips empty text, so a cleared editor never deletes a stored note.
 function noteEditor({ initial = '', onSave, onCancel, onDelete, flush }) {
   const box = el('div', 'note-editor');
   const area = el('textarea');

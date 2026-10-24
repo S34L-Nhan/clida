@@ -6,6 +6,7 @@ index remembers how far it has read each file and only parses what was appended.
 
 import datetime
 import difflib
+import glob
 import json
 import os
 import re
@@ -639,23 +640,31 @@ class ChangesCache:
         except OSError:
             now = None
         first = FILE_HISTORY / session_id / f"{changed['backup']}@v1" if changed["backup"] else None
-        key = (now, str(first), changed["created"])
+        # Which backups exist decides the result too, and the CLI cleans its file history up.
+        key = (now, str(first), changed["created"], first is not None and first.exists(), self._later(first, changed))
         with self._lock:
             hit = self._nets.get(path)
         if hit and hit[0] == key:
             return {**changed, **hit[1]}
-        result = self._compare(changed, first, now)
+        result = self._compare(changed, first, now, later=key[-1])
         with self._lock:
             self._nets[path] = (key, result)
         return {**changed, **result}
 
     @staticmethod
-    def _compare(changed: dict, first, now) -> dict:
+    def _later(first, changed) -> bool:
+        """Whether the file has backups after @v1 but not @v1: the chat created it."""
+        if first is None or first.exists():
+            return False
+        return bool(glob.glob(os.path.join(glob.escape(str(first.parent)), glob.escape(changed["backup"]) + "@v*")))
+
+    @staticmethod
+    def _compare(changed: dict, first, now, later: bool) -> dict:
         # Before: the first backup is the file as it was before the chat's first edit. A tracked file
         # without one did not exist yet, nor did one that Write created. Else it is not known.
         # A file the chat created has later backups (@v2 …) but no @v1; once the CLI has cleaned
-        # its file history up, there are none at all, and the state before is not known.
-        later = first is not None and not first.exists() and any(first.parent.glob(f"{changed['backup']}@v*"))
+        # its file history up, there are none at all, and the state before is not known. (Where git
+        # knows better, app.py takes git's.)
         if first is not None and first.exists():
             before, before_note = read_text(first)
             known = True  # a binary or large before is known too, it just gets no diff

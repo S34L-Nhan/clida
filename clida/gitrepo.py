@@ -19,6 +19,7 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git's id of a tree wi
 MARGIN = 120  # seconds after the chat's last transcript write that still count as during the chat
 MAX_FILES = 200
 MAX_REPOS = 5
+DIFF_CACHE_ROWS = 200_000  # diff rows kept in memory over all files; a diff over 1/20 of it is not kept
 
 
 def git(cwd, *args, binary=False, timeout=10):
@@ -70,7 +71,9 @@ def _status_entries(status: str):
             continue
         out.append((entry[:2], entry[3:]))
         if (entry[0] in "RC" or entry[1] in "RC") and i < len(entries):  # index or work tree (git add -N)
-            out.append(("D ", entries[i]))  # the old path is gone, and that is a change too
+            # The old path is gone, and that is a change too: staged with the index's rename,
+            # in the work tree with the work tree's.
+            out.append(("D " if entry[0] in "RC" else " D", entries[i]))
             i += 1
     return out
 
@@ -125,7 +128,7 @@ class RepoChanges:
     def __init__(self):
         self._selections = _Lru(32)  # (top, start, end) -> (state, selection)
         # (top, base, rel) -> (stamp, diff fields); a diff can have thousands of rows, so by rows too
-        self._diffs = _Lru(400, budget=200_000, weight=lambda fields: len(fields.get("net") or ()))
+        self._diffs = _Lru(400, budget=DIFF_CACHE_ROWS, weight=lambda fields: len(fields.get("net") or ()))
 
     def get(self, dirs: list, start: float, end, brief: bool = False) -> dict:
         """Over the repositories that dirs are in: the chat's folder may hold no repository itself,
@@ -171,7 +174,9 @@ class RepoChanges:
         hit = self._diffs.get(slot, stamp)
         if hit is None:
             hit = _fill_diff(top, base, rel, picked["status"])
-            self._diffs.put(slot, stamp, hit)
+            # One huge diff (a lockfile, generated code) would push every other one out.
+            if len(hit.get("net") or ()) <= DIFF_CACHE_ROWS // 20:
+                self._diffs.put(slot, stamp, hit)
         return hit
 
 
@@ -199,7 +204,11 @@ def _select(top, start, end, head, entries, stamps) -> dict:
         for line in log.splitlines():
             sha, when, subject = (line.split("\t", 2) + ["", ""])[:3]
             commits.append({"sha": sha[:9], "time": int(when or 0), "subject": subject})
-    present = {rel: os.path.lexists(os.path.join(top, rel)) for rel in differs}
+    # One lstat per file: when it changed, and whether it is there at all (None: gone).
+    for rel in differs:
+        if rel not in stamps:
+            stamps[rel] = _changed_at(os.path.join(top, rel))
+    present = {rel: stamps[rel] is not None for rel in differs}
     picked = set()
     for rel in differs:
         # A file that is gone has no time, so a deletion counts whenever it happened.
