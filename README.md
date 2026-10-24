@@ -63,7 +63,8 @@ Tick *In eigenem Git-Worktree* (in its own git worktree) when you start a chat, 
 
 - A bar under the header shows the branch, how many commits it is ahead, and what is not committed yet.
 - **In … mergen** (merge into …) merges the branch into the branch the chat started from, where that is checked out. Only committed work goes; a conflict aborts the merge and leaves everything as it was.
-- **Worktree entfernen** (remove worktree) deletes the folder and the branch once the chat is stopped. The history stays.
+- **Worktree entfernen** (remove worktree) deletes the folder and the branch once no session works in it. The history stays; the question names any commits that no other branch has.
+- A chat that goes on under a new id (`/clear`, `/resume`) and a fork of the chat work in the same worktree and show the same bar. Deleting the chat hands the worktree to one of them; a chat that holds its worktree alone asks first, as without it CLIDA could not reach the worktree any more.
 
 Files git does not track (`.env`, `node_modules`) are not in a new worktree, and the CLI asks once whether you trust the new folder.
 

@@ -46,6 +46,9 @@ const TEXTS = {
 
     'delete.title': 'Sitzung löschen?',
     'delete.text': '{name} wird dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.',
+    'delete.worktreeTitle': 'Der Chat hat noch seinen Worktree',
+    'delete.keepWorktree': 'Sauberer: abbrechen und den Worktree in der Leiste unter der Überschrift entfernen (nach dem Mergen, wenn die Arbeit bleiben soll). Oder den Chat trotzdem löschen; Ordner und Branch bleiben dann auf der Platte, nur Git kennt sie noch.',
+    'delete.keepYes': 'Trotzdem löschen',
 
     'banner.offline': 'Server nicht erreichbar – läuft {cmd} noch?',
     'banner.expired': 'Anmeldung abgelaufen – bitte CLIDA über die Verknüpfung oder {cmd} neu öffnen.',
@@ -312,6 +315,9 @@ const TEXTS = {
 
     'delete.title': 'Delete session?',
     'delete.text': '{name} will be permanently deleted. This cannot be undone.',
+    'delete.worktreeTitle': 'The chat still has its worktree',
+    'delete.keepWorktree': 'Cleaner: cancel and remove the worktree in the bar under the heading (after merging if the work is to stay). Or delete the chat anyway; folder and branch then stay on disk, and only git knows them.',
+    'delete.keepYes': 'Delete anyway',
 
     'banner.offline': 'Server unreachable – is {cmd} still running?',
     'banner.expired': 'Sign-in expired – please reopen CLIDA from the shortcut or with {cmd}.',

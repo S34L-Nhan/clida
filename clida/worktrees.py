@@ -9,6 +9,7 @@ the folder and the branch.
 
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -39,11 +40,23 @@ def _slug(text: str, fallback: str) -> str:
 
 
 def _run(cwd, *args, timeout=30, ok=(0,)):
-    """git's output; raises with git's own message when it fails."""
+    """git's output; raises with git's own message when it fails. On a timeout the whole process
+    group goes: git worktree add runs a checkout of its own, which would go on otherwise."""
     try:
-        out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as e:
+        proc = subprocess.Popen(["git", "-C", cwd, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True)
+    except OSError as e:
         raise WorktreeError(f"git {args[0]}: {e}")
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        raise WorktreeError(f"git {args[0]}: timed out after {timeout} s")
+    out = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     if out.returncode not in ok:
         lines = (out.stderr or out.stdout).decode("utf-8", "replace").strip().splitlines()
         message = "\n".join(line for line in lines if not line.startswith("Preparing worktree"))
@@ -54,7 +67,7 @@ def _run(cwd, *args, timeout=30, ok=(0,)):
 def _main_checkout(cwd: str):
     """The repository's main worktree, also when cwd is in a linked one: git commands about the
     chat's worktree run there, and its folder goes next to it."""
-    common = (git(cwd, "rev-parse", "--git-common-dir") or "").strip()
+    common = (git(cwd, "rev-parse", "--git-common-dir") or "").rstrip("\n")  # a path may end in a space
     if not common:
         return None
     common = os.path.abspath(os.path.join(cwd, common))
@@ -81,6 +94,12 @@ def _in_progress(checkout: str):
     return None
 
 
+def _branch_name(ref):
+    """main from git's "refs/heads/main" (symbolic-ref without --short); None without a branch."""
+    ref = (ref or "").strip()
+    return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else None
+
+
 def _unmerged(where: str, branch: str, head: bool):
     """Commits no other branch has: what removing the worktree and branch would lose. head: the
     worktree's HEAD too (run in the worktree), where commits on a detached HEAD or another branch
@@ -97,7 +116,9 @@ class Worktrees:
         # One create at a time, so two never pick the same name; apart from _lock, as git may take
         # a while to check a large repository out, and the window asks for the others meanwhile.
         self._creating = threading.Lock()
-        # session id -> {"repo", "path", "branch", "base", "created"}
+        self._merging = threading.Lock()  # one merge at a time: a failing one must not abort another's
+        # session id -> {"repo", "path", "branch", "base", "created", "sessions"}; "sessions": the ids
+        # the chat went on under (/clear, /resume in the CLI) and its forks, which work there too.
         self._data = storage.load(WORKTREES_FILE) or {}
 
     def get(self, session_id: str):
@@ -110,18 +131,44 @@ class Worktrees:
         with self._lock:
             return {sid: dict(e) for sid, e in self._data.items()}
 
-    def key_for(self, session_id: str, cwd):
-        """The record a chat works in: its own, or, after /clear or /resume in the CLI gave the
-        terminal another session id, the one whose folder the chat is in."""
-        records = self.all()
-        if session_id in records:
+    def key_for(self, session_id: str):
+        """The record a chat works in: its own, or the one of the chat it went on from or was forked
+        from. By what was recorded, not by folder: a folder name is given out again once free."""
+        with self._lock:
+            return self._key(session_id)
+
+    def _key(self, session_id):
+        if session_id in self._data:
             return session_id
-        if cwd:
-            real = os.path.realpath(cwd) + "/"
-            for sid, entry in records.items():
-                if real.startswith(os.path.realpath(entry["path"]) + "/"):
-                    return sid
-        return None
+        return next((key for key, e in self._data.items() if session_id in e.get("sessions", ())), None)
+
+    def follow(self, session_id: str, new_id: str):
+        """new_id works in session_id's worktree from now on: the CLI went on under it, or a fork."""
+        with self._lock:
+            key = self._key(session_id)
+            if key is None or new_id == key or self._key(new_id) is not None:
+                return
+            self._data[key].setdefault("sessions", []).append(new_id)
+            self._save()
+
+    def let_go(self, session_id: str) -> str:
+        """The chat is deleted: another of the record's chats takes it over. "kept" if one did,
+        "dropped" if it was only one of them, "own" if it holds the record alone, "" if none."""
+        with self._lock:
+            key = self._key(session_id)
+            if key is None:
+                return ""
+            others = self._data[key].get("sessions", [])
+            if key != session_id:
+                others.remove(session_id)
+                self._save()
+                return "dropped"
+            if not others:
+                return "own"
+            entry = self._data.pop(key)
+            self._data[others[0]] = {**entry, "sessions": others[1:]}
+            self._save()
+            return "kept"
 
     def _save(self):
         storage.save(WORKTREES_FILE, self._data)
@@ -129,17 +176,18 @@ class Worktrees:
     def create(self, session_id: str, cwd: str, name: str) -> str:
         """Make the chat's worktree from where cwd's repository stands; returns the folder the chat
         starts in (the same place inside the new worktree as cwd is inside its repository)."""
-        top = (git(cwd, "rev-parse", "--show-toplevel") or "").strip()
+        top = (git(cwd, "rev-parse", "--show-toplevel") or "").rstrip("\n")  # a folder may end in a space
         if not top:
             raise WorktreeError(tr("Der Ordner liegt in keinem Git-Repository.", "The folder is not in a git repository."))
         head = (git(top, "rev-parse", "--verify", "-q", "HEAD", ok=(0, 1)) or "").strip()
         if not head:
             raise WorktreeError(tr("Das Repository hat noch keinen Commit.", "The repository has no commit yet."))
-        base = (git(top, "symbolic-ref", "--short", "-q", "HEAD", ok=(0, 1)) or "").strip() or None
+        # Not --short: with a tag of the same name it answers "heads/main".
+        base = _branch_name(git(top, "symbolic-ref", "-q", "HEAD", ok=(0, 1)))
         main = _main_checkout(top) or top
         # A submodule's worktrees go beside the superproject (beside the submodule would be inside
         # it), named after the submodule; git still works in the submodule's own repository.
-        superproject = (git(top, "rev-parse", "--show-superproject-working-tree") or "").strip()
+        superproject = (git(top, "rev-parse", "--show-superproject-working-tree") or "").rstrip("\n")
         beside = superproject or main
         home = os.path.join(os.path.dirname(beside), os.path.basename(beside) + ".worktrees")
         slug = _slug(name, session_id[:8])
@@ -166,7 +214,8 @@ class Worktrees:
             except WorktreeError:
                 # A failing post-checkout hook (git-lfs missing, say) or the timeout can leave the
                 # folder and the branch behind; nothing would list them, so they go again.
-                git(top, "worktree", "remove", "--force", path, timeout=60)  # also when the folder is gone
+                # Twice --force: an interrupted add leaves the worktree locked ("initializing").
+                git(top, "worktree", "remove", "--force", "--force", path, timeout=60)  # also when the folder is gone
                 git(top, "branch", "-D", branch)
                 try:
                     os.rmdir(home)  # if this was to be its first worktree
@@ -198,9 +247,9 @@ class Worktrees:
         out["dirty"] = None if status is None else len(status.splitlines())
         out["unmerged"] = _unmerged(path, branch, head=True)
         # What is checked out there, if not the chat's branch (a checkout or rebase in it): "" detached.
-        current = git(path, "symbolic-ref", "--short", "-q", "HEAD", ok=(0, 1))
-        if current is not None and current.strip() != branch:
-            out["head"] = current.strip()
+        current = git(path, "symbolic-ref", "-q", "HEAD", ok=(0, 1))
+        if current is not None and _branch_name(current) != branch:
+            out["head"] = _branch_name(current) or ""
         if base:
             out["base_missing"] = not (git(path, "rev-parse", "--verify", "-q", f"refs/heads/{base}", ok=(0, 1)) or "").strip()
             counts = (git(path, "rev-list", "--left-right", "--count", f"refs/heads/{base}...refs/heads/{branch}",
@@ -211,10 +260,14 @@ class Worktrees:
 
     def merge(self, session_id: str) -> dict:
         """Merge the chat's branch into the branch it started from, where that is checked out."""
+        with self._merging:
+            return self._merge(session_id)
+
+    def _merge(self, session_id: str) -> dict:
         entry = self.get(session_id)
-        if entry is None:
-            raise WorktreeError(tr("Dieser Chat hat keinen eigenen Worktree.", "This chat has no worktree of its own."))
         state = self.status(session_id)
+        if entry is None or state is None:  # removed meanwhile, too
+            raise WorktreeError(tr("Dieser Chat hat keinen eigenen Worktree.", "This chat has no worktree of its own."))
         base, branch = entry["base"], entry["branch"]
         if not state["exists"]:
             raise WorktreeError(tr("Der Worktree existiert nicht mehr.", "The worktree no longer exists."))

@@ -148,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
             # The code tells the page that this server runs older code than the page itself.
             self._send_json(404, {"error": tr("Nicht gefunden", "Not found"), "code": "no_route"})
         except HttpError as e:
-            self._send_json(e.status, {"error": e.message})
+            self._send_json(e.status, {"error": e.message, **({"code": e.code} if e.code else {})})
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception:
@@ -283,7 +283,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, self.desk.archive_session(sid, self._body().get("archived")))
 
     def route_delete_session(self, sid):
-        self._send_json(200, self.desk.delete_session(sid))
+        keep = parse_qs(urlsplit(self.path).query).get("keep_worktree", [""])[0] == "1"
+        self._send_json(200, self.desk.delete_session(sid, keep))
 
     def route_merge_worktree(self, sid):
         self._send_json(200, self.desk.merge_worktree(sid))

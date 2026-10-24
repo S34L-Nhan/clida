@@ -95,8 +95,8 @@ const state = {
   attention: new Set(),   // terminal ids that finished or need input while unseen
   hits: { query: '', map: new Map() },  // chats whose messages match the search (see searchMessages)
   hitsSeq: 0,
-  statusAsked: 0,   // numbers status answers (both kinds of load bring one), so an older one that
-  statusShown: 0,   // overtook a newer one cannot undo it and raise a notification a second time
+  statusSeq: 0,     // the server's number of the status shown (see newerStatus)
+  statusBoot: null,
   notices: new Map(),     // terminal id -> its system notification, closed once the tab is seen
   tabs: [],
   active: null,
@@ -215,13 +215,14 @@ async function api(method, path, body, { timeout = 0 } = {}) {
     method,
     headers: { 'X-Clida-Window': WINDOW_ID, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
-    signal: timeout ? AbortSignal.timeout(timeout) : undefined,
+    signal: timeout && AbortSignal.timeout ? AbortSignal.timeout(timeout) : undefined,  // Chrome 103+
   });
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
     const err = new Error(staleServer(res.status, data) ? t('restartNeeded') : data?.error || `HTTP ${res.status}`);
     err.status = res.status;
+    err.code = data?.code;
     throw err;
   }
   return data;
@@ -266,15 +267,28 @@ function applyStatus(data) {
   return finished;
 }
 
+// Whether a status answer is newer than the one shown. Both loads bring one, and an answer that
+// overtook a later one on the way must not undo it (and raise a notification a second time), so
+// the server numbers them as it takes them. A server from before the numbers, or started anew,
+// starts the count again.
+function newerStatus(data) {
+  if (data.seq == null || data.boot !== state.statusBoot) {
+    state.statusBoot = data.boot;
+    state.statusSeq = data.seq ?? 0;
+    return true;
+  }
+  if (data.seq <= state.statusSeq) return false;
+  state.statusSeq = data.seq;
+  return true;
+}
+
 async function refreshStatus() {
   let finished = false;
   const asked = Date.now();
-  const seq = ++state.statusAsked;
   try {
     const data = await api('GET', '/api/status', null, { timeout: 8000 });  // the clock waits for it
     setOnline(true);
-    if (seq < state.statusShown) return;  // a newer answer is shown already
-    state.statusShown = seq;
+    if (!newerStatus(data)) return;  // a newer answer is shown already
     finished = applyStatus(data);
   } catch (e) {
     setOnline(false, e.status);
@@ -317,7 +331,6 @@ function historyTab(tab) {
 
 async function refreshSessions() {
   const seq = ++state.sessionsSeq;
-  const statusSeq = ++state.statusAsked;
   let data;
   try {
     data = await api('GET', '/api/sessions');
@@ -332,11 +345,8 @@ async function refreshSessions() {
   state.byId = new Map(data.sessions.map((s) => [s.id, s]));
   state.folders = data.folders || [];
   state.costToday = data.cost_today ?? null;
-  let finished = false;
-  if (statusSeq >= state.statusShown) {
-    state.statusShown = statusSeq;
-    finished = applyStatus(data);  // this load may be the first to see a turn end
-  }
+  // This load may be the first to see a turn end.
+  const finished = newerStatus(data) && applyStatus(data);
   if (!state.renaming && !state.dragging) renderSidebar();
   paint();
   if (finished) afterTurn();
@@ -894,8 +904,19 @@ async function deleteChat(sid) {
   try {
     await change('DELETE', `/api/sessions/${sid}`);
   } catch (e) {
-    toast(e.message);
-    return;
+    if (e.code !== 'worktree') {
+      toast(e.message);
+      return;
+    }
+    // The chat holds a worktree alone: removing that first (from its bar) is the clean way.
+    const keep = [e.message, ' ', t('delete.keepWorktree')];
+    if (!(await ask({ title: t('delete.worktreeTitle'), text: keep, yes: t('delete.keepYes'), danger: true }))) return;
+    try {
+      await change('DELETE', `/api/sessions/${sid}?keep_worktree=1`);
+    } catch (again) {
+      toast(again.message);
+      return;
+    }
   }
   for (const tab of [...state.tabs]) {
     const row = state.terminals.get(tab.id);
@@ -1519,7 +1540,9 @@ function renderWorktreeBar(tab) {
   if (signature === tab.worktreeSignature) return;  // painted every 2 s: keep focus and hover
   tab.worktreeSignature = signature;
   const bar = tab.worktreeBar;
-  const focused = bar.contains(document.activeElement) ? document.activeElement.dataset.role : null;
+  // The button's role, also while the bar itself holds the focus (its button disabled meanwhile).
+  const focused = bar.contains(document.activeElement) ? (document.activeElement.dataset.role || tab.worktreeFocus) : null;
+  tab.worktreeFocus = focused;
   bar.hidden = !wt;
   if (!wt) {
     bar.replaceChildren();
@@ -2179,7 +2202,12 @@ async function loadChanges(tab) {
   try {
     data = await api('GET', `/api/sessions/${tabSession(tab)}/changes${brief ? '?brief=1' : ''}`);
   } catch (e) {
-    if (seq === tab.changesSeq && !brief) tab.changesInner.replaceChildren(el('div', 'empty-note', e.message));
+    if (seq !== tab.changesSeq) return;
+    if (!brief) tab.changesInner.replaceChildren(el('div', 'empty-note', e.message));
+    if (e.status === 404 && tab.changesCounts) {  // the chat is gone (a worktree-only one, removed): no stale bar
+      tab.changesCounts = null;
+      paintView(tab);
+    }
     return;
   }
   if (seq !== tab.changesSeq) return;  // a newer load went out meanwhile

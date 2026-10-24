@@ -215,7 +215,8 @@ class Search:
         ones cannot be looked up. paths: only these transcripts (the ones the history shows).
         The chats with the newest matches first, at most MAX_CHATS of them.
         """
-        terms = [w for w in dict.fromkeys(str(query or "").lower().split()) if len(w) >= MIN_TERM][:MAX_TERMS]
+        query = str(query or "").replace("\0", "")  # SQLite ends a string there
+        terms = [w for w in dict.fromkeys(query.lower().split()) if len(w) >= MIN_TERM][:MAX_TERMS]
         if not terms:
             return {}
         with self._lock:
@@ -252,5 +253,7 @@ def _damaged(error) -> bool:
     that could not be stored."""
     if isinstance(error, (sqlite3.OperationalError, sqlite3.ProgrammingError, sqlite3.IntegrityError,
                           sqlite3.InterfaceError)):
-        return "malformed" in str(error) or "not a database" in str(error)
+        # Also an index made by a newer SQLite than this one: "no such tokenizer: trigram" on every
+        # use (on macOS the shortcut may start another python3 than the terminal does).
+        return any(sign in str(error) for sign in ("malformed", "not a database", "no such tokenizer", "no such module"))
     return isinstance(error, sqlite3.DatabaseError)

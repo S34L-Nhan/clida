@@ -737,7 +737,9 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
   opacity: 0;  /* not display: none, which would also take the buttons out of the keyboard's reach */
 }
 .msg-wrap.user .msg-tools { right: auto; left: 0; }
-.msg-wrap:hover .msg-tools, .msg-wrap .msg-tools:has(:focus-visible) { opacity: 1; }
+.msg-wrap:hover .msg-tools { opacity: 1; }
+/* A rule of its own: a browser without :has() drops a whole list it cannot read, hover included. */
+.msg-wrap .msg-tools:has(:focus-visible) { opacity: 1; }
 /* An answer that starts with code: its copy button stays clear of the tools. */
 .msg-wrap.assistant > .msg > .codeblock:first-child .codeblock-bar { padding-right: 72px; }
 .msg-tools .icon-btn { width: 28px; height: 28px; background: var(--panel); border: 1px solid var(--border); }
