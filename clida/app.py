@@ -252,10 +252,11 @@ class Desk:
                     mine.update({k: found[k] for k in ("status", "note", "known", "net", "added", "removed")})
             files.sort(key=lambda f: f["path"])
         # Where each file stands in git: committed, not yet, ignored, or outside any repository.
-        states = self.repo_changes.states([f["path"] for f in files], window[0] if window else None)
+        states = ({} if brief else
+                  self.repo_changes.states([f["path"] for f in files], window[0] if window else None))
         out = []
         for changed in files:
-            out.append({**changed, "label": self._change_label(changed["path"], cwd), **states[changed["path"]],
+            out.append({**changed, "label": self._change_label(changed["path"], cwd), **states.get(changed["path"], {}),
                         **({"net": None, "steps": []} if brief else {})})
         # The branch of the chat's folder, or else of the first repository it worked in.
         where = cwd if cwd and os.path.isdir(cwd) else None
@@ -510,6 +511,14 @@ class Desk:
             raise HttpError(400, tr("Nichts zu senden", "Nothing to send"))
         if len(text) > PROMPT_MAX:
             raise HttpError(413, tr("Text ist zu lang", "The text is too long"))
+        # Only into a CLI that says it is idle, checked now: typed into a permission prompt, the
+        # Enter would answer it. Without its own report, "idle" is just quiet output, as a prompt is.
+        entry = registry.running().get(term.pid)
+        if entry is None or registry.cli_status(entry) != "idle":
+            raise HttpError(409, tr("Die CLI ist gerade nicht bereit (sie arbeitet oder wartet auf eine Antwort). "
+                                    "Die Kommentare bleiben erhalten.",
+                                    "The CLI is not ready right now (it is working or waiting for an answer). "
+                                    "The comments are kept."))
         term.write(b"\x1b[200~" + text.encode() + b"\x1b[201~")
         time.sleep(0.2)  # the CLI takes the paste in first; an Enter in the same read could be part of it
         term.write(b"\r")

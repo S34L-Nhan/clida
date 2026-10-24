@@ -19,7 +19,7 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git's id of a tree wi
 MARGIN = 120  # seconds after the chat's last transcript write that still count as during the chat
 MAX_FILES = 200
 MAX_REPOS = 5
-DIFF_CACHE_ROWS = 200_000  # diff rows kept in memory over all files; a diff over 1/20 of it is not kept
+DIFF_CACHE_ROWS = 200_000  # diff rows kept in memory over all files (each diff has at most 3001)
 
 
 def git(cwd, *args, binary=False, timeout=10, stdin=None, ok=(0,)):
@@ -144,7 +144,8 @@ class RepoChanges:
         top = self._tops.get(folder, None)
         if top is None:
             top = (git(folder, "rev-parse", "--show-toplevel") or "").strip()
-            self._tops.put(folder, None, top)
+            if top:  # "outside a repository" is asked again: the chat may run git init there
+                self._tops.put(folder, None, top)
         return top
 
     def states(self, paths: list, start) -> dict:
@@ -216,9 +217,7 @@ class RepoChanges:
         hit = self._diffs.get(slot, stamp)
         if hit is None:
             hit = _fill_diff(top, base, rel, picked["status"])
-            # One huge diff (a lockfile, generated code) would push every other one out.
-            if len(hit.get("net") or ()) <= DIFF_CACHE_ROWS // 20:
-                self._diffs.put(slot, stamp, hit)
+            self._diffs.put(slot, stamp, hit)  # at most NET_LINE_LIMIT rows: no diff crowds the others out
         return hit
 
 
@@ -289,17 +288,18 @@ def _states(top, start, head, status, paths) -> dict:
     branch = (git(top, "symbolic-ref", "--short", "-q", "HEAD", ok=(0, 1)) or "").strip() or None
     repo = {"top": top, "name": os.path.basename(top), "branch": branch}
     codes = dict((rel, code) for code, rel in _status_entries(status))
-    rels = {path: os.path.relpath(path, top) for path in paths}
+    # By real path: git's top is one, and ~/work/x.py may be /mnt/d/work/x.py through a symlink.
+    rels = {path: os.path.relpath(os.path.realpath(path), top) for path in paths}
     # Ignored files are not in the status; check-ignore names those of ours that are (exit 1: none).
     loose = [rel for rel in rels.values() if rel not in codes]
     ignored = set(filter(None, (git(top, "check-ignore", "-z", "--stdin", stdin="\0".join(loose).encode() + b"\0",
                                     ok=(0, 1)) or "").split("\0"))) if loose else set()
     # The newest commit during the chat that touched each file (log lists newest first).
     commits = {}
+    # Only commits since the chat started; without that start, none can be named the chat's.
     base = _head_at(top, start) if head and start else None
-    if head:
-        log = git(top, "log", "-n", "500", "--format=%x00%H%x09%s", "--name-only", "-z",
-                  f"{base}..HEAD" if base else "HEAD") if base != head else ""
+    if base and base != head:
+        log = git(top, "log", "-n", "500", "--format=%x00%H%x09%s", "--name-only", "-z", f"{base}..HEAD")
         current = None
         for part in (log or "").split("\0"):
             part = part.strip("\n")

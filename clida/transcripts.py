@@ -603,6 +603,7 @@ class ChangesCache:
         self._lock = threading.Lock()
         self._parsed = {}  # transcript path -> (size, mtime, changes())
         self._nets = {}  # file path -> (key, result)
+        self._laters = {}  # (backup folder, backup) -> (folder mtime, has later backups)
 
     def _parse(self, path: str) -> dict:
         try:
@@ -651,12 +652,24 @@ class ChangesCache:
             self._nets[path] = (key, result)
         return {**changed, **result}
 
-    @staticmethod
-    def _later(first, changed) -> bool:
-        """Whether the file has backups after @v1 but not @v1: the chat created it."""
+    def _later(self, first, changed) -> bool:
+        """Whether the file has backups after @v1 but not @v1: the chat created it. Listed once per
+        change of the backup folder, not on every request."""
         if first is None or first.exists():
             return False
-        return bool(glob.glob(os.path.join(glob.escape(str(first.parent)), glob.escape(changed["backup"]) + "@v*")))
+        try:
+            stamp = os.stat(first.parent).st_mtime
+        except OSError:
+            return False
+        slot = (str(first.parent), changed["backup"])
+        with self._lock:
+            hit = self._laters.get(slot)
+        if hit and hit[0] == stamp:
+            return hit[1]
+        found = bool(glob.glob(os.path.join(glob.escape(str(first.parent)), glob.escape(changed["backup"]) + "@v*")))
+        with self._lock:
+            self._laters[slot] = (stamp, found)
+        return found
 
     @staticmethod
     def _compare(changed: dict, first, now, later: bool) -> dict:
