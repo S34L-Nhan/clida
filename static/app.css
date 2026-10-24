@@ -439,16 +439,16 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 /* Selected lines and comments in their own colour (--review, per theme), never the red of removals. */
 body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-user-select: none !important; cursor: ns-resize !important; }
 .dl.sel, .dl.add.sel, .dl.del.sel { box-shadow: inset 4px 0 0 var(--review); background: color-mix(in srgb, var(--review) var(--diff-sel-mix), transparent); }
+.dl.sel .ln-pair { background: color-mix(in srgb, var(--review) var(--diff-ln-mix), transparent); }  /* over the red or green gutter */
 
 .cform, .ccard { position: sticky; left: 0; box-sizing: border-box; width: min(720px, calc(var(--mr-width, 800px) - 120px)); margin: 6px 10px 8px 60px; font: 13px/1.5 system-ui, sans-serif; white-space: normal; }
 .cform textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--review); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; resize: vertical; }
 .cform textarea:focus, .cform textarea:focus-visible { outline: none; border-color: var(--review); box-shadow: 0 0 0 2px color-mix(in srgb, var(--review) 35%, transparent); }
 .cform-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
 .ccard { padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--review) 40%, var(--border)); border-left: 4px solid var(--review); border-radius: 8px; background: color-mix(in srgb, var(--review) 8%, var(--panel)); }
-.ccard-head svg { color: var(--review); }
 .ccard-head { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
 .ccard-head span { flex: 1; }
-.ccard-head svg { width: 14px; height: 14px; }
+.ccard-head svg { width: 14px; height: 14px; color: var(--review); }
 .ccard-head .icon-btn { width: 24px; height: 24px; }
 .ccard-lost { color: var(--warn); font-size: 12px; }
 .ccard-text { white-space: pre-wrap; overflow-wrap: anywhere; }

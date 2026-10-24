@@ -107,6 +107,23 @@ class RepoChanges:
         self._diffs = Lru(400, budget=DIFF_CACHE_ROWS, weight=lambda fields: len(fields.get("net") or ()))
         self._states = Lru(32)  # (top, start) -> (repo state, git state of its files)
         self._tops = Lru(2000)  # folder -> its repository's top folder, for TOP_TTL ("" outside one, for OUTSIDE_TTL)
+        self._broken = {}  # top -> until when (monotonic) git is not asked about it again
+
+    def _repo_state(self, top: str):
+        """(head, status) of a repository, head "" without any commit; None if git failed on it.
+
+        After a failure (a timeout in a huge repository, say) the repository is left alone for
+        FAILED_TTL: every refresh would otherwise wait out the timeout again.
+        """
+        if self._broken.get(top, 0) > time.monotonic():
+            return None
+        head = git(top, "rev-parse", "--verify", "-q", "HEAD", ok=(0, 1))  # 1: no commit yet
+        status = git(top, "status", "--porcelain=v1", "-z", "--untracked-files=all") if head is not None else None
+        if head is None or status is None:
+            self._broken[top] = time.monotonic() + FAILED_TTL
+            return None
+        self._broken.pop(top, None)
+        return head.strip(), status
 
     def _top(self, folder: str) -> str:
         """The repository a folder is in; for a deleted file, its nearest folder that is still there."""
@@ -145,8 +162,14 @@ class RepoChanges:
             if not top:
                 out.update({p: {"repo": None, "rel": None, "state": None, "commit": None} for p in members})
                 continue
-            head = (git(top, "rev-parse", "--verify", "-q", "HEAD") or "").strip()
-            status = git(top, "status", "--porcelain=v1", "-z", "--untracked-files=all") or ""
+            repo_state = self._repo_state(top)
+            if repo_state is None:
+                # Git does not answer for this repository: its files' state is unknown, not "committed".
+                repo = {"top": top, "name": os.path.basename(top), "branch": None}
+                out.update({p: {"repo": repo, "rel": os.path.relpath(p, top), "state": "unknown", "commit": None}
+                            for p in members})
+                continue
+            head, status = repo_state
             key = (head, status, tuple(sorted(members)))
             failed_key = ("failed", key, int(time.monotonic() // FAILED_TTL))
             hit = self._states.get((top, start), key) or self._states.get((top, start), failed_key)
@@ -182,8 +205,10 @@ class RepoChanges:
         return {"files": files, "commits": commits, "repos": tops}
 
     def _select(self, top: str, start: float, end) -> dict:
-        head = (git(top, "rev-parse", "--verify", "-q", "HEAD") or "").strip()
-        status = git(top, "status", "--porcelain=v1", "-z", "--untracked-files=all") or ""
+        repo_state = self._repo_state(top)
+        if repo_state is None:
+            return {"files": [], "commits": [], "base": None, "failed": True}  # not "clean"
+        head, status = repo_state
         entries = _status_entries(status)
         stamps = {rel: _changed_at(os.path.join(top, rel)) for _, rel in entries}
         state = (head, status, tuple(stamps.values()))
