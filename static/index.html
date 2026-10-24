@@ -17,11 +17,11 @@
     <aside class="sidebar" aria-label="Chats">
       <div class="sidebar-inner">
         <div class="side-head">
-          <button class="icon-btn" data-action="toggle-sidebar" data-i18n-label="sidebar.collapse" data-keys="B" data-icon="panel"></button>
+          <button class="icon-btn" data-action="toggle-sidebar" data-i18n-label="sidebar.collapse" data-keys="toggleSidebar" data-icon="panel"></button>
           <span class="brand">CLIDA</span>
           <button class="icon-btn" data-action="new-folder" data-i18n-label="folder.new" data-icon="folderPlus"></button>
         </div>
-        <button class="new-chat" data-action="new-chat" data-i18n-label="chat.new" data-keys="O"><span data-icon="plus"></span><span data-i18n="chat.new">Neuer Chat</span></button>
+        <button class="new-chat" data-action="new-chat" data-i18n-label="chat.new" data-keys="newChat"><span data-icon="plus"></span><span data-i18n="chat.new">Neuer Chat</span></button>
         <label class="search">
           <span data-icon="search"></span>
           <input id="search" type="search" placeholder="Chats durchsuchen" autocomplete="off" spellcheck="false">
@@ -38,10 +38,10 @@
     <main class="main">
       <div class="tabbar">
         <div class="rail">
-          <button class="icon-btn" data-action="toggle-sidebar" data-i18n-label="sidebar.expand" data-keys="B" data-icon="panel"></button>
+          <button class="icon-btn" data-action="toggle-sidebar" data-i18n-label="sidebar.expand" data-keys="toggleSidebar" data-icon="panel"></button>
         </div>
         <div id="tabs" class="tabs" role="tablist"></div>
-        <button class="icon-btn tab-new" data-action="new-chat" data-i18n-label="chat.new" data-keys="O" data-icon="add"></button>
+        <button class="icon-btn tab-new" data-action="new-chat" data-i18n-label="chat.new" data-keys="newChat" data-icon="add"></button>
       </div>
       <div id="banner" class="banner" hidden></div>
       <div id="views" class="views">
@@ -93,10 +93,21 @@
       <h2 id="settings-title" data-i18n="settings">Einstellungen</h2>
       <button type="button" id="settings-close" class="icon-btn" data-i18n-label="close" data-icon="x"></button>
     </div>
+    <div class="settings-tabs" role="tablist">
+      <button type="button" role="tab" data-settings-tab="general" data-i18n="settings.tabGeneral">Allgemein</button>
+      <button type="button" role="tab" data-settings-tab="keys" data-i18n="settings.tabKeys">Tastenkürzel</button>
+    </div>
     <div id="settings-body"></div>
+    <div id="keys-body" class="keys-body" hidden></div>
     <p id="settings-error" class="error" role="alert"></p>
-    <div class="dialog-actions">
+    <div id="settings-actions" class="dialog-actions">
       <button type="button" id="settings-done" class="btn primary" data-i18n="done">Fertig</button>
+    </div>
+    <div id="keys-actions" class="dialog-actions" hidden>
+      <button type="button" id="keys-reset-all" class="btn" data-i18n="kb.resetAll">Alle zurücksetzen</button>
+      <span class="spacer"></span>
+      <button type="button" id="keys-discard" class="btn" data-i18n="kb.discard">Verwerfen</button>
+      <button type="button" id="keys-save" class="btn primary" data-i18n="save">Speichern</button>
     </div>
   </dialog>
 

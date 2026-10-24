@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from . import STATE_DIR, browser, gitrepo, locate, registry, storage, transcripts
+from .keybindings import Keybindings, KeysError
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .search import Search
@@ -118,6 +119,7 @@ class Desk:
         self.repo_changes = gitrepo.RepoChanges()
         self.worktrees = Worktrees()
         self.search = Search()
+        self.keybindings = Keybindings()
         self._status_seq = itertools.count(1)
         self._rewinding = set()  # chats whose files the CLI is putting back now
         self._rewinding_lock = threading.Lock()
@@ -800,6 +802,19 @@ class Desk:
         if not self.terminals.stop(terminal_id):
             raise HttpError(404, tr("Terminal nicht gefunden", "Terminal not found"))
         return {"ok": True}
+
+    # -- keyboard shortcuts: CLIDA's own and the CLI's ------------------------------------------
+
+    def get_keybindings(self) -> dict:
+        return self.keybindings.snapshot()
+
+    def update_keybindings(self, body: dict) -> dict:
+        try:
+            return self.keybindings.update(body)
+        except KeysError as e:
+            raise HttpError(409, str(e))
+        except OSError as e:
+            raise HttpError(500, tr("Speichern fehlgeschlagen: ", "Saving failed: ") + str(e))
 
     # -- settings ---------------------------------------------------------------------------
 

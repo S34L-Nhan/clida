@@ -64,6 +64,8 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("DELETE", rf"/api/folders/{FID}", "delete_folder"),
     ("GET", r"/api/settings", "settings"),
     ("PUT", r"/api/settings", "update_settings"),
+    ("GET", r"/api/keybindings", "keybindings"),
+    ("PUT", r"/api/keybindings", "update_keybindings"),
     ("POST", r"/api/terminals", "start_terminal"),
     ("POST", r"/api/terminals/theme", "push_theme"),
     ("POST", rf"/api/terminals/{SID}/upload", "upload"),
@@ -324,6 +326,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_settings(self):
         self._send_json(200, self.desk.get_settings())
+
+    def route_keybindings(self):
+        self._send_json(200, self.desk.get_keybindings())
+
+    def route_update_keybindings(self):
+        self._send_json(200, self.desk.update_keybindings(self._body()))
 
     def route_update_settings(self):
         self._send_json(200, self.desk.update_settings(self._body()))

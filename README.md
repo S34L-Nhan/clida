@@ -92,6 +92,8 @@ Both are Markdown. Pasting rendered text keeps lists, bold and code (converter f
 - **Farbschema** (color theme): System, light, dark, Solarized, Catppuccin, Nord, Dracula, Gruvbox and Tokyo Night. It colors the terminal too. Set the CLI's own theme once with `/theme` to *Auto (match terminal)*.
 - **Diff-Farben** (diff colors): how strongly added and removed lines are tinted, from subtle to very strong. Comments and selected lines have their own color.
 
+The tab **Tastenkürzel** (keyboard shortcuts) lists CLIDA's own shortcuts and the Claude CLI's, each with its keys now. *Ändern* (change) waits for the new key (Esc gives up), the arrow next to it goes back to the default, and nothing is stored before *Speichern* (save). A key taken twice is shown and cannot be saved; keys that never reach the CLI (Ctrl+C, the Windows or ⌘ key, a key CLIDA takes itself) are refused or marked. The CLI's shortcuts go to `~/.claude/keybindings.json`, which every running session reads again at once; what else that file holds stays. A handy one: *Eingabe beiseitelegen* (stash) on Ctrl+A empties the input in one go, and a second press brings the text back.
+
 ## Commands
 
 ```bash
@@ -108,6 +110,8 @@ clida shortcut   # create the desktop shortcut again
 A restart or update ends running sessions, so both ask first. Their history is kept, and *Fortsetzen* brings them back.
 
 ## Keys
+
+The defaults; CLIDA's own can be changed in the settings (see above).
 
 | Windows (WSL) | macOS | Action |
 |---|---|---|
@@ -141,6 +145,7 @@ Tabs can be reordered by dragging. Browser shortcuts that make no sense in an ap
   - `gitrepo.py` adds what changed in the chat's git repositories. Every git call uses `--no-optional-locks`, so it never blocks Claude's own commits.
   - `registry.py` reads the state each running CLI reports in `~/.claude/sessions/`.
   - `worktrees.py` makes, merges and removes the worktrees of chats started in one.
+  - `keybindings.py` reads and writes the shortcuts: CLIDA's own and the CLI's `~/.claude/keybindings.json`, with the CLI actions the settings list and their defaults.
   - `library.py` (folders, archive), `notes.py`, `settings.py`, `ws.py` (WebSocket for the terminal).
 - `static/`: the frontend, plain JavaScript without a build step. `i18n.js` holds all texts in both languages. `tick.js` is a worker that times the status poll, so a minimized window still notices a session that waits.
 - `bin/clida`: the launcher, plain bash that also runs on macOS's bash 3.2.
@@ -165,6 +170,6 @@ Anyone who reaches the server can start terminals, so:
 
 ### Data
 
-Everything CLIDA stores is in `~/.clida`: settings, titles, folders, notes, which chat has which worktree, the chat index and the search index (caches, safe to delete), uploads and the server log. The worktrees themselves live next to their repositories. A fork is a new transcript in `~/.claude/projects/` next to its original, with a copy of the original's file backups in `~/.claude/file-history/`. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
+Everything CLIDA stores is in `~/.clida`: settings, its own keyboard shortcuts, titles, folders, notes, which chat has which worktree, the chat index and the search index (caches, safe to delete), uploads and the server log. The worktrees themselves live next to their repositories. A fork is a new transcript in `~/.claude/projects/` next to its original, with a copy of the original's file backups in `~/.claude/file-history/`. Shortcuts for the CLI are saved in its own `~/.claude/keybindings.json`. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
 
 `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE` (path to the CLI) change the port and paths.

@@ -859,3 +859,52 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
   white-space: nowrap;  /* a command broken over two lines reads as two */
 }
 .dialog .settings-row select { width: auto; min-width: 140px; flex: none; }
+
+/* ---- keyboard shortcuts (settings) ------------------------------------------------------ */
+
+.settings-tabs { display: inline-flex; gap: 2px; padding: 2px; margin: -4px 0 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--sidebar); }
+.settings-tabs button { border: none; background: transparent; padding: 4px 14px; border-radius: 7px; color: var(--muted); cursor: pointer; }
+.settings-tabs button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+.dialog.settings.wide { width: min(880px, calc(100vw - 32px)); }
+.keys-body { max-height: min(62vh, 640px); overflow-y: auto; padding-right: 4px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.kb-head { position: sticky; top: 0; z-index: 1; padding-bottom: 8px; background: var(--panel); }
+.dialog .kb-filter { margin-top: 10px; height: 32px; }
+.kb-section { margin-top: 14px; }
+.kb-section h3 { margin: 0 0 2px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; }
+.kb-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 7px 6px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 6px;
+}
+.kb-row.pending { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.kb-what { display: flex; flex-direction: column; min-width: 0; font-size: 13.5px; }
+.kb-id { color: var(--muted); font: 11px "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
+.kb-keys { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.kb-keys kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--sidebar);
+  font: 12px "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  white-space: nowrap;
+}
+.kb-new { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.kb-row.pending .kb-new kbd { border-color: var(--accent); }
+.kb-change { padding: 3px 10px; font-size: 12.5px; }
+.kb-change.capturing { border-color: var(--accent); color: var(--accent); animation: kb-wait 1.2s ease-in-out infinite; }
+@keyframes kb-wait { 50% { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); } }
+.kb-reset { width: 28px; height: 28px; }
+.kb-reset:disabled { opacity: 0.35; cursor: default; }
+.kb-msg { grid-column: 1 / -1; font-size: 12px; }
+.kb-msg.conflict { color: var(--danger); }
+.kb-msg.warn { color: color-mix(in srgb, var(--warn) 55%, var(--text)); }
+.kb-row.conflict .kb-new kbd { border-color: var(--danger); }
+.kb-columns { margin-top: 8px; padding-top: 0; padding-bottom: 4px; color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; border-radius: 0; }
+.kb-columns span:last-child { width: 28px; }
+#keys-actions .spacer { flex: 1; }
+#keys-actions { justify-content: flex-start; }

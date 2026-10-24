@@ -3000,7 +3000,7 @@ async function sendReview(tab) {
 // F puts the cursor in the file search, as in GitLab, unless something else takes the key.
 function changesKey(ev) {
   const tab = activeTab();
-  if (ev.key !== 'f' || ev.ctrlKey || ev.altKey || ev.metaKey || !tab || tab.view !== 'changes' || !tab.mrQuery) return;
+  if (!keyMatches(ev, appKeys.fileSearch) || !tab || tab.view !== 'changes' || !tab.mrQuery) return;
   if (ev.target.closest?.('input, textarea, select, [contenteditable], .xterm')) return;
   ev.preventDefault();
   tab.mrQuery.focus();
@@ -3229,7 +3229,7 @@ function fitTab(tab) {
 function terminalKey(tab, ev) {
   const key = ev.key.toLowerCase();
   // The CLI reads ESC+CR (meta-enter) as "new line" rather than "send".
-  if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+  if (keyMatches(ev, appKeys.terminalNewline)) {
     if (ev.type === 'keydown') send(tab, { t: 'i', d: '\x1b\r' });
     return false;
   }
@@ -3452,7 +3452,8 @@ function openSettings() {
   $('#settings-error').textContent = '';
   renderSettings();
   $('#settings-dialog').showModal();
-  $('#settings-body select')?.focus();
+  showSettingsTab(store.get('settingsTab', 'general'));
+  if (store.get('settingsTab', 'general') === 'general') $('#settings-body select')?.focus();
 }
 
 function renderSettings(focusKey = null) {
@@ -3531,10 +3532,344 @@ function applyLanguage(lang) {
   refreshSessions();
 }
 
-// ---- wiring -------------------------------------------------------------------------------
+// ---- keyboard shortcuts -------------------------------------------------------------------
+// One notation for CLIDA's own shortcuts and the CLI's (see clida/keybindings.py): modifiers
+// ctrl, alt, shift, cmd (mod: Cmd on a Mac, Ctrl elsewhere), then the key, joined by "+"; a
+// chord is keystrokes separated by a space ("ctrl+x ctrl+e"). CLIDA's are matched here; the
+// CLI's go to ~/.claude/keybindings.json, which every running CLI reads again when it changes.
 
-// An app shortcut: Ctrl+Shift (on a Mac Cmd+Shift) and the given key.
-const appKey = (key) => (MAC ? `⌘⇧${key}` : `${t('key.ctrl')}+${t('key.shift')}+${key}`);
+const APP_KEYS = {
+  newChat: 'mod+shift+o',
+  toggleSidebar: 'mod+shift+b',
+  searchChats: 'mod+shift+f',
+  prevTab: MAC ? 'mod+alt+left' : 'ctrl+pageup',
+  nextTab: MAC ? 'mod+alt+right' : 'ctrl+pagedown',
+  fileSearch: 'f',
+  terminalNewline: 'shift+enter',
+};
+// The ones that act everywhere, even in the terminal: they need a modifier or an F key.
+const APP_GLOBAL = ['newChat', 'toggleSidebar', 'searchChats', 'prevTab', 'nextTab', 'terminalNewline'];
+let appKeys = { ...APP_KEYS };  // with the user's own (see loadKeys)
+
+const KEY_NAMES = {
+  ' ': 'space', Escape: 'escape', Enter: 'enter', Tab: 'tab', Backspace: 'backspace', Delete: 'delete', Insert: 'insert',
+  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', PageUp: 'pageup', PageDown: 'pagedown',
+  Home: 'home', End: 'end',
+};
+const MODIFIER_ORDER = ['ctrl', 'alt', 'shift', 'cmd'];
+// Keys that never reach the CLI: the terminal sends Enter, Tab, Escape or Backspace for them, a
+// signal, or the browser keeps them for itself.
+const CLI_RESERVED = ['ctrl+c', 'ctrl+d', 'ctrl+m', 'ctrl+[', 'ctrl+i', 'ctrl+h', 'ctrl+\\'];
+const BROWSER_KEYS = ['ctrl+w', 'ctrl+n', 'ctrl+t'];
+
+// The keystroke of a keydown, or null for a modifier alone. Letters by their label, as the
+// browser matches its own shortcuts (a German Z is not a Y); by their place only where the label
+// is no letter (Alt on a Mac makes other characters of them).
+function eventKey(ev) {
+  if (['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock', 'Dead', 'Unidentified'].includes(ev.key)) return null;
+  let key = KEY_NAMES[ev.key] || (/^F([1-9]|1[0-2])$/.test(ev.key) ? ev.key.toLowerCase() : null);
+  if (!key) {
+    const place = /^(?:Key([A-Z])|Digit(\d))$/.exec(ev.code);
+    if (/^[a-z0-9]$/i.test(ev.key)) key = ev.key.toLowerCase();
+    else if (place) key = (place[1] || place[2]).toLowerCase();
+    else if (ev.key.length === 1) key = ev.key.toLowerCase();
+  }
+  if (!key) return null;
+  return [ev.ctrlKey && 'ctrl', ev.altKey && 'alt', ev.shiftKey && 'shift', ev.metaKey && 'cmd', key].filter(Boolean).join('+');
+}
+
+// A shortcut in one form, to compare: mod as this platform's key, meta as alt (one key in a
+// terminal), the modifiers in one order.
+function normalKey(text) {
+  return String(text || '').split(' ').map((stroke) => {
+    const parts = stroke.split('+');
+    const key = parts.pop();
+    const mods = new Set(parts.map((m) => (m === 'mod' ? (MAC ? 'cmd' : 'ctrl') : m === 'meta' ? 'alt' : m)));
+    return [...MODIFIER_ORDER.filter((m) => mods.has(m)), key].join('+');
+  }).join(' ');
+}
+
+const keyMatches = (ev, binding) => !!binding && eventKey(ev) === normalKey(binding);
+
+// A shortcut as the keyboard of this platform names it: Strg+Umschalt+O, ⌘⇧O.
+function keyLabel(text) {
+  const names = {
+    ctrl: MAC ? '⌃' : t('key.ctrl'), alt: MAC ? '⌥' : 'Alt', shift: MAC ? '⇧' : t('key.shift'), cmd: MAC ? '⌘' : 'Win',
+    escape: 'Esc', enter: MAC ? '↩' : 'Enter', tab: MAC ? '⇥' : 'Tab', space: t('key.space'),
+    backspace: MAC ? '⌫' : t('key.backspace'), delete: MAC ? '⌦' : t('key.delete'), insert: t('key.insert'),
+    up: '↑', down: '↓', left: '←', right: '→', pageup: t('key.pageUp'), pagedown: t('key.pageDown'),
+    home: t('key.home'), end: t('key.end'),
+  };
+  return normalKey(text).split(' ').map((stroke) => stroke.split('+')
+    .map((part) => names[part] || part.toUpperCase()).join(MAC ? '' : '+')).join(' ');
+}
+
+// An app shortcut's label, for titles and the start page.
+const appKey = (action) => keyLabel(appKeys[action]);
+
+async function loadKeys() {
+  try {
+    const data = await api('GET', '/api/keybindings');
+    appKeys = { ...APP_KEYS, ...data.app };
+  } catch { /* a server from before the shortcuts page: the defaults */ }
+}
+
+// ---- the shortcuts page of the settings ---------------------------------------------------
+// Like a game's: each action, its keys now, new keys (press them), back to the default. Nothing
+// takes effect before "Save", and closing with changes left asks first.
+
+const KB_CONTEXTS = ['Global', 'Chat', 'Autocomplete', 'Transcript', 'Task'];
+
+const kbChanged = () => !!state.kb && (Object.keys(state.kb.app).length + Object.keys(state.kb.cli).length > 0);
+const sameKeys = (a, b) => a.map(normalKey).sort().join('|') === b.map(normalKey).sort().join('|');
+
+// Every row: scope app or cli, its keys saved, its default, and the change not saved yet.
+function kbRows() {
+  const { saved, app, cli } = state.kb;
+  const rows = Object.keys(APP_KEYS).map((id) => {
+    const current = [saved.app[id] || APP_KEYS[id]];
+    const defaults = [APP_KEYS[id]];
+    const pending = id in app ? (app[id] === null ? defaults : [app[id]]) : null;
+    return { scope: 'app', id, group: 'app', label: t(`kb.app.${id}`), current, defaults, pending, locked: false };
+  });
+  for (const row of saved.cli) {
+    const pending = row.action in cli ? (cli[row.action] === null ? row.defaults : cli[row.action]) : null;
+    rows.push({ scope: 'cli', id: row.action, group: row.context, label: t(`kb.cli.${row.action}`), current: row.keys,
+      defaults: row.defaults, pending, locked: row.locked || !!saved.cli_error });
+  }
+  for (const row of rows) row.keys = row.pending || row.current;
+  return rows;
+}
+
+// What is wrong with a row's keys: a key twice in its group (no saving then), or a CLI key that
+// never gets to the CLI.
+function kbProblems(rows) {
+  const problems = new Map();
+  const add = (row, kind, text) => { if (!problems.has(row.id)) problems.set(row.id, { kind, text }); };
+  const owners = new Map();
+  for (const row of rows) {
+    for (const key of row.keys) {
+      const slot = `${row.group}|${normalKey(key)}`;
+      if (owners.has(slot)) {
+        const other = owners.get(slot);
+        add(row, 'conflict', t('kb.conflict', { other: other.label }));
+        add(other, 'conflict', t('kb.conflict', { other: row.label }));
+      } else owners.set(slot, row);
+    }
+  }
+  const taken = new Map(rows.filter((r) => r.scope === 'app' && APP_GLOBAL.includes(r.id)).map((r) => [normalKey(r.keys[0]), r]));
+  for (const row of rows.filter((r) => r.scope === 'cli' && !r.locked)) {
+    for (const key of row.keys) {
+      const app = taken.get(normalKey(key));
+      if (app) add(row, 'warn', t('kb.intercepted', { action: app.label }));
+      else if (BROWSER_KEYS.includes(normalKey(key))) add(row, 'warn', t('kb.browserKey'));
+    }
+  }
+  return problems;
+}
+
+async function openKeysTab() {
+  state.kb ||= { saved: null, app: {}, cli: {}, capturing: null, notice: null, filter: '' };
+  renderKeys();
+  try {
+    state.kb.saved = await api('GET', '/api/keybindings');
+  } catch (e) {
+    $('#settings-error').textContent = e.status === 404 ? t('restartNeeded') : e.message;
+    return;
+  }
+  renderKeys();
+}
+
+function renderKeys(focusId = null) {
+  const kb = state.kb;
+  const body = $('#keys-body');
+  if (!kb?.saved) {
+    body.replaceChildren(el('p', 'settings-hint', t('kb.loading')));
+    return;
+  }
+  const keep = body.scrollTop;
+  const rows = kbRows();
+  const problems = kbProblems(rows);
+  const head = el('div', 'kb-head');
+  head.append(el('p', 'settings-hint', t('kb.hint', { file: kb.saved.cli_file })));
+  if (kb.saved.cli_error) head.append(el('p', 'settings-hint settings-warn', t('kb.cliError', { file: kb.saved.cli_file, error: kb.saved.cli_error })));
+  const filter = el('input', 'kb-filter');
+  filter.type = 'search';
+  filter.placeholder = t('kb.filter');
+  filter.value = kb.filter;
+  filter.oninput = () => {
+    kb.filter = filter.value;
+    renderKeys();
+    $('#keys-body .kb-filter')?.focus();
+  };
+  const columns = el('div', 'kb-row kb-columns');
+  columns.append(el('span', '', t('kb.what')), el('span', '', t('kb.current')), el('span', '', t('kb.new')), el('span'));
+  head.append(filter, columns);
+  const query = kb.filter.trim().toLowerCase();
+  const sections = [];
+  for (const group of ['app', ...KB_CONTEXTS]) {
+    const members = rows.filter((row) => row.group === group && (!query || `${row.label} ${row.id} ${row.keys.map(keyLabel).join(' ')}`.toLowerCase().includes(query)));
+    if (!members.length) continue;
+    const section = el('section', 'kb-section');
+    section.append(el('h3', '', group === 'app' ? t('kb.app') : `${t('kb.cli')} · ${t(`kb.ctx.${group}`)}`));
+    section.append(...members.map((row) => kbRow(row, problems.get(row.id))));
+    sections.push(section);
+  }
+  if (!sections.length) sections.push(el('p', 'settings-hint', t('list.noMatches')));
+  body.replaceChildren(head, ...sections);
+  body.scrollTop = keep;
+  const blocked = [...problems.values()].some((p) => p.kind === 'conflict');
+  $('#keys-save').disabled = !kbChanged() || blocked || !!kb.capturing;
+  $('#keys-discard').disabled = !kbChanged();
+  if (focusId) body.querySelector(`.kb-row[data-id="${CSS.escape(focusId)}"] .kb-change`)?.focus();
+}
+
+function kbRow(row, problem) {
+  const kb = state.kb;
+  const node = el('div', `kb-row${row.pending ? ' pending' : ''}${problem ? ` ${problem.kind}` : ''}`);
+  node.dataset.id = row.id;
+  const what = el('div', 'kb-what');
+  what.append(el('span', '', row.label), el('span', 'kb-id', row.scope === 'cli' ? row.id : ''));
+  const chips = (keys) => {
+    const box = el('span', 'kb-keys');
+    box.append(...keys.map((key) => el('kbd', '', keyLabel(key))));
+    return box;
+  };
+  const now = chips(row.current);
+  const next = el('div', 'kb-new');
+  if (row.locked) {
+    next.append(el('span', 'muted', t('kb.fixed')));
+  } else {
+    if (row.pending) next.append(chips(row.pending));
+    const capturing = kb.capturing?.id === row.id;
+    const change = el('button', `btn kb-change${capturing ? ' capturing' : ''}`, t(capturing ? 'kb.press' : 'kb.change'));
+    change.type = 'button';
+    change.onclick = () => {
+      kb.capturing = capturing ? null : { scope: row.scope, id: row.id };
+      kb.notice = null;
+      renderKeys(row.id);
+    };
+    next.append(change);
+  }
+  const reset = el('button', 'icon-btn kb-reset');
+  reset.type = 'button';
+  reset.title = t('kb.reset', { keys: row.defaults.map(keyLabel).join(', ') });
+  reset.append(icon('restore'));
+  reset.disabled = sameKeys(row.keys, row.defaults);
+  reset.hidden = row.locked;
+  reset.onclick = () => {
+    kbSet(row, sameKeys(row.current, row.defaults) ? undefined : null);
+    renderKeys(row.id);
+  };
+  node.append(what, now, next, reset);
+  const message = kb.notice?.id === row.id ? { kind: 'conflict', text: kb.notice.text } : problem;
+  if (message) node.append(el('div', `kb-msg ${message.kind}`, message.text));
+  return node;
+}
+
+// The change not saved yet: keys, null for the default, undefined for none.
+function kbSet(row, value) {
+  const store = row.scope === 'app' ? state.kb.app : state.kb.cli;
+  if (value === undefined) delete store[row.id];
+  else store[row.id] = value;
+}
+
+// A key pressed while a row waits for one: Esc gives up, a modifier alone waits on.
+function captureKey(ev) {
+  const kb = state.kb;
+  if (!kb?.capturing || !$('#settings-dialog').open) return false;
+  ev.preventDefault();
+  ev.stopImmediatePropagation();
+  if (ev.type !== 'keydown') return true;
+  const { scope, id } = kb.capturing;
+  if (ev.key === 'Escape' && !ev.ctrlKey && !ev.altKey && !ev.shiftKey && !ev.metaKey) {
+    kb.capturing = null;
+    renderKeys(id);
+    return true;
+  }
+  const key = eventKey(ev);
+  if (!key) return true;
+  const row = kbRows().find((r) => r.scope === scope && r.id === id);
+  const mods = key.split('+').slice(0, -1);
+  let refused = null;
+  if (scope === 'app' && APP_GLOBAL.includes(id) && !mods.some((m) => m !== 'shift') && !/^f\d+$/.test(key.split('+').pop())) {
+    refused = t('kb.needsModifier');
+  } else if (scope === 'cli' && mods.includes('cmd')) {
+    refused = t('kb.noCmd');
+  } else if (scope === 'cli' && CLI_RESERVED.includes(normalKey(key))) {
+    refused = t('kb.reserved', { key: keyLabel(key) });
+  }
+  kb.capturing = null;
+  if (refused) {
+    kb.notice = { id, text: refused };
+  } else {
+    kb.notice = null;
+    const keys = [key];
+    if (sameKeys(keys, row.current)) kbSet(row, undefined);
+    else if (sameKeys(keys, row.defaults)) kbSet(row, null);
+    else kbSet(row, scope === 'app' ? key : keys);
+  }
+  renderKeys(id);
+  return true;
+}
+
+function resetAllKeys() {
+  for (const row of kbRows()) {
+    if (row.locked) continue;
+    kbSet(row, sameKeys(row.current, row.defaults) ? undefined : null);
+  }
+  state.kb.capturing = null;
+  renderKeys();
+}
+
+function discardKeys() {
+  Object.assign(state.kb, { app: {}, cli: {}, capturing: null, notice: null });
+  renderKeys();
+}
+
+async function saveKeys() {
+  const kb = state.kb;
+  try {
+    kb.saved = await api('PUT', '/api/keybindings', { app: kb.app, cli: kb.cli });
+  } catch (e) {
+    $('#settings-error').textContent = e.status === 404 ? t('restartNeeded') : e.message;
+    return;
+  }
+  $('#settings-error').textContent = '';
+  Object.assign(kb, { app: {}, cli: {}, capturing: null, notice: null });
+  appKeys = { ...APP_KEYS, ...kb.saved.app };
+  translatePage();  // titles and the start page name the new keys
+  renderKeys();
+  toast(t('kb.saved'));
+}
+
+// The settings dialog closes only with nothing left unsaved, or once the user lets it go.
+async function closeSettings() {
+  if (kbChanged()) {
+    if (!(await ask({ title: t('kb.unsavedTitle'), text: t('kb.unsavedText'), yes: t('kb.discard'), danger: true }))) return;
+    discardKeys();
+  }
+  if (state.kb) state.kb.capturing = null;
+  $('#settings-dialog').close();
+}
+
+function showSettingsTab(name) {
+  store.set('settingsTab', name);
+  for (const button of document.querySelectorAll('[data-settings-tab]')) {
+    const on = button.dataset.settingsTab === name;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-selected', String(on));
+  }
+  $('#settings-dialog').classList.toggle('wide', name === 'keys');
+  $('#settings-body').hidden = name !== 'general';
+  $('#settings-actions').hidden = name !== 'general';
+  $('#keys-body').hidden = name !== 'keys';
+  $('#keys-actions').hidden = name !== 'keys';
+  $('#settings-error').textContent = '';
+  if (name === 'keys') openKeysTab();
+}
+
+// ---- wiring -------------------------------------------------------------------------------
 
 // The texts of the page itself (index.html), with the key names of this platform.
 function translatePage() {
@@ -3548,15 +3883,19 @@ function translatePage() {
     node.title = node.dataset.keys ? `${label} (${appKey(node.dataset.keys)})` : label;
   }
   const keys = [
-    [appKey('O'), t('chat.new')],
-    [appKey('B'), t('keys.sidebar')],
-    [MAC ? '⌘⌥←/→' : `${t('key.ctrl')}+${t('key.pages')}`, t('keys.tabs')],
-    [MAC ? '⇧↩' : `${t('key.shift')}+Enter`, t('keys.newline')],
+    [appKey('newChat'), t('chat.new')],
+    [appKey('toggleSidebar'), t('keys.sidebar')],
+    [`${appKey('prevTab')} / ${appKey('nextTab')}`, t('keys.tabs')],
+    [appKey('terminalNewline'), t('keys.newline')],
   ];
   $('#keys').replaceChildren(...keys.flatMap(([combo, what]) => [el('dt', '', combo), el('dd', '', what)]));
 }
 
 function wire() {
+  // First of all: a key for the shortcuts page goes there and nowhere else (no app shortcut, no
+  // reload, no closing of the dialog on Esc).
+  window.addEventListener('keydown', captureKey, true);
+  window.addEventListener('keyup', captureKey, true);
   window.addEventListener('pagehide', () => navigator.sendBeacon(`/api/windows/${WINDOW_ID}/closed`));
   window.addEventListener('clida-theme', () => {  // also when "system" follows the OS
     for (const tab of state.tabs) if (tab.term) tab.term.options.theme = terminalTheme();
@@ -3583,8 +3922,18 @@ function wire() {
     ev.preventDefault();
     answer(false);
   });
-  $('#settings-done').onclick = () => $('#settings-dialog').close();
-  $('#settings-close').onclick = () => $('#settings-dialog').close();
+  $('#settings-done').onclick = closeSettings;
+  $('#settings-close').onclick = closeSettings;
+  $('#settings-dialog').addEventListener('cancel', (ev) => {  // Esc: as the close button
+    ev.preventDefault();
+    closeSettings();
+  });
+  for (const button of document.querySelectorAll('[data-settings-tab]')) {
+    button.onclick = () => showSettingsTab(button.dataset.settingsTab);
+  }
+  $('#keys-save').onclick = saveKeys;
+  $('#keys-discard').onclick = discardKeys;
+  $('#keys-reset-all').onclick = resetAllKeys;
   dropZone($('#session-list'), null);
   // A file dropped anywhere must not make the window open it and leave CLIDA; onto a running
   // terminal it becomes an attachment.
@@ -3701,16 +4050,13 @@ function wire() {
 
   // Capture phase, so the terminal never sees the app's own shortcuts.
   window.addEventListener('keydown', (ev) => {
-    const key = ev.key.toLowerCase();
-    const mod = MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
-    // Switch tabs: Ctrl+PgUp/PgDn, on a Mac Cmd+Option+Left/Right (no PgUp key, layout-independent).
-    const step = MAC
-      ? ev.metaKey && ev.altKey && { ArrowLeft: -1, ArrowRight: 1 }[ev.key]
-      : ev.ctrlKey && !ev.shiftKey && { PageUp: -1, PageDown: 1 }[ev.key];
-    if (mod && ev.shiftKey && key === 'b') setCollapsed(!$('#app').classList.contains('collapsed'));
-    else if (mod && ev.shiftKey && key === 'o') openNewDialog();
-    else if (step) cycleTab(step);
-    else if (mod && ev.shiftKey && key === 'f') { setCollapsed(false); $('#search').focus(); }
+    // As set on the shortcuts page; by default Ctrl+Shift+B/O/F and Ctrl+PgUp/PgDn, on a Mac
+    // Cmd+Shift+B/O/F and Cmd+Option+Left/Right (no PgUp key there).
+    if (keyMatches(ev, appKeys.toggleSidebar)) setCollapsed(!$('#app').classList.contains('collapsed'));
+    else if (keyMatches(ev, appKeys.newChat)) openNewDialog();
+    else if (keyMatches(ev, appKeys.prevTab)) cycleTab(-1);
+    else if (keyMatches(ev, appKeys.nextTab)) cycleTab(1);
+    else if (keyMatches(ev, appKeys.searchChats)) { setCollapsed(false); $('#search').focus(); }
     else return;
     ev.preventDefault();
     ev.stopPropagation();
@@ -3750,6 +4096,8 @@ async function start() {
   }
   setHistoryWidth(store.get('historyWidth', HISTORY_WIDTH.start));
   await loadSettings();
+  await loadKeys();
+  translatePage();  // with the user's shortcuts in titles and on the start page
   await refreshSessions();
   const wanted = store.get('active', null);  // read first: addTab saves the tabs, and the active one with them
   const savedTabs = store.get('tabs', []);
