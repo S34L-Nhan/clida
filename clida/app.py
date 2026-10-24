@@ -251,9 +251,11 @@ class Desk:
                     # git knows how it was, so its diff, with the chat's steps.
                     mine.update({k: found[k] for k in ("status", "note", "known", "net", "added", "removed")})
             files.sort(key=lambda f: f["path"])
+        # Where each file stands in git: committed, not yet, ignored, or outside any repository.
+        states = self.repo_changes.states([f["path"] for f in files], window[0] if window else None)
         out = []
         for changed in files:
-            out.append({**changed, "label": self._change_label(changed["path"], cwd),
+            out.append({**changed, "label": self._change_label(changed["path"], cwd), **states[changed["path"]],
                         **({"net": None, "steps": []} if brief else {})})
         # The branch of the chat's folder, or else of the first repository it worked in.
         where = cwd if cwd and os.path.isdir(cwd) else None

@@ -356,6 +356,20 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .mid { display: flex; flex: 1; min-width: 0; }
 .mid-a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mid-b { flex: none; white-space: pre; }
+.mr-group { display: flex; gap: 6px; align-items: center; margin: 10px 0 2px; padding: 3px 8px; font-size: 12.5px; }
+.mr-group:first-child { margin-top: 0; }
+.mr-group svg { width: 14px; height: 14px; color: var(--muted); }
+.mr-group .muted { color: var(--muted); }
+.mr-group.outside strong { color: var(--muted); font-weight: 600; }
+.git-mark { flex: none; width: 12px; text-align: center; font-size: 11px; color: var(--muted); }
+.git-mark.committed { color: var(--ok); }
+.git-mark.staged, .git-mark.partly, .git-mark.unstaged, .git-mark.untracked { color: var(--warn); }
+.git-chip { flex: none; padding: 1px 7px; border-radius: 6px; font-size: 11px; color: var(--muted); background: var(--code-bg); }
+.git-chip.committed { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.git-chip.staged, .git-chip.partly, .git-chip.unstaged, .git-chip.untracked { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.git-count { font-size: 12px; color: var(--muted); }
+.git-count.committed { color: var(--ok); }
+.git-count.pending { color: var(--warn); }
 .status-icon { flex: none; display: inline-grid; width: 16px; height: 16px; }
 .status-icon svg { width: 16px; height: 16px; }
 .status-icon.added { color: var(--ok); }

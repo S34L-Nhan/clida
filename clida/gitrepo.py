@@ -22,14 +22,16 @@ MAX_REPOS = 5
 DIFF_CACHE_ROWS = 200_000  # diff rows kept in memory over all files; a diff over 1/20 of it is not kept
 
 
-def git(cwd, *args, binary=False, timeout=10):
-    """Output of a git command in cwd, or None if it failed. Never takes optional locks: git status
-    may otherwise hold index.lock, and a git commit Claude runs at that moment would fail."""
+def git(cwd, *args, binary=False, timeout=10, stdin=None, ok=(0,)):
+    """Output of a git command in cwd, or None if it failed (an exit code not in ok). Never takes
+    optional locks: git status may otherwise hold index.lock, and a git commit Claude runs at that
+    moment would fail."""
     try:
-        out = subprocess.run(["git", "--no-optional-locks", "-C", cwd, *args], capture_output=True, timeout=timeout)
+        out = subprocess.run(["git", "--no-optional-locks", "-C", cwd, *args], capture_output=True, timeout=timeout,
+                             input=stdin)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if out.returncode:
+    if out.returncode not in ok:
         return None
     return out.stdout if binary else out.stdout.decode("utf-8", "replace")
 
@@ -129,6 +131,46 @@ class RepoChanges:
         self._selections = _Lru(32)  # (top, start, end) -> (state, selection)
         # (top, base, rel) -> (stamp, diff fields); a diff can have thousands of rows, so by rows too
         self._diffs = _Lru(400, budget=DIFF_CACHE_ROWS, weight=lambda fields: len(fields.get("net") or ()))
+        self._states = _Lru(32)  # (top, start) -> (repo state, git state of its files)
+        self._tops = _Lru(2000)  # folder -> its repository's top folder ("" outside one)
+
+    def _top(self, folder: str) -> str:
+        """The repository a folder is in; for a deleted file, its nearest folder that is still there."""
+        while folder and not os.path.isdir(folder):
+            parent = os.path.dirname(folder)
+            folder = "" if parent == folder else parent
+        if not folder:
+            return ""
+        top = self._tops.get(folder, None)
+        if top is None:
+            top = (git(folder, "rev-parse", "--show-toplevel") or "").strip()
+            self._tops.put(folder, None, top)
+        return top
+
+    def states(self, paths: list, start) -> dict:
+        """Whether each file is in a repository and where it stands there, for "will it be committed?".
+
+        path -> {"repo": {"top", "name", "branch"} or None, "rel": path in the repository,
+        "state": committed | staged | unstaged | partly | untracked | ignored | None,
+        "commit": {"sha", "subject"} of the newest commit during the chat that touched it}
+        """
+        by_top = {}
+        for path in paths:
+            by_top.setdefault(self._top(os.path.dirname(path)), []).append(path)
+        out = {}
+        for top, members in by_top.items():
+            if not top:
+                out.update({p: {"repo": None, "rel": None, "state": None, "commit": None} for p in members})
+                continue
+            head = (git(top, "rev-parse", "--verify", "-q", "HEAD") or "").strip()
+            status = git(top, "status", "--porcelain=v1", "-z", "--untracked-files=all") or ""
+            key = (head, status, tuple(sorted(members)))
+            hit = self._states.get((top, start), key)
+            if hit is None:
+                hit = _states(top, start, head, status, members)
+                self._states.put((top, start), key, hit)
+            out.update(hit)
+        return out
 
     def get(self, dirs: list, start: float, end, brief: bool = False) -> dict:
         """Over the repositories that dirs are in: the chat's folder may hold no repository itself,
@@ -241,3 +283,42 @@ def _fill_diff(top: str, base, rel: str, status: str) -> dict:
         return {"note": note}
     diff = transcripts.net_diff(before or "", after or "")
     return {"net": diff["rows"], "added": diff["added"], "removed": diff["removed"]}
+
+
+def _states(top, start, head, status, paths) -> dict:
+    branch = (git(top, "symbolic-ref", "--short", "-q", "HEAD", ok=(0, 1)) or "").strip() or None
+    repo = {"top": top, "name": os.path.basename(top), "branch": branch}
+    codes = dict((rel, code) for code, rel in _status_entries(status))
+    rels = {path: os.path.relpath(path, top) for path in paths}
+    # Ignored files are not in the status; check-ignore names those of ours that are (exit 1: none).
+    loose = [rel for rel in rels.values() if rel not in codes]
+    ignored = set(filter(None, (git(top, "check-ignore", "-z", "--stdin", stdin="\0".join(loose).encode() + b"\0",
+                                    ok=(0, 1)) or "").split("\0"))) if loose else set()
+    # The newest commit during the chat that touched each file (log lists newest first).
+    commits = {}
+    base = _head_at(top, start) if head and start else None
+    if head:
+        log = git(top, "log", "-n", "500", "--format=%x00%H%x09%s", "--name-only", "-z",
+                  f"{base}..HEAD" if base else "HEAD") if base != head else ""
+        current = None
+        for part in (log or "").split("\0"):
+            part = part.strip("\n")
+            if "\t" in part and len(part.split("\t", 1)[0]) == 40:
+                sha, subject = part.split("\t", 1)
+                current = {"sha": sha[:9], "subject": subject}
+            elif part and current:
+                commits.setdefault(part, current)
+    out = {}
+    for path, rel in rels.items():
+        code = codes.get(rel)
+        if code == "??":
+            state = "untracked"
+        elif rel in ignored:
+            state = "ignored"
+        elif code:
+            staged, unstaged = code[0] not in " ?", code[1] not in " ?"
+            state = "partly" if staged and unstaged else "staged" if staged else "unstaged"
+        else:
+            state = "committed"
+        out[path] = {"repo": repo, "rel": rel, "state": state, "commit": commits.get(rel) if state == "committed" else None}
+    return out
