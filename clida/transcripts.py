@@ -653,10 +653,13 @@ class ChangesCache:
     def _compare(changed: dict, first, now) -> dict:
         # Before: the first backup is the file as it was before the chat's first edit. A tracked file
         # without one did not exist yet, nor did one that Write created. Else it is not known.
+        # A file the chat created has later backups (@v2 …) but no @v1; once the CLI has cleaned
+        # its file history up, there are none at all, and the state before is not known.
+        later = first is not None and not first.exists() and any(first.parent.glob(f"{changed['backup']}@v*"))
         if first is not None and first.exists():
             before, before_note = read_text(first)
             known = True  # a binary or large before is known too, it just gets no diff
-        elif changed["backup"] or changed["created"]:
+        elif later or (changed["created"] and not changed["backup"]):
             before, before_note, known = None, None, True
         else:
             before, before_note, known = None, None, False

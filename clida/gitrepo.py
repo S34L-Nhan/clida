@@ -69,7 +69,7 @@ def _status_entries(status: str):
         if len(entry) < 4:
             continue
         out.append((entry[:2], entry[3:]))
-        if entry[0] in "RC" and i < len(entries):
+        if (entry[0] in "RC" or entry[1] in "RC") and i < len(entries):  # index or work tree (git add -N)
             out.append(("D ", entries[i]))  # the old path is gone, and that is a change too
             i += 1
     return out
@@ -85,10 +85,14 @@ def _changed_at(path):
 
 
 class _Lru:
-    """A small cache that forgets the least recently used entries: every chat opened adds some."""
+    """A small cache that forgets the least recently used entries: every chat opened adds some.
 
-    def __init__(self, size: int):
+    weight, if given, measures an entry (a diff: its rows), and the entries together stay under budget.
+    """
+
+    def __init__(self, size: int, budget: int = 0, weight=None):
         self._size, self._items, self._lock = size, OrderedDict(), threading.Lock()
+        self._budget, self._weight, self._total = budget, weight, 0
 
     def get(self, slot, key):
         with self._lock:
@@ -99,11 +103,16 @@ class _Lru:
             return hit[1]
 
     def put(self, slot, key, value):
+        weigh = self._weight or (lambda value: 0)
         with self._lock:
+            old = self._items.pop(slot, None)
+            if old is not None:
+                self._total -= weigh(old[1])
             self._items[slot] = (key, value)
-            self._items.move_to_end(slot)
-            while len(self._items) > self._size:
-                self._items.popitem(last=False)
+            self._total += weigh(value)
+            while len(self._items) > 1 and (len(self._items) > self._size or (self._budget and self._total > self._budget)):
+                _, (_, dropped) = self._items.popitem(last=False)
+                self._total -= weigh(dropped)
 
 
 class RepoChanges:
@@ -115,7 +124,8 @@ class RepoChanges:
 
     def __init__(self):
         self._selections = _Lru(32)  # (top, start, end) -> (state, selection)
-        self._diffs = _Lru(400)  # (top, base, rel) -> (stamp, diff fields)
+        # (top, base, rel) -> (stamp, diff fields); a diff can have thousands of rows, so by rows too
+        self._diffs = _Lru(400, budget=200_000, weight=lambda fields: len(fields.get("net") or ()))
 
     def get(self, dirs: list, start: float, end, brief: bool = False) -> dict:
         """Over the repositories that dirs are in: the chat's folder may hold no repository itself,
@@ -146,7 +156,7 @@ class RepoChanges:
         status = git(top, "status", "--porcelain=v1", "-z", "--untracked-files=all") or ""
         entries = _status_entries(status)
         stamps = {rel: _changed_at(os.path.join(top, rel)) for _, rel in entries}
-        state = (head, status, tuple(sorted(stamps.items(), key=lambda kv: kv[0])))
+        state = (head, status, tuple(stamps.values()))
         slot = (top, start, end)
         hit = self._selections.get(slot, state)
         if hit is None:
@@ -156,7 +166,7 @@ class RepoChanges:
 
     def _diff(self, top: str, base, picked: dict) -> dict:
         rel = picked["rel"]
-        stamp = (picked["status"], _changed_at(os.path.join(top, rel)))
+        stamp = (picked["status"], picked["stamp"])
         slot = (top, base, rel)
         hit = self._diffs.get(slot, stamp)
         if hit is None:
@@ -172,7 +182,7 @@ def _select(top, start, end, head, entries, stamps) -> dict:
     last = head if until is None or not head else (_head_at(top, until) or head)
 
     def written_during(rel):
-        when = stamps.get(rel, _changed_at(os.path.join(top, rel)))
+        when = stamps[rel] if rel in stamps else _changed_at(os.path.join(top, rel))
         return when is not None and start <= when and (until is None or when <= until)
 
     # What differs from the start, as the disk is now (tracked files). Mode changes (chmod) and
@@ -189,10 +199,11 @@ def _select(top, start, end, head, entries, stamps) -> dict:
         for line in log.splitlines():
             sha, when, subject = (line.split("\t", 2) + ["", ""])[:3]
             commits.append({"sha": sha[:9], "time": int(when or 0), "subject": subject})
+    present = {rel: os.path.lexists(os.path.join(top, rel)) for rel in differs}
     picked = set()
     for rel in differs:
         # A file that is gone has no time, so a deletion counts whenever it happened.
-        if rel in moved or written_during(rel) or not os.path.lexists(os.path.join(top, rel)):
+        if rel in moved or not present[rel] or written_during(rel):
             picked.add(rel)
     for code, rel in entries:
         if code == "??" and written_during(rel):
@@ -202,9 +213,10 @@ def _select(top, start, end, head, entries, stamps) -> dict:
         # The status by what was there at the start and what is there now: git rm --cached or
         # reset --mixed leave a file on disk that git counts as deleted.
         in_base = rel in differs and differs[rel] != "A"
-        exists = os.path.lexists(os.path.join(top, rel))
+        exists = present.get(rel, True)  # not in differs: an untracked file, listed because it is there
         status = "modified" if in_base and exists else "deleted" if in_base else "added"
-        files.append({"rel": rel, "status": status})
+        stamp = stamps[rel] if rel in stamps else _changed_at(os.path.join(top, rel))
+        files.append({"rel": rel, "status": status, "stamp": stamp})
     return {"files": files, "commits": commits, "base": base}
 
 

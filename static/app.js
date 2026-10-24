@@ -312,10 +312,19 @@ async function change(method, path, body) {
 // written is settled first: open notes are saved, a rename keeps the old name, and an open new
 // chat dialog starts nothing (the reload just drops it).
 async function serverRestarted() {
+  await reloadSafely();
+}
+
+// Reload the page once open notes are saved (also by F5); a note that cannot be saved does not
+// keep the page from reloading.
+async function reloadSafely() {
   if (state.reloading) return;
   state.reloading = true;
-  await settleWriting();
-  location.reload();
+  try {
+    await settleWriting();
+  } finally {
+    location.reload();
+  }
 }
 
 // Before the page goes: open notes are saved, a rename keeps the old name, and an open new chat
@@ -2445,9 +2454,7 @@ function wire() {
     if (!['F5', 'BrowserRefresh'].includes(ev.key) || ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return;
     ev.preventDefault();
     ev.stopPropagation();
-    if (state.reloading) return;
-    state.reloading = true;
-    settleWriting().finally(() => location.reload());
+    reloadSafely();
   }, true);
 
   // Nor the browser's own shortcuts that make no sense in an app: print, save or open a page,
