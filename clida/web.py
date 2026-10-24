@@ -67,6 +67,7 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("POST", rf"/api/windows/{WID}/closed", "window_closed"),
     ("POST", r"/api/login-ticket", "login_ticket"),
     ("DELETE", rf"/api/terminals/{SID}", "stop_terminal"),
+    ("POST", rf"/api/terminals/{SID}/prompt", "send_prompt"),
     ("GET", rf"/ws/terminals/{SID}", "attach"),
 ]]
 mimetypes.add_type("text/javascript", ".mjs")
@@ -335,6 +336,9 @@ class Handler(BaseHTTPRequestHandler):
                 del _TICKETS[stale]
             _TICKETS[ticket] = now + TICKET_TTL
         self._send_json(200, {"ticket": ticket})
+
+    def route_send_prompt(self, sid):
+        self._send_json(200, self.desk.send_prompt(sid, self._body().get("text")))
 
     def route_stop_terminal(self, sid):
         self._send_json(200, self.desk.stop_terminal(sid))

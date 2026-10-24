@@ -36,6 +36,10 @@ const ICONS = {
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M10.1 5.0L10.7 2.5L13.3 2.5L13.9 5.0L15.6 5.8L17.8 4.3L19.7 6.2L18.2 8.4L19.0 10.1L21.5 10.7L21.5 13.3L19.0 13.9L18.2 15.6L19.7 17.8L17.8 19.7L15.6 18.2L13.9 19.0L13.3 21.5L10.7 21.5L10.1 19.0L8.4 18.2L6.2 19.7L4.3 17.8L5.8 15.6L5.0 13.9L2.5 13.3L2.5 10.7L5.0 10.1L5.8 8.4L4.3 6.2L6.2 4.3L8.4 5.8z"/><circle cx="12" cy="12" r="3"/></svg>',
   branch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-7 4-11.4 8.6"/></svg>',
+  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>',
+  tree: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3.5" width="6" height="5" rx="1"/><rect x="13" y="10" width="7" height="4.5" rx="1"/><rect x="13" y="16" width="7" height="4.5" rx="1"/><path d="M7 8.5v10h6M7 12.3h6"/></svg>',
+  list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg>',
+  comment: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 5h16v11H10l-5 4v-4H4z"/></svg>',
   width: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16M20 4v16M8 12h8M10.5 9.5L8 12l2.5 2.5M13.5 9.5L16 12l-2.5 2.5"/></svg>',
 };
 const icon = (name) => {
@@ -888,7 +892,7 @@ function openSession(sid) {
 
 function addTab(id, view, sid = id) {
   const tab = { id, sid, since: Date.now(), view, term: null, fit: null, ws: null, loaded: false, stale: false,
-    showAll: false, items: [], notes: { session: null, messages: [] }, changes: null, openFiles: new Set() };
+    showAll: false, items: [], notes: { session: null, messages: [] }, changes: null };
   buildView(tab);
   state.tabs.push(tab);
   saveTabs();
@@ -949,8 +953,8 @@ function buildView(tab) {
   const hist = el('div', 'history');
   const histInner = el('div', 'history-inner');
   hist.append(histInner);
-  const changesPane = el('div', 'history changes');
-  const changesInner = el('div', 'history-inner');
+  const changesPane = el('div', 'changes');
+  const changesInner = el('div', 'changes-inner');
   changesPane.append(changesInner);
   const termWrap = el('div', 'term-wrap');
   const termHost = el('div', 'term-host');
@@ -1240,7 +1244,7 @@ function paintView(tab) {
   tab.stop.hidden = !live;
   tab.refresh.hidden = showTerm;
   tab.attach.hidden = !(showTerm && live);
-  tab.widthCtl.hidden = showTerm;
+  tab.widthCtl.hidden = showTerm || showChanges;
   tab.hist.hidden = showTerm || showChanges;
   tab.changesPane.hidden = !showChanges;
   tab.termWrap.hidden = !showTerm;
@@ -1675,8 +1679,13 @@ function toolInput(item) {
 }
 
 // ---- changes ------------------------------------------------------------------------------
-// The files a chat changed, built from its Edit and Write calls: what Claude did, not a git diff,
-// so changes made by hand or by shell commands do not show up here.
+// What the chat changed, laid out like a GitLab merge request: the changed files on the left (as
+// a tree or a list, with a search), their diffs on the right. Click a line number to comment on a
+// line, Shift+click to take a range. "Send to Claude" types all comments into this chat's own
+// session as one prompt, resuming it first if it is not running.
+
+const DIFF_COLLAPSE_ROWS = 800;  // a diff with more rows starts collapsed
+const PROMPT_CODE_LINES = 60;    // code lines quoted per comment in the prompt
 
 // Without the diffs unless the view is shown: the other tabs only need the counts, and showing
 // the view loads them in full (showView).
@@ -1694,97 +1703,214 @@ async function loadChanges(tab) {
   tab.changes = data;
   if (!brief) {
     const signature = JSON.stringify([language(), data]);
-    if (signature !== tab.changesSignature) renderChanges(tab);  // unchanged: keep scroll and open files
+    // A comment being written stays: the view catches up once it is saved or dropped.
+    if (tab.changesInner.querySelector('.cform')) tab.changesStale = signature !== tab.changesSignature;
+    else if (signature !== tab.changesSignature) renderChanges(tab);  // unchanged: keep scroll and open files
     tab.changesSignature = signature;
   }
   paintView(tab);
 }
 
+const reviewKey = (tab) => `review.${tabSession(tab)}`;
+const reviewOf = (tab) => (tab.review ||= store.get(reviewKey(tab), []));
+const saveReview = (tab) => store.set(reviewKey(tab), tab.review);
+
 function renderChanges(tab) {
-  const { files, git } = tab.changes;
-  const nodes = [];
-  if (git) {
-    const repo = el('div', 'changes-head');
-    const where = el('span', 'changes-branch');
-    where.append(icon('branch'), git.branch || t('changes.detached'));
-    repo.append(where, el('span', '', t('changes.dirty', { n: git.dirty })));
-    nodes.push(repo);
+  tab.changesStale = false;
+  const { files } = tab.changes;
+  const keep = { main: tab.mrMain?.scrollTop || 0, side: tab.mrList?.scrollTop || 0 };
+  tab.mrObserver?.disconnect();
+  tab.collapsed ||= new Set(files.filter((f) => (f.net?.length || 0) > DIFF_COLLAPSE_ROWS).map((f) => f.path));
+  const layout = el('div', 'mr');
+  const side = el('aside', 'mr-files');
+  const column = el('div', 'mr-col');  // the review bar stays on top, the diffs scroll under it
+  const main = el('div', 'mr-main');
+  tab.mrMain = main;
+  // Comment boxes sit in rows as wide as the longest code line; they take the width in view.
+  tab.mrResize?.disconnect();
+  tab.mrResize = new ResizeObserver(() => main.style.setProperty('--mr-width', `${main.clientWidth}px`));
+  tab.mrResize.observe(main);
+
+  const head = el('div', 'mr-files-head');
+  const title = el('div', 'mr-files-title');
+  title.append(el('strong', '', t('changes.filesTitle')), el('span', 'count-badge', String(files.length)));
+  const modes = el('div', 'mr-modes');
+  for (const mode of ['list', 'tree']) {
+    const button = el('button', `icon-btn${(store.get('changesTree', true) ? 'tree' : 'list') === mode ? ' on' : ''}`);
+    button.title = t(`changes.${mode}`);
+    button.append(icon(mode === 'tree' ? 'tree' : 'list'));
+    button.onclick = () => {
+      store.set('changesTree', mode === 'tree');
+      for (const other of modes.children) other.classList.toggle('on', other === button);
+      renderFileList(tab);
+    };
+    modes.append(button);
   }
-  // Like the top of a merge request: how many files, how many of each kind, and the lines.
-  const sum = el('div', 'changes-sum');
-  const kinds = ['added', 'modified', 'deleted'].map((status) => [status, files.filter((f) => f.status === status).length]);
-  sum.append(el('strong', '', t('changes.files', { n: files.length })));
-  for (const [status, n] of kinds) if (n) sum.append(el('span', `status-text ${status}`, t(`changes.n.${status}`, { n })));
-  const added = files.reduce((n, f) => n + (f.added || 0), 0);
-  const removed = files.reduce((n, f) => n + (f.removed || 0), 0);
-  if (added || removed) sum.append(el('span', 'diff-add', `+${added}`), el('span', 'diff-del', `−${removed}`));
-  nodes.push(sum, el('p', 'changes-hint', t('changes.hint')));
-  const { commits = [] } = tab.changes;
-  if (commits.length) nodes.push(commitList(tab, commits));
-  if (!files.length) nodes.push(el('div', 'empty-note', t('changes.none')));
-  for (const file of files) nodes.push(changedFile(tab, file));
-  tab.changesInner.replaceChildren(...nodes);
+  head.append(title, modes);
+  const search = el('label', 'search mr-search');
+  const query = el('input');
+  query.type = 'search';
+  query.placeholder = t('changes.search');
+  query.value = tab.fileQuery || '';
+  query.autocomplete = 'off';
+  query.spellcheck = false;
+  query.oninput = () => {
+    tab.fileQuery = query.value;
+    renderFileList(tab);
+  };
+  const glass = el('span');
+  glass.append(icon('search'));
+  search.append(glass, query);
+  tab.mrQuery = query;
+  const list = el('div', 'mr-tree');
+  tab.mrList = list;
+  side.append(head, search, list);
+
+  main.append(changesTop(tab));
+  tab.mrReview = el('div', 'mr-review');
+  renderReviewBar(tab);
+  if (!files.length) main.append(el('div', 'empty-note', t('changes.none')));
+  // Diffs are drawn when they come near the screen: a chat can change hundreds of files.
+  tab.mrObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) if (entry.isIntersecting) entry.target.fill?.();
+  }, { root: main, rootMargin: '600px 0px' });
+  tab.mrBlocks = new Map();
+  for (const file of files) {
+    const block = fileBlock(tab, file);
+    tab.mrBlocks.set(file.path, block);
+    main.append(block);
+    tab.mrObserver.observe(block);
+  }
+  column.append(tab.mrReview, main);
+  layout.append(side, column);
+  tab.changesInner.replaceChildren(layout);
+  renderFileList(tab);
+  main.scrollTop = keep.main;
+  list.scrollTop = keep.side;
 }
 
-const STATUS_MARK = { added: 'A', modified: 'M', deleted: 'D', gone: 'D', unchanged: '=' };
+function changesTop(tab) {
+  const { files, git, commits = [] } = tab.changes;
+  const top = el('div', 'mr-top');
+  const line = el('div', 'changes-sum');
+  if (git) {
+    const where = el('span', 'changes-branch');
+    where.append(icon('branch'), git.branch || t('changes.detached'));
+    line.append(where, el('span', 'muted', t('changes.dirty', { n: git.dirty })));
+  }
+  for (const status of ['added', 'modified', 'deleted']) {
+    const n = files.filter((f) => f.status === status).length;
+    if (n) line.append(el('span', `status-text ${status}`, t(`changes.n.${status}`, { n })));
+  }
+  const added = files.reduce((n, f) => n + (f.added || 0), 0);
+  const removed = files.reduce((n, f) => n + (f.removed || 0), 0);
+  if (added || removed) line.append(el('span', 'diff-add', `+${added}`), el('span', 'diff-del', `−${removed}`));
+  const hint = el('span', 'mr-hint', 'ⓘ');
+  hint.title = t('changes.hint');
+  line.append(hint);
+  top.append(line);
+  if (commits.length) top.append(commitList(tab, commits));
+  return top;
+}
 
-function changedFile(tab, file) {
-  const node = el('details', `change ${file.status}`);
-  const summary = el('summary');
-  summary.title = file.path;
-  const mark = el('span', `status-mark ${file.status}`, STATUS_MARK[file.status] || 'M');
-  mark.title = t(`changes.status.${file.status}`);
-  summary.append(mark, el('span', 'change-path', file.label));
-  if (file.status !== 'modified') summary.append(el('span', `status-text ${file.status}`, t(`changes.status.${file.status}`)));
-  if (file.added != null && (file.added || file.removed)) {
-    summary.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `−${file.removed}`));
+// ---- file list: tree or list, filtered by the search -------------------------------------
+
+// A search like GitLab's: *.vue or src/**/x.js as a pattern, anything else as part of the path.
+function fileMatcher(query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return () => true;
+  if (!/[*?]/.test(q)) return (path) => path.toLowerCase().includes(q);
+  const pattern = q.split('**').map((part) => part.split('*').map((s) => s.split('?')
+    .map((x) => x.replace(/[.+^${}()|[\]\\]/g, '\\$&')).join('[^/]')).join('[^/]*')).join('.*');
+  const re = new RegExp(`(^|/)${pattern}$`);
+  return (path) => re.test(path.toLowerCase());
+}
+
+function renderFileList(tab) {
+  const files = tab.changes.files.filter((f) => fileMatcher(tab.fileQuery || '')(f.label));
+  const list = tab.mrList;
+  if (!files.length) {
+    list.replaceChildren(el('div', 'mr-none', t(tab.changes.files.length ? 'changes.noMatch' : 'changes.none')));
+    return;
   }
-  if (file.source === 'git') {
-    const via = el('span', 'change-via', t('changes.viaShell'));
-    via.title = t('changes.viaShellHint');
-    summary.append(via);
-  } else {
-    summary.append(el('span', 'change-edits', t('changes.edits', { n: file.edits })));
+  if (!store.get('changesTree', true)) {
+    list.replaceChildren(...files.map((file) => fileRow(tab, file, file.label, 0)));
+    return;
   }
-  node.append(summary);
-  // Filled on first open: a diff of thousands of lines for every file would slow the view down.
-  node.fill = () => {
-    if (node.dataset.filled) return;
-    node.dataset.filled = '1';
-    const note = file.note ? t(`changes.note.${file.note}`)
-      : !file.known ? t('changes.note.unknown')
-        : file.status === 'gone' ? t('changes.note.gone')
-          : file.status === 'unchanged' ? t('changes.note.unchanged') : '';
-    if (note) node.append(el('p', 'change-note', note));
-    if (file.net?.length) node.append(netDiff(file.net));
-    if (!file.steps.length) return;
-    // What each Edit or Write call did, in order; open from the start when there is no before.
-    const steps = el('details', 'change-steps');
-    steps.open = !file.known;
-    steps.append(el('summary', '', t('changes.steps', { n: file.steps.length })));
-    for (const step of file.steps) {
-      const when = step.ts ? dates().clock.format(new Date(step.ts)) : '';
-      steps.append(el('div', 'hunk-head', [step.tool, step.replaced && t('changes.replaced'), when].filter(Boolean).join(' · ')));
-      const pre = el('pre', 'diff');
-      for (const line of step.lines) {
-        const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : line === '⋯' ? 'diff-gap' : '';
-        pre.append(el('span', cls, line + '\n'));
+  // Folders with a single folder in them and no files are one row, as in GitLab: group/project.
+  const root = { dirs: new Map(), files: [] };
+  for (const file of files) {
+    const parts = file.label.split('/');
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
+      node = node.dirs.get(part);
+    }
+    node.files.push(file);
+  }
+  const rows = [];
+  const walk = (node, depth) => {
+    for (let [name, dir] of [...node.dirs].sort(([a], [b]) => a.localeCompare(b))) {
+      while (dir.dirs.size === 1 && !dir.files.length) {
+        const [[inner, next]] = dir.dirs;
+        name = `${name}/${inner}`;
+        dir = next;
       }
-      steps.append(pre);
+      const row = el('div', 'mr-row dir');
+      row.style.setProperty('--depth', depth);
+      row.append(icon('folder'), el('span', 'mr-dirname', name));
+      rows.push(row);
+      walk(dir, depth + 1);
     }
-    node.append(steps);
+    for (const file of node.files.sort((a, b) => a.label.localeCompare(b.label))) {
+      rows.push(fileRow(tab, file, file.label.split('/').pop(), depth));
+    }
   };
-  node.open = tab.openFiles.has(file.path);
-  if (node.open) node.fill();
-  node.addEventListener('toggle', () => {
-    if (node.open) {
-      tab.openFiles.add(file.path);
-      node.fill();
-    } else {
-      tab.openFiles.delete(file.path);
-    }
-  });
-  return node;
+  walk(root, 0);
+  list.replaceChildren(...rows);
+}
+
+function fileRow(tab, file, name, depth) {
+  const row = el('div', `mr-row file ${file.status}`);
+  row.style.setProperty('--depth', depth);
+  row.title = file.path;
+  row.tabIndex = 0;
+  row.append(icon('file'), middleEllipsis(name));
+  if (file.added != null && (file.added || file.removed)) {
+    row.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `-${file.removed}`));
+  }
+  row.append(statusIcon(file.status));
+  const go = () => {
+    const block = tab.mrBlocks.get(file.path);
+    if (!block) return;
+    if (tab.collapsed.delete(file.path)) block.setCollapsed(false);
+    tab.mrMain.scrollTop = block.offsetTop - tab.mrMain.offsetTop;
+  };
+  row.onclick = go;
+  row.onkeydown = (ev) => { if (ev.key === 'Enter') go(); };
+  return row;
+}
+
+// Long names keep their end in view: "DeliveryQuant…tyHelper.php", as in GitLab.
+function middleEllipsis(name) {
+  const box = el('span', 'mid');
+  const cut = name.length > 16 ? name.length - 12 : name.length;
+  box.append(el('span', 'mid-a', name.slice(0, cut)), el('span', 'mid-b', name.slice(cut)));
+  return box;
+}
+
+const STATUS_ICONS = {
+  added: '<path d="M12 8.5v7M8.5 12h7"/>',
+  modified: '<circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/>',
+  deleted: '<path d="M8.5 12h7"/>',
+};
+
+function statusIcon(status) {
+  const box = el('span', `status-icon ${status}`);
+  box.title = t(`changes.status.${status}`);
+  const inner = STATUS_ICONS[status === 'gone' ? 'deleted' : status] || '';
+  box.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="3"/>${inner}</svg>`;
+  return box;
 }
 
 // The commits made while the chat ran, newest first, like the commits tab of a merge request.
@@ -1805,19 +1931,306 @@ function commitList(tab, commits) {
   return box;
 }
 
-// The file's diff from before the chat to now, with old and new line numbers as in a merge request.
-function netDiff(rows) {
+// ---- diffs --------------------------------------------------------------------------------
+
+function fileBlock(tab, file) {
+  const block = el('section', `mr-file ${file.status}`);
+  const head = el('header', 'mr-file-head');
+  const toggle = el('button', 'icon-btn');
+  const path = el('span', 'mr-file-path');
+  const slash = file.label.lastIndexOf('/');
+  path.append(el('span', 'muted', file.label.slice(0, slash + 1)), el('strong', '', file.label.slice(slash + 1)));
+  path.title = file.path;
+  head.append(toggle, statusIcon(file.status), path);
+  if (file.status === 'gone' || file.status === 'unchanged') head.append(el('span', `status-text ${file.status}`, t(`changes.status.${file.status}`)));
+  if (file.source === 'git') {
+    const via = el('span', 'change-via', t('changes.viaShell'));
+    via.title = t('changes.viaShellHint');
+    head.append(via);
+  }
+  if (file.added != null && (file.added || file.removed)) {
+    head.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `−${file.removed}`));
+  }
+  const body = el('div', 'mr-file-body');
+  block.append(head, body);
+  block.setCollapsed = (collapsed) => {
+    block.classList.toggle('collapsed', collapsed);
+    toggle.replaceChildren(icon(collapsed ? 'chevronRight' : 'chevronDown'));
+    toggle.title = t(collapsed ? 'changes.expand' : 'changes.collapse');
+    if (!collapsed) block.fill();
+  };
+  head.onclick = (ev) => {
+    if (ev.target.closest('a')) return;
+    const collapsed = !block.classList.contains('collapsed');
+    if (collapsed) tab.collapsed.add(file.path); else tab.collapsed.delete(file.path);
+    block.setCollapsed(collapsed);
+  };
+  block.fill = () => {
+    if (block.dataset.filled || block.classList.contains('collapsed')) return;
+    block.dataset.filled = '1';
+    fillFile(tab, file, body);
+  };
+  block.setCollapsed(tab.collapsed.has(file.path));
+  return block;
+}
+
+function fillFile(tab, file, body) {
+  const note = file.note ? t(`changes.note.${file.note}`)
+    : !file.known ? t('changes.note.unknown')
+      : file.status === 'gone' ? t('changes.note.gone')
+        : file.status === 'unchanged' ? t('changes.note.unchanged')
+          : !file.net?.length ? t('changes.note.empty') : '';
+  const parts = [];
+  if (note) parts.push(el('p', 'change-note', note));
+  if (file.net?.length) parts.push(diffTable(tab, file));
+  else if (!file.known && file.steps.length) parts.push(...file.steps.map(stepBlock));
+  body.replaceChildren(...parts);
+}
+
+// What one Edit or Write call did; shown only for a file whose state before the chat is not known.
+function stepBlock(step) {
+  const box = el('div', 'mr-step');
+  const when = step.ts ? dates().clock.format(new Date(step.ts)) : '';
+  box.append(el('div', 'hunk-head', [step.tool, step.replaced && t('changes.replaced'), when].filter(Boolean).join(' · ')));
+  const pre = el('pre', 'diff');
+  for (const line of step.lines) {
+    const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : line === '⋯' ? 'diff-gap' : '';
+    pre.append(el('span', cls, line + '\n'));
+  }
+  box.append(pre);
+  return box;
+}
+
+// A row's place for a comment: its line in the new file, or in the old one for a removed line.
+const rowAnchor = (row) => (row[2] != null ? { side: 'new', line: row[2] } : { side: 'old', line: row[1] });
+const findRow = (rows, anchor) => rows.findIndex((row) => row[0] !== '@'
+  && (anchor.side === 'new' ? row[2] === anchor.line : row[2] == null && row[1] === anchor.line));
+
+// The diff with old and new line numbers. Click a number to comment, Shift+click for a range.
+function diffTable(tab, file) {
+  const rows = file.net;
   const box = el('div', 'net-diff');
   const table = el('div', 'net-rows');
-  for (const [kind, oldNo, newNo, text] of rows) {
+  const digits = String(Math.max(...rows.map((r) => Math.max(r[1] || 0, r[2] || 0)))).length;
+  table.style.setProperty('--lnw', `${digits + 1}ch`);
+  const nodes = rows.map(([kind, oldNo, newNo, text], i) => {
     const cls = { '+': 'add', '-': 'del', '@': 'hunk' }[kind] || '';
     const row = el('div', `dl ${cls}`);
-    row.append(el('span', 'ln', oldNo ?? ''), el('span', 'ln', newNo ?? ''),
-      el('span', 'sign', kind === '@' ? '' : kind), el('span', 'code', text));
-    table.append(row);
+    if (kind === '@') {
+      row.append(el('span', 'code hunk-text', text));
+      return row;
+    }
+    const gutter = el('span', 'ln-pair');
+    gutter.append(el('span', 'ln', oldNo ?? ''), el('span', 'ln', newNo ?? ''));
+    const add = el('button', 'cbtn');
+    add.title = t('review.addHint');
+    add.append(icon('comment'));
+    gutter.append(add);
+    gutter.onclick = (ev) => selectRows(tab, file, i, ev.shiftKey);
+    row.append(gutter, el('span', 'sign', kind === ' ' ? '' : kind), el('span', 'code', text));
+    return row;
+  });
+  table.append(...nodes);
+  // Saved comments under their last line; those whose lines left the diff on top.
+  const lost = [];
+  for (const comment of reviewOf(tab).filter((c) => c.path === file.path)) {
+    const at = findRow(rows, comment.to);
+    if (at < 0) lost.push(comment);
+    else nodes[at].after(commentCard(tab, file, comment));
   }
+  if (lost.length) table.prepend(...lost.map((c) => commentCard(tab, file, c, true)));
   box.append(table);
+  file.nodes = nodes;
   return box;
+}
+
+function selectRows(tab, file, index, extend) {
+  const prev = tab.mrSelection;
+  const from = extend && prev && prev.path === file.path ? Math.min(prev.from, index) : index;
+  const to = extend && prev && prev.path === file.path ? Math.max(prev.from, index) : index;
+  closeCommentForm(tab);
+  tab.mrSelection = { path: file.path, from, to };
+  file.nodes.forEach((node, i) => node.classList.toggle('sel', i >= from && i <= to && file.net[i][0] !== '@'));
+  const rows = file.net;
+  const ends = [rows.slice(from, to + 1).find((r) => r[0] !== '@'), [...rows.slice(from, to + 1)].reverse().find((r) => r[0] !== '@')];
+  if (!ends[0]) return;
+  const form = commentForm(tab, '', (text) => {
+    reviewOf(tab).push({ id: crypto.randomUUID(), path: file.path, label: file.label, from: rowAnchor(ends[0]),
+      to: rowAnchor(ends[1]), text, code: codeLines(rows, from, to) });
+    saveReview(tab);
+    afterReviewChange(tab, file);
+  });
+  file.nodes[to].after(form);
+  form.querySelector('textarea').focus();
+}
+
+function codeLines(rows, from, to) {
+  return rows.slice(from, to + 1).filter((r) => r[0] !== '@').map((r) => `${r[0] === ' ' ? ' ' : r[0]}${r[3]}`);
+}
+
+function commentForm(tab, initial, onSave) {
+  const form = el('div', 'cform');
+  const area = el('textarea');
+  area.value = initial;
+  area.rows = 3;
+  area.placeholder = t('review.placeholder');
+  const actions = el('div', 'cform-actions');
+  const cancel = el('button', 'btn', t('cancel'));
+  const save = el('button', 'btn primary', t('review.add'));
+  const done = (text) => {
+    closeCommentForm(tab);
+    if (text) onSave(text);
+    else if (tab.changesStale) renderChanges(tab);
+  };
+  cancel.onclick = () => done('');
+  save.onclick = () => done(area.value.trim());
+  area.onkeydown = (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); done(''); }
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); done(area.value.trim()); }
+  };
+  actions.append(cancel, save);
+  form.append(area, actions);
+  return form;
+}
+
+function closeCommentForm(tab) {
+  for (const form of tab.changesInner.querySelectorAll('.cform')) form.remove();
+  for (const node of tab.changesInner.querySelectorAll('.dl.sel')) node.classList.remove('sel');
+  tab.mrSelection = null;
+}
+
+const rangeText = (comment) => {
+  const old = comment.from.side === 'old' && comment.to.side === 'old';
+  const from = comment.from.line;
+  const to = comment.to.line;
+  return t('review.lines', { from, to, same: from === to && comment.from.side === comment.to.side }) + (old ? t('review.oldSide') : '');
+};
+
+function commentCard(tab, file, comment, lost = false) {
+  const card = el('div', 'ccard');
+  const head = el('div', 'ccard-head');
+  head.append(icon('comment'), el('span', '', rangeText(comment)));
+  const edit = el('button', 'icon-btn');
+  edit.title = t('edit');
+  edit.append(icon('pencil'));
+  const remove = el('button', 'icon-btn');
+  remove.title = t('delete');
+  remove.append(icon('trash'));
+  head.append(edit, remove);
+  card.append(head);
+  if (lost) card.append(el('div', 'ccard-lost', t('review.lost')));
+  card.append(el('div', 'ccard-text', comment.text));
+  remove.onclick = () => {
+    tab.review = reviewOf(tab).filter((c) => c.id !== comment.id);
+    saveReview(tab);
+    afterReviewChange(tab, file);
+  };
+  edit.onclick = () => {
+    closeCommentForm(tab);
+    const form = commentForm(tab, comment.text, (text) => {
+      comment.text = text;
+      saveReview(tab);
+      afterReviewChange(tab, file);
+    });
+    card.replaceWith(form);
+    form.querySelector('textarea').focus();
+  };
+  return card;
+}
+
+function afterReviewChange(tab, file) {
+  if (tab.changesStale) {
+    renderChanges(tab);
+    return;
+  }
+  const block = tab.mrBlocks.get(file.path);
+  if (block) fillFile(tab, file, block.querySelector('.mr-file-body'));
+  renderReviewBar(tab);
+}
+
+// ---- sending the comments to Claude -------------------------------------------------------
+
+function renderReviewBar(tab) {
+  const comments = reviewOf(tab);
+  const bar = tab.mrReview;
+  bar.hidden = !comments.length;
+  if (!comments.length) return;
+  const send = el('button', 'btn primary', t(tab.mrSending ? 'review.sending' : 'review.send'));
+  send.disabled = !!tab.mrSending;
+  send.onclick = () => sendReview(tab);
+  const discard = el('button', 'btn', t('review.discard'));
+  discard.onclick = async () => {
+    if (!(await ask({ title: t('review.discardTitle'), text: t('review.discardText', { n: comments.length }), yes: t('review.discard'), danger: true }))) return;
+    tab.review = [];
+    saveReview(tab);
+    renderChanges(tab);
+  };
+  bar.replaceChildren(el('span', 'mr-review-count', t('review.count', { n: comments.length })), discard, send);
+}
+
+function reviewPrompt(tab) {
+  const files = new Map(tab.changes.files.map((f) => [f.path, f]));
+  const parts = [t('review.intro'), ''];
+  reviewOf(tab).forEach((comment, n) => {
+    const file = files.get(comment.path);
+    const rows = file?.net || [];
+    const from = findRow(rows, comment.from);
+    const to = findRow(rows, comment.to);
+    const code = (from >= 0 && to >= from ? codeLines(rows, from, to) : comment.code).slice(0, PROMPT_CODE_LINES);
+    // A path the CLI can open: relative to the chat's folder, else the full one.
+    const where = /^[~/]/.test(comment.label) ? comment.path : comment.label;
+    parts.push(`${n + 1}. ${where}, ${rangeText(comment)}:`, '```diff', ...code, '```', comment.text, '');
+  });
+  return parts.join('\n').trim();
+}
+
+const sleep = (ms) => new Promise((done) => { setTimeout(done, ms); });
+
+// Into this chat's own session: the running terminal, or the chat resumed (claude --resume, the
+// same conversation) once the CLI is ready for input.
+async function sendReview(tab) {
+  const sid = tabSession(tab);
+  if (state.external.has(sid) && !state.bySession.has(sid)) {
+    toast(t('review.external'));
+    return;
+  }
+  tab.mrSending = true;
+  renderReviewBar(tab);
+  try {
+    const text = reviewPrompt(tab);
+    if (!state.bySession.has(sid)) await resumeTab(tab);
+    let row = state.bySession.get(sid);
+    for (let waited = 0; row && row.status !== 'idle' && waited < 60000; waited += 500) {
+      if (row.status === 'exited') break;
+      await sleep(500);
+      await refreshStatus();
+      row = state.bySession.get(sid);
+    }
+    if (!row || row.status !== 'idle') {
+      toast(t('review.notReady'));
+      return;
+    }
+    await api('POST', `/api/terminals/${row.id}/prompt`, { text });
+    tab.review = [];
+    saveReview(tab);
+    renderChanges(tab);
+    setView(tab, 'terminal');
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    tab.mrSending = false;
+    if (tab.mrReview) renderReviewBar(tab);
+  }
+}
+
+// F puts the cursor in the file search, as in GitLab, unless something else takes the key.
+function changesKey(ev) {
+  const tab = activeTab();
+  if (ev.key !== 'f' || ev.ctrlKey || ev.altKey || ev.metaKey || !tab || tab.view !== 'changes' || !tab.mrQuery) return;
+  if (ev.target.closest?.('input, textarea, select, [contenteditable], .xterm')) return;
+  ev.preventDefault();
+  tab.mrQuery.focus();
+  tab.mrQuery.select();
 }
 
 // ---- attachments --------------------------------------------------------------------------
@@ -2424,6 +2837,7 @@ function wire() {
   window.addEventListener('resize', closeMenu);
   $('#session-list').addEventListener('scroll', closeMenu);
   $('#search').addEventListener('input', renderSidebar);
+  document.addEventListener('keydown', changesKey);
 
   // No developer tools from the keyboard: F12, Ctrl+Shift+I/J/C and Ctrl+U (view source); on a Mac
   // Cmd+Option+I/J/C/U. The browser checks with the page before it acts on these. Its own menu in

@@ -17,6 +17,7 @@ from .settings import Settings, tr
 from .terminals import UPLOADS, Terminals
 
 UPLOAD_LIMIT = 50 * 1024 * 1024
+PROMPT_MAX = 100_000  # characters a prompt from the window may have
 WINDOW_TTL = 90  # seconds a window counts as open after its last request; a hidden one polls once a minute
 
 TITLES_FILE = STATE_DIR / "titles.json"
@@ -492,6 +493,25 @@ class Desk:
         for term in terms:
             term.write(report)
         return {"sent": len(terms)}
+
+    def send_prompt(self, terminal_id: str, text) -> dict:
+        """Type a prompt into a session and send it, e.g. the review comments of the changes view.
+
+        As one bracketed paste, so its line breaks stay in the message instead of sending it early.
+        Control characters go: an ESC in it could end the paste and type keys into the CLI.
+        """
+        term = self.terminals.get(terminal_id)
+        if term is None or not term.alive:
+            raise HttpError(404, tr("Diese Session läuft nicht.", "This session is not running."))
+        text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", str(text or "")).strip()
+        if not text:
+            raise HttpError(400, tr("Nichts zu senden", "Nothing to send"))
+        if len(text) > PROMPT_MAX:
+            raise HttpError(413, tr("Text ist zu lang", "The text is too long"))
+        term.write(b"\x1b[200~" + text.encode() + b"\x1b[201~")
+        time.sleep(0.2)  # the CLI takes the paste in first; an Enter in the same read could be part of it
+        term.write(b"\r")
+        return {"ok": True}
 
     def stop_terminal(self, terminal_id: str) -> dict:
         if not self.terminals.stop(terminal_id):

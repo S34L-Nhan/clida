@@ -329,52 +329,106 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .diff-add { color: var(--ok); }
 .diff-gap { color: var(--muted); }
 
-/* ---- changes --------------------------------------------------------------------------- */
+/* ---- changes: a merge request ----------------------------------------------------------- */
 
-.changes-head { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; color: var(--muted); font-size: 13px; }
-.changes-branch { display: inline-flex; gap: 5px; align-items: center; color: var(--text); font-weight: 600; }
+.changes { position: absolute; inset: 0; overflow: hidden; }
+.changes-inner { height: 100%; }
+.mr { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; height: 100%; }
+.mr-files { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--sidebar); }
+.mr-files-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 8px; }
+.mr-files-title { display: flex; gap: 8px; align-items: center; }
+.count-badge { padding: 0 7px; border-radius: 9px; background: var(--active); color: var(--muted); font-size: 12px; }
+.mr-modes { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.mr-modes .icon-btn { border-radius: 0; width: 30px; height: 26px; }
+.mr-modes .icon-btn.on { background: var(--active); color: var(--text); }
+.mr-search { margin: 0 12px 8px; }
+.mr-tree { flex: 1; min-height: 0; overflow: auto; padding: 4px 6px 16px; }
+.mr-none { padding: 12px; color: var(--muted); font-size: 13px; }
+.mr-row { display: flex; gap: 6px; align-items: center; min-width: 0; padding: 3px 8px 3px calc(8px + var(--depth, 0) * 16px); border-radius: 6px; font-size: 13px; white-space: nowrap; }
+.mr-row > svg { flex: none; width: 15px; height: 15px; color: var(--muted); }
+.mr-row.dir { color: var(--text); }
+.mr-row.file { cursor: pointer; }
+.mr-row.file:hover, .mr-row.file:focus-visible { background: var(--hover); outline: none; }
+.mr-row.file .mid { font-weight: 600; }
+.mr-row.deleted .mid, .mr-row.gone .mid { text-decoration: line-through; color: var(--muted); }
+.mr-row .diff-add, .mr-row .diff-del { flex: none; font-size: 12px; }
+.mr-dirname { overflow: hidden; text-overflow: ellipsis; }
+.mid { display: flex; flex: 1; min-width: 0; }
+.mid-a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mid-b { flex: none; white-space: pre; }
+.status-icon { flex: none; display: inline-grid; width: 16px; height: 16px; }
+.status-icon svg { width: 16px; height: 16px; }
+.status-icon.added { color: var(--ok); }
+.status-icon.modified { color: var(--warn); }
+.status-icon.deleted, .status-icon.gone { color: var(--danger); }
+.status-icon.unchanged { color: var(--muted); }
+
+.mr-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.mr-main { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px 80px; }
+.mr-top { margin-bottom: 12px; }
+.changes-sum { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 13px; }
+.changes-sum .muted, .mr-file-path .muted { color: var(--muted); }
+.changes-branch { display: inline-flex; gap: 5px; align-items: center; font-weight: 600; }
 .changes-branch svg { width: 14px; height: 14px; }
-.changes-sum { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-top: 10px; font-size: 14px; }
-.changes-hint { margin: 6px 0 16px; color: var(--muted); font-size: 12px; }
-.change { margin: 6px 0; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); overflow: hidden; }
-.change > summary { display: flex; gap: 10px; align-items: center; padding: 8px 12px; cursor: pointer; font-size: 13px; list-style: none; }
-.change > summary::-webkit-details-marker { display: none; }
-.change > summary:hover { background: var(--hover); }
-.change[open] > summary { border-bottom: 1px solid var(--border); }
-.change-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
-.change.deleted .change-path, .change.gone .change-path { text-decoration: line-through; color: var(--muted); }
-.change-edits { color: var(--muted); font-size: 12px; }
+.mr-hint { color: var(--muted); cursor: help; }
+.status-text { font-size: 12px; }
+.status-text.added { color: var(--ok); }
+.status-text.modified { color: var(--warn); }
+.status-text.deleted, .status-text.gone { color: var(--danger); }
 .change-via { color: var(--muted); font-size: 11px; padding: 1px 6px; border: 1px dashed var(--border); border-radius: 6px; }
-.change-commits { margin: 0 0 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+.change-commits { margin: 10px 0 0; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
 .change-commits > summary { padding: 8px 12px; cursor: pointer; font-size: 13px; }
 .commit { display: flex; gap: 10px; align-items: baseline; padding: 4px 12px; font-size: 13px; border-top: 1px solid var(--border); }
 .commit-sha { flex: none; color: var(--accent); font-size: 12px; }
 .commit-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .commit-when { flex: none; color: var(--muted); font-size: 12px; }
-.status-mark { flex: none; width: 18px; height: 18px; border-radius: 5px; display: inline-grid; place-items: center; font: 600 11px/1 "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--code-bg); }
-.status-mark.added, .status-text.added { color: var(--ok); }
-.status-mark.added { background: color-mix(in srgb, var(--ok) 18%, transparent); }
-.status-mark.modified, .status-text.modified { color: var(--warn); }
-.status-mark.modified { background: color-mix(in srgb, var(--warn) 18%, transparent); }
-.status-mark.deleted, .status-mark.gone, .status-text.deleted, .status-text.gone { color: var(--danger); }
-.status-mark.deleted, .status-mark.gone { background: color-mix(in srgb, var(--danger) 18%, transparent); }
-.status-text { font-size: 12px; }
+
+.mr-review { display: flex; gap: 10px; align-items: center; justify-content: flex-end; padding: 8px 20px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.mr-review-count { flex: 1; font-size: 13px; font-weight: 600; }
+
+.mr-file { margin: 0 0 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+.mr-file-head { position: sticky; top: -16px; z-index: 1; display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); border-radius: 10px 10px 0 0; background: var(--panel); cursor: pointer; font-size: 13px; }
+.mr-file.collapsed .mr-file-head { border-bottom: none; border-radius: 10px; }
+.mr-file.collapsed .mr-file-body { display: none; }
+.mr-file-head .icon-btn { width: 24px; height: 24px; }
+.mr-file-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
+.mr-file.deleted .mr-file-path strong, .mr-file.gone .mr-file-path strong { text-decoration: line-through; }
+.mr-file-body { border-radius: 0 0 10px 10px; overflow: hidden; }
 .change-note { margin: 10px 12px; color: var(--muted); font-size: 12.5px; }
-.net-diff { overflow-x: auto; background: var(--code-bg); font: 12.5px/1.5 "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
-.net-rows { display: table; min-width: 100%; }
-.dl { display: table-row; }
-.dl > span { display: table-cell; white-space: pre; padding: 0 8px; }
-.dl .ln { width: 1%; min-width: 3ch; text-align: right; color: var(--muted); user-select: none; -webkit-user-select: none; opacity: 0.7; }
-.dl .sign { width: 1%; padding: 0 2px 0 6px; user-select: none; -webkit-user-select: none; }
+
+.net-diff { overflow-x: auto; background: var(--code-bg); font: 12.5px/1.55 "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
+.net-rows { width: max-content; min-width: 100%; }
+.dl { display: grid; grid-template-columns: auto 18px 1fr; }
+.dl > span { white-space: pre; }
+.ln-pair { position: relative; display: grid; grid-template-columns: var(--lnw, 4ch) var(--lnw, 4ch); cursor: pointer; user-select: none; -webkit-user-select: none; }
+.ln { padding: 0 6px; text-align: right; color: var(--muted); opacity: 0.75; }
+.ln-pair:hover .ln { color: var(--accent); opacity: 1; }
+.cbtn { position: absolute; left: -2px; top: 50%; transform: translateY(-50%); display: none; width: 20px; height: 18px; padding: 0; border: none; border-radius: 5px; background: var(--accent); color: var(--accent-text); cursor: pointer; }
+.cbtn svg { width: 13px; height: 13px; }
+.dl:hover .cbtn { display: inline-grid; place-items: center; }
+.dl .sign { padding: 0 2px 0 6px; user-select: none; -webkit-user-select: none; }
+.dl .code { padding-right: 16px; }
 .dl.add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
 .dl.add .sign { color: var(--ok); }
 .dl.del { background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .dl.del .sign { color: var(--danger); }
-.dl.hunk > span { color: var(--muted); background: color-mix(in srgb, var(--accent) 8%, transparent); padding-top: 2px; padding-bottom: 2px; }
-.change-steps { margin: 8px 12px 12px; }
-.change-steps > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.dl.hunk { display: block; padding: 2px 10px; color: var(--muted); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.dl.sel { box-shadow: inset 3px 0 0 var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+
+.cform, .ccard { position: sticky; left: 0; box-sizing: border-box; width: min(720px, calc(var(--mr-width, 800px) - 120px)); margin: 6px 10px 8px 60px; font: 13px/1.5 system-ui, sans-serif; white-space: normal; }
+.cform textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; resize: vertical; }
+.cform-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+.ccard { padding: 8px 10px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel); }
+.ccard-head { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
+.ccard-head span { flex: 1; }
+.ccard-head svg { width: 14px; height: 14px; }
+.ccard-head .icon-btn { width: 24px; height: 24px; }
+.ccard-lost { color: var(--warn); font-size: 12px; }
+.ccard-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.mr-step { margin: 8px 12px 12px; }
 .hunk-head { padding: 6px 0 0; color: var(--muted); font-size: 11px; }
-.change-steps pre.diff { margin: 4px 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--code-bg); overflow-x: auto; white-space: pre; font-size: 12.5px; }
+.mr-step pre.diff { margin: 4px 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--code-bg); overflow-x: auto; white-space: pre; font-size: 12.5px; }
 .cost-today { padding: 2px 10px 6px; color: var(--muted); font-size: 12px; }
 .thinking { margin: 6px 0; font-size: 13px; font-style: italic; }
 
