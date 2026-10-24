@@ -397,7 +397,8 @@ def fork(path: str, message: str, before: bool, new_id: str) -> str:
 
 
 def _tool_summary(name: str, inp: dict) -> str:
-    for key in ("command", "file_path", "path", "pattern", "url", "query", "description", "skill", "prompt"):
+    for key in ("command", "file_path", "notebook_path", "path", "pattern", "url", "query", "description", "skill",
+                "prompt"):
         value = inp.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip().splitlines()[0][:200]

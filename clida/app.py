@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import STATE_DIR, browser, gitrepo, locate, registry, storage, transcripts
 from .library import Library
+from .lru import Lru
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .search import Search
 from .settings import Settings, tr
@@ -115,6 +116,9 @@ class Desk:
         self.repo_changes = gitrepo.RepoChanges()
         self.worktrees = Worktrees()
         self.search = Search()
+        self._real = Lru(4000)  # folder -> its real path, for a minute (sessions() asks every 20 s)
+        self._rewinding = set()  # chats whose files the CLI is putting back now
+        self._rewinding_lock = threading.Lock()
         # New on every start: an open window that sees it change reloads, with the new code.
         self.boot = secrets.token_hex(6)
         self._windows = {}  # window id -> time of its last request (monotonic)
@@ -184,18 +188,27 @@ class Desk:
                 del self._windows[window_id]
             return len(self._windows)
 
+    def _realpath(self, path: str) -> str:
+        """os.path.realpath, kept a minute: on WSL a folder under /mnt costs a round trip per part."""
+        minute = int(time.monotonic() // 60)
+        real = self._real.get(path, minute)
+        if real is None:
+            real = os.path.realpath(path)
+            self._real.put(path, minute, real)
+        return real
+
     def sessions(self) -> dict:
         infos = self.index.scan()
         library = self.library.snapshot()
         notes = self.notes.session_previews()
         usage = self.index.usage()
         worktrees = self.worktrees.all()
-        roots = [(os.path.realpath(e["path"]) + "/", sid) for sid, e in worktrees.items()]
+        roots = [(self._realpath(e["path"]) + "/", sid) for sid, e in worktrees.items()]
 
         def worktree_of(sid, cwd):
             # Its own, or the one its folder is in: after /clear or /resume the CLI went on under a new id.
             if sid not in worktrees and cwd and roots:
-                real = os.path.realpath(cwd) + "/"
+                real = self._realpath(cwd) + "/"
                 sid = next((owner for root, owner in roots if real.startswith(root)), sid)
             entry = worktrees.get(sid)
             return {"branch": entry["branch"], "repo": os.path.basename(entry["repo"])} if entry else None
@@ -362,6 +375,9 @@ class Desk:
             if not transcripts.SESSION_ID.fullmatch(str(resume)):
                 raise HttpError(400, tr("Ungültige Session-ID", "Invalid session id"))
             info = self._require_session(resume)
+            if resume in self._rewinding:
+                raise HttpError(409, tr("Die Dateien werden gerade zurückgesetzt; bitte gleich noch einmal.",
+                                        "The files are being restored; please try again in a moment."))
             cwd = info["cwd"]
             if not cwd or not os.path.isdir(cwd):
                 raise HttpError(400, tr("Arbeitsverzeichnis existiert nicht mehr: ",
@@ -498,9 +514,21 @@ class Desk:
         """
         message, _ = self._message(body, roles=("user",))
         info = self._chat_folder(session_id)
-        if self._running(session_id):
-            raise HttpError(409, tr("Diese Sitzung läuft noch. Bitte zuerst beenden.",
-                                    "This session is still running. Please stop it first."))
+        with self._rewinding_lock:
+            if session_id in self._rewinding:
+                raise HttpError(409, tr("Die Dateien werden gerade schon zurückgesetzt.",
+                                        "The files are being restored already."))
+            if self._running(session_id):
+                raise HttpError(409, tr("Diese Sitzung läuft noch. Bitte zuerst beenden.",
+                                        "This session is still running. Please stop it first."))
+            self._rewinding.add(session_id)
+        try:
+            return self._rewind(session_id, info, message)
+        finally:
+            with self._rewinding_lock:
+                self._rewinding.discard(session_id)
+
+    def _rewind(self, session_id: str, info, message: str) -> dict:
         # Checkpoints are on in the interactive CLI; a run like this one needs to ask for them.
         env = {**child_env(), "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1"}
         try:
@@ -541,6 +569,17 @@ class Desk:
         return {"ok": True}
 
     def delete_session(self, session_id: str) -> dict:
+        worktree = self.worktrees.get(session_id)
+        if worktree and os.path.isdir(worktree["path"]):
+            # The chat is the only way to its worktree: without it, folder and branch would stay
+            # behind where nothing lists them.
+            raise HttpError(409, tr("Dieser Chat hat noch seinen Worktree. Bitte ihn erst entfernen (Leiste unter der "
+                                    "Überschrift), nach dem Mergen, wenn die Arbeit bleiben soll.",
+                                    "This chat still has its worktree. Please remove it first (the bar under the "
+                                    "heading), after merging if the work is to stay."))
+        if self.index.get(session_id) is None and worktree:
+            self.worktrees.forget(session_id)  # listed for a worktree that is gone: nothing else to delete
+            return {"ok": True}
         self._require_session(session_id)
         status = self.status()
         running = [t for t in status["terminals"] if t["session_id"] == session_id and t["status"] != "exited"]
@@ -703,9 +742,9 @@ class Desk:
             # Typed, not pasted: the CLI shows a paste of a few lines as "[Pasted text #1]", which
             # cannot be changed. A line break is Esc+Enter (a new line, not send), and the text goes
             # in small pieces, as a burst would be taken for a paste again.
-            data = text.replace("\t", "    ").replace("\n", "\x1b\r").encode()
-            for at in range(0, len(data), 64):
-                term.write(data[at:at + 64])
+            keys = ["\x1b\r" if ch == "\n" else "    " if ch == "\t" else ch for ch in text]
+            for at in range(0, len(keys), 48):  # whole characters, and Esc+Enter as one
+                term.write("".join(keys[at:at + 48]).encode("utf-8", "replace"))
                 time.sleep(0.01)
             return {"ok": True}
         term.write(b"\x1b[200~" + text.encode() + b"\x1b[201~")

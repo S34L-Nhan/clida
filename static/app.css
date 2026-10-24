@@ -549,6 +549,7 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
 .chip:hover { color: var(--text); border-color: var(--accent); }
 .dialog .check-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; cursor: pointer; }
 .dialog .check-row input { width: auto; height: auto; margin: 0; accent-color: var(--accent); }
+.dialog .check-row input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .dialog .dialog-hint { margin: 4px 0 0 24px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .ask-files { display: block; max-height: 180px; overflow-y: auto; margin-top: 10px; font-size: 12.5px; line-height: 1.6; }
 .error { color: var(--danger); min-height: 1.2em; margin: 10px 0 0; font-size: 13px; }
@@ -736,7 +737,9 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
   opacity: 0;  /* not display: none, which would also take the buttons out of the keyboard's reach */
 }
 .msg-wrap.user .msg-tools { right: auto; left: 0; }
-.msg-wrap:hover .msg-tools, .msg-wrap .msg-tools:focus-within { opacity: 1; }
+.msg-wrap:hover .msg-tools, .msg-wrap .msg-tools:has(:focus-visible) { opacity: 1; }
+/* An answer that starts with code: its copy button stays clear of the tools. */
+.msg-wrap.assistant > .msg > .codeblock:first-child .codeblock-bar { padding-right: 72px; }
 .msg-tools .icon-btn { width: 28px; height: 28px; background: var(--panel); border: 1px solid var(--border); }
 .msg-tools .icon-btn:hover { background: var(--hover); }
 .msg-tools .icon-btn svg { width: 15px; height: 15px; }

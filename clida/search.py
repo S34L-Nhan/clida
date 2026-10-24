@@ -141,9 +141,10 @@ class Search:
                     continue
                 try:
                     self._read(db, key, path.stem, st, known.get(key))
-                except sqlite3.DatabaseError:
-                    raise
-                except Exception:  # one odd file must not stop the search
+                except Exception as e:  # one odd file must not stop the search
+                    if isinstance(e, sqlite3.DatabaseError) and _damaged(e):
+                        raise
+                    db.rollback()  # none of it half taken in: the file is read again next time
                     traceback.print_exc()
         for key in set(known) - seen:
             self._drop(db, key)
@@ -190,7 +191,10 @@ class Search:
                 _render_entry(entry, items, {})
             except (AttributeError, TypeError, ValueError):
                 continue  # written by another program: skip what does not have the expected shape
-            rows += [(item["text"], session_id, item["uid"], item["k"], item.get("ts"), key)
+            # Written by another program: a lone surrogate (half an emoji) cannot be stored, a
+            # timestamp may be anything.
+            rows += [(item["text"].encode("utf-8", "replace").decode(), session_id, item["uid"], item["k"],
+                      item.get("ts") if isinstance(item.get("ts"), str) else None, key)
                      for item in items if item["k"] in ("user", "assistant") and item.get("uid")]
         if rows:
             first = (db.execute("SELECT max(rowid) FROM msgs").fetchone()[0] or 0) + 1
@@ -244,5 +248,9 @@ class Search:
 
 
 def _damaged(error) -> bool:
-    """A file that is no index (or no longer one), not a passing trouble like a lock."""
-    return not isinstance(error, sqlite3.OperationalError) or "malformed" in str(error) or "not a database" in str(error)
+    """A file that is no index (or no longer one): not a passing trouble like a lock, nor a value
+    that could not be stored."""
+    if isinstance(error, (sqlite3.OperationalError, sqlite3.ProgrammingError, sqlite3.IntegrityError,
+                          sqlite3.InterfaceError)):
+        return "malformed" in str(error) or "not a database" in str(error)
+    return isinstance(error, sqlite3.DatabaseError)

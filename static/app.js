@@ -162,16 +162,19 @@ function enhanceCodeBlock(pre) {
   box.append(bar, pre);
 }
 
+// True if the text got there: without the window's focus a browser refuses both ways.
 async function writeClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
+    return true;
   } catch {
     const area = el('textarea');
     area.value = text;
     document.body.append(area);
     area.select();
-    document.execCommand('copy');
+    const done = document.execCommand('copy');
     area.remove();
+    return done;
   }
 }
 
@@ -206,11 +209,13 @@ const staleServer = (status, data) => status === 404 && (data?.code === 'no_rout
 // opens a new one only when none is open. Closing the window says so (see wire).
 const WINDOW_ID = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
-async function api(method, path, body) {
+// timeout (ms): give up on an answer that does not come, as WSL's localhost relay can hang.
+async function api(method, path, body, { timeout = 0 } = {}) {
   const res = await fetch(path, {
     method,
     headers: { 'X-Clida-Window': WINDOW_ID, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
+    signal: timeout ? AbortSignal.timeout(timeout) : undefined,
   });
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
@@ -266,7 +271,7 @@ async function refreshStatus() {
   const asked = Date.now();
   const seq = ++state.statusAsked;
   try {
-    const data = await api('GET', '/api/status');
+    const data = await api('GET', '/api/status', null, { timeout: 8000 });  // the clock waits for it
     setOnline(true);
     if (seq < state.statusShown) return;  // a newer answer is shown already
     state.statusShown = seq;
@@ -282,11 +287,16 @@ async function refreshStatus() {
   paint();
   if (finished) {
     refreshSessions();
-    const tab = activeTab();
-    if (tab && tab.view === 'history' && tab.loaded) loadHistory(tab, { quiet: true });
-    for (const other of state.tabs) if (other !== tab && other.loaded) other.stale = true;  // reload when shown
-    for (const other of state.tabs) loadChanges(other);  // the header and the switch show its counts
+    afterTurn();
   }
+}
+
+// A session finished a turn (or waits, or ended): what shows its work loads again.
+function afterTurn() {
+  const tab = activeTab();
+  if (tab && tab.view === 'history' && tab.loaded) loadHistory(tab, { quiet: true });
+  for (const other of state.tabs) if (other !== tab && other.loaded) other.stale = true;  // reload when shown
+  for (const other of state.tabs) loadChanges(other);  // the header and the switch show its counts
 }
 
 // The tab's terminal is gone (server restart, or forgotten after it ended): it shows the chat's
@@ -322,12 +332,14 @@ async function refreshSessions() {
   state.byId = new Map(data.sessions.map((s) => [s.id, s]));
   state.folders = data.folders || [];
   state.costToday = data.cost_today ?? null;
+  let finished = false;
   if (statusSeq >= state.statusShown) {
     state.statusShown = statusSeq;
-    applyStatus(data);
+    finished = applyStatus(data);  // this load may be the first to see a turn end
   }
   if (!state.renaming && !state.dragging) renderSidebar();
   paint();
+  if (finished) afterTurn();
 }
 
 // Change sidebar data on the server. Loads that are still on the way carry the old state,
@@ -467,8 +479,11 @@ function matchesSearch(s, query) {
 }
 
 const searchQuery = () => $('#search').value.trim().toLowerCase();
-// The chat's best matching message for this search, once the server has answered for it.
-const hitFor = (sid, query) => (query && state.hits.query === query ? state.hits.map.get(sid) : null) || null;
+// The chat's best matching message for this search, once the server has answered for it. While
+// the answer for a longer query is on its way, the shorter one's stand in: chats found only by
+// their messages would otherwise blink out with every key.
+const hitFor = (sid, query) => (query && state.hits.query && query.startsWith(state.hits.query)
+  ? state.hits.map.get(sid) : null) || null;
 
 // ---- searching what was said ----------------------------------------------------------------
 // From three characters on, the search also looks through every chat's messages on the server
@@ -518,7 +533,7 @@ function revealMessage(tab) {
   tab.jumpTo = null;
   const index = tab.items.findIndex((item) => item.uid === uid);
   if (index < 0) {
-    toast(t('search.notShown'));
+    toast(t(tab.truncated ? 'search.tooEarly' : 'search.notShown'));  // the history sends the latest entries only
     return;
   }
   if (!tab.showAll && index < tab.items.length - HISTORY_WINDOW) {
@@ -1388,6 +1403,8 @@ function paintView(tab) {
   tab.hist.hidden = showTerm || showChanges;
   tab.changesPane.hidden = !showChanges;
   tab.termWrap.hidden = !showTerm;
+  // A tab opened before any answer knew its terminal: attach it once the row is there.
+  if (showTerm && row.status !== 'exited' && !tab.term && tab.id === state.active) ensureTerminal(tab);
   renderWorktreeBar(tab);
 }
 
@@ -1417,6 +1434,7 @@ const notifySupported = () => 'Notification' in window;
 function applyNotifications(level) {
   notifyLevel = level;
   store.set('notifications', level);
+  if (level === 'off') state.notifyRequest?.cancel();
   askNotifyPermission();
 }
 
@@ -1426,16 +1444,25 @@ function askNotifyPermission() {
   if (notifyLevel === 'off' || !notifySupported() || Notification.permission !== 'default' || state.notifyAsking) return;
   if ((state.notifyAsked || 0) >= 3) return;
   state.notifyAsking = true;
-  const request = () => {
+  const cancel = () => {
     window.removeEventListener('pointerdown', request, true);
     window.removeEventListener('keydown', request, true);
+    state.notifyRequest = null;
+    state.notifyAsking = false;
+  };
+  const request = () => {
+    cancel();
+    if (notifyLevel === 'off') return;
+    state.notifyAsking = true;
     state.notifyAsked = (state.notifyAsked || 0) + 1;
     Notification.requestPermission().catch(() => {}).finally(() => {
       state.notifyAsking = false;
-      if ($('#settings-dialog').open) renderSettings();  // its hint says whether they are allowed
+      // Its hint says whether they are allowed now; the focus stays on the setting.
+      if ($('#settings-dialog').open) renderSettings(document.activeElement?.id?.replace(/^setting-/, '') || null);
       askNotifyPermission();  // dismissed: still "default"
     });
   };
+  state.notifyRequest = { cancel };
   window.addEventListener('pointerdown', request, true);
   window.addEventListener('keydown', request, true);
 }
@@ -1492,6 +1519,7 @@ function renderWorktreeBar(tab) {
   if (signature === tab.worktreeSignature) return;  // painted every 2 s: keep focus and hover
   tab.worktreeSignature = signature;
   const bar = tab.worktreeBar;
+  const focused = bar.contains(document.activeElement) ? document.activeElement.dataset.role : null;
   bar.hidden = !wt;
   if (!wt) {
     bar.replaceChildren();
@@ -1509,21 +1537,34 @@ function renderWorktreeBar(tab) {
     if (wt.dirty) facts.push(t('worktree.dirty', { n: wt.dirty }));
     if (wt.behind) facts.push(t('worktree.behind', { n: wt.behind, base: wt.base }));
     if (wt.base_missing) facts.push(t('worktree.baseMissing', { base: wt.base }));
+    if (wt.head !== null && wt.head !== undefined) facts.push(wt.head ? t('worktree.otherBranch', { head: wt.head }) : t('worktree.detachedHead'));
   }
   const info = el('span', 'worktree-facts', facts.join(' · '));
   const actions = el('span', 'worktree-actions');
   if (wt.exists && wt.base) {
     const merge = el('button', 'btn', t('worktree.merge', { base: wt.base }));
+    merge.dataset.role = 'merge';
     merge.title = t('worktree.mergeHint');
     merge.disabled = !!tab.worktreeBusy;
     merge.onclick = () => mergeWorktree(tab);
     actions.append(merge);
   }
   const remove = el('button', 'btn danger', t('worktree.remove'));
+  remove.dataset.role = 'remove';
   remove.disabled = !!tab.worktreeBusy;
   remove.onclick = () => removeWorktree(tab);
   actions.append(remove);
   bar.replaceChildren(where, info, actions);
+  // A rebuilt button keeps the keyboard focus (back from its question, or busy and done);
+  // while it is disabled the bar holds it.
+  if (focused) {
+    const again = bar.querySelector(`[data-role="${focused}"]`);
+    if (again && !again.disabled) again.focus();
+    else {
+      bar.tabIndex = -1;
+      bar.focus();
+    }
+  }
 }
 
 async function worktreeAction(tab, method, path) {
@@ -1557,7 +1598,7 @@ async function removeWorktree(tab) {
   if (wt.dirty) text.push(' ', t('worktree.removeDirty', { n: wt.dirty }));
   // Commits no other branch has, whatever the base: deleting the branch loses them.
   if (wt.unmerged) text.push(' ', t('worktree.removeUnmerged', { n: wt.unmerged }));
-  else if (wt.exists && wt.unmerged == null) text.push(' ', t('worktree.removeUnknown'));
+  else if (wt.unmerged == null) text.push(' ', t('worktree.removeUnknown'));
   if (!(await ask({ title: t('worktree.removeTitle'), text, yes: t('worktree.remove'), danger: true }))) return;
   try {
     await worktreeAction(tab, 'DELETE', 'worktree');
@@ -2044,8 +2085,8 @@ async function typeWhenReady(terminalId, text) {
       }
     }
   }
-  await writeClipboard(text);
-  toast(t(text.length > TYPED_MAX ? 'fork.copiedLong' : 'fork.copied'));
+  if (!(await writeClipboard(text))) toast(t('fork.notCopied'));
+  else toast(t(text.length > TYPED_MAX ? 'fork.copiedLong' : 'fork.copied'));
 }
 
 async function rewindTo(tab, item) {
@@ -3275,7 +3316,7 @@ function notifyNote() {
   if (notifyLevel === 'off') return null;
   if (!notifySupported()) return t('notify.unsupported');
   if (Notification.permission === 'denied') return t('notify.denied');
-  if (Notification.permission === 'default') return t('notify.ask');
+  if (Notification.permission === 'default') return t((state.notifyAsked || 0) >= 3 ? 'notify.notAsked' : 'notify.ask');
   return null;
 }
 
@@ -3533,6 +3574,7 @@ function wire() {
   $('#session-list').addEventListener('scroll', closeMenu);
   $('#search').addEventListener('input', () => {
     renderSidebar();
+    paintSidebar();
     searchMessages();
   });
   document.addEventListener('keydown', changesKey);
@@ -3638,7 +3680,8 @@ async function start() {
   await loadSettings();
   await refreshSessions();
   const wanted = store.get('active', null);  // read first: addTab saves the tabs, and the active one with them
-  for (const saved of store.get('tabs', [])) {
+  const savedTabs = store.get('tabs', []);
+  for (const saved of savedTabs) {
     if (!saved || findTab(saved.id)) continue;
     const sid = saved.sid || saved.id;
     const view = ['terminal', 'changes'].includes(saved.view) ? saved.view : 'history';
@@ -3647,7 +3690,7 @@ async function start() {
   }
   const linked = location.hash.slice(1);
   // A terminal gone with a restart: its chat now sits in a history tab of its own id.
-  const wantedSid = store.get('tabs', []).find((saved) => saved?.id === wanted)?.sid;
+  const wantedSid = savedTabs.find((saved) => saved?.id === wanted)?.sid;
   if (state.byId.has(linked) || state.bySession.has(linked)) {
     history.replaceState(null, '', location.pathname);
     openSession(linked);

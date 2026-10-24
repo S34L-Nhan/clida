@@ -52,11 +52,8 @@ def _run(cwd, *args, timeout=30, ok=(0,)):
 
 
 def _main_checkout(cwd: str):
-    """The repository's main worktree, also when cwd is in a linked one: worktrees go next to it.
-    For a submodule, the superproject's: a folder beside the submodule would land inside it."""
-    superproject = (git(cwd, "rev-parse", "--show-superproject-working-tree") or "").strip()
-    if superproject:
-        return superproject
+    """The repository's main worktree, also when cwd is in a linked one: git commands about the
+    chat's worktree run there, and its folder goes next to it."""
     common = (git(cwd, "rev-parse", "--git-common-dir") or "").strip()
     if not common:
         return None
@@ -84,11 +81,13 @@ def _in_progress(checkout: str):
     return None
 
 
-def _unmerged(path: str, branch: str):
-    """Commits on branch that no other branch has: what deleting it would lose. None: unknown."""
+def _unmerged(where: str, branch: str, head: bool):
+    """Commits no other branch has: what removing the worktree and branch would lose. head: the
+    worktree's HEAD too (run in the worktree), where commits on a detached HEAD or another branch
+    would be lost along with it. None: unknown."""
+    tips = (["HEAD"] if head else []) + [f"refs/heads/{branch}"]
     # --exclude before --branches names the branch without refs/heads/ (see git rev-parse).
-    count = git(path, "rev-list", "--count", f"refs/heads/{branch}", "--not", f"--exclude={branch}", "--branches",
-                timeout=5)
+    count = git(where, "rev-list", "--count", *tips, "--not", f"--exclude={branch}", "--branches", timeout=5)
     return int(count) if count and count.strip().isdigit() else None
 
 
@@ -138,10 +137,14 @@ class Worktrees:
             raise WorktreeError(tr("Das Repository hat noch keinen Commit.", "The repository has no commit yet."))
         base = (git(top, "symbolic-ref", "--short", "-q", "HEAD", ok=(0, 1)) or "").strip() or None
         main = _main_checkout(top) or top
-        home = os.path.join(os.path.dirname(main), os.path.basename(main) + ".worktrees")
+        # A submodule's worktrees go beside the superproject (beside the submodule would be inside
+        # it), named after the submodule; git still works in the submodule's own repository.
+        superproject = (git(top, "rev-parse", "--show-superproject-working-tree") or "").strip()
+        beside = superproject or main
+        home = os.path.join(os.path.dirname(beside), os.path.basename(beside) + ".worktrees")
         slug = _slug(name, session_id[:8])
-        if (git(top, "rev-parse", "--show-superproject-working-tree") or "").strip():
-            slug = f"{_slug(os.path.basename(top), 'sub')}-{slug}"  # beside the superproject's: by submodule
+        if superproject:
+            slug = f"{_slug(os.path.basename(top), 'sub')}-{slug}"
         with self._creating:
             # Nor a folder another chat's record names: deleted by hand, it would be found for both.
             recorded = {e["path"] for e in self.all().values()}
@@ -163,8 +166,7 @@ class Worktrees:
             except WorktreeError:
                 # A failing post-checkout hook (git-lfs missing, say) or the timeout can leave the
                 # folder and the branch behind; nothing would list them, so they go again.
-                git(top, "worktree", "remove", "--force", path, timeout=60)
-                git(top, "worktree", "prune")
+                git(top, "worktree", "remove", "--force", path, timeout=60)  # also when the folder is gone
                 git(top, "branch", "-D", branch)
                 try:
                     os.rmdir(home)  # if this was to be its first worktree
@@ -187,12 +189,18 @@ class Worktrees:
             return None
         path, branch, base = entry["path"], entry["branch"], entry["base"]
         out = {"path": path, "branch": branch, "base": base, "exists": os.path.isdir(path),
-               "dirty": None, "ahead": None, "behind": None, "unmerged": None, "base_missing": False}
+               "dirty": None, "ahead": None, "behind": None, "unmerged": None, "base_missing": False, "head": None}
         if not out["exists"]:
+            # Gone by hand: the branch may still hold commits, which removing would delete.
+            out["unmerged"] = _unmerged(entry["repo"], branch, head=False)
             return out
         status = git(path, "status", "--porcelain=v1", timeout=5)
         out["dirty"] = None if status is None else len(status.splitlines())
-        out["unmerged"] = _unmerged(path, branch)
+        out["unmerged"] = _unmerged(path, branch, head=True)
+        # What is checked out there, if not the chat's branch (a checkout or rebase in it): "" detached.
+        current = git(path, "symbolic-ref", "--short", "-q", "HEAD", ok=(0, 1))
+        if current is not None and current.strip() != branch:
+            out["head"] = current.strip()
         if base:
             out["base_missing"] = not (git(path, "rev-parse", "--verify", "-q", f"refs/heads/{base}", ok=(0, 1)) or "").strip()
             counts = (git(path, "rev-list", "--left-right", "--count", f"refs/heads/{base}...refs/heads/{branch}",
@@ -213,6 +221,9 @@ class Worktrees:
         if not base:
             raise WorktreeError(tr("Der Chat startete ohne Branch (detached HEAD); bitte selbst mergen.",
                                    "The chat started without a branch (detached HEAD); please merge it yourself."))
+        if state["head"] is not None:
+            raise WorktreeError(tr(f"Im Worktree ist nicht mehr {branch} ausgecheckt; bitte zurückwechseln oder selbst mergen.",
+                                   f"{branch} is no longer checked out in the worktree; please switch back or merge it yourself."))
         if state["base_missing"]:
             raise WorktreeError(tr(f"Den Branch {base} gibt es nicht mehr; bitte selbst mergen.",
                                    f"The branch {base} no longer exists; please merge it yourself."))
@@ -262,7 +273,8 @@ class Worktrees:
         if os.path.isdir(entry["path"]):
             _run(entry["repo"], "worktree", "remove", "--force", entry["path"], timeout=120)
         else:
-            git(entry["repo"], "worktree", "prune")
+            # Only this one: a bare prune would also drop worktrees on a drive that is not mounted.
+            git(entry["repo"], "worktree", "remove", "--force", entry["path"], timeout=60)
         git(entry["repo"], "branch", "-D", entry["branch"])  # may be gone already
         try:
             os.rmdir(os.path.dirname(entry["path"]))  # <repo>.worktrees, once its last worktree is gone
