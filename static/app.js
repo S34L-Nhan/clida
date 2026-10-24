@@ -1775,7 +1775,10 @@ function renderChanges(tab) {
     for (const entry of entries) if (entry.isIntersecting) entry.target.fill?.();
   }, { root: main, rootMargin: '600px 0px' });
   tab.mrBlocks = new Map();
-  for (const file of files) {
+  // In the order of the file list: repository by repository, files outside any last.
+  const ordered = [...files].sort((a, b) => (!a.repo) - (!b.repo) || (a.repo?.top || '').localeCompare(b.repo?.top || '')
+    || groupPath(a).localeCompare(groupPath(b)));
+  for (const file of ordered) {
     const block = fileBlock(tab, file);
     tab.mrBlocks.set(file.path, block);
     main.append(block);
@@ -1805,6 +1808,11 @@ function changesTop(tab) {
   const added = files.reduce((n, f) => n + (f.added || 0), 0);
   const removed = files.reduce((n, f) => n + (f.removed || 0), 0);
   if (added || removed) line.append(el('span', 'diff-add', `+${added}`), el('span', 'diff-del', `−${removed}`));
+  // Will it be committed? Counted by where each file stands in git now.
+  const pending = files.filter((f) => ['staged', 'unstaged', 'partly', 'untracked'].includes(f.state)).length;
+  const kinds = [['committed', files.filter((f) => f.state === 'committed').length], ['pending', pending],
+    ['ignored', files.filter((f) => f.state === 'ignored').length], ['outside', files.filter((f) => !f.repo).length]];
+  for (const [kind, n] of kinds) if (n) line.append(el('span', `git-count ${kind}`, t(`git.n.${kind}`, { n })));
   const hint = el('span', 'mr-hint', 'ⓘ');
   hint.title = t('changes.hint');
   line.append(hint);
@@ -1826,21 +1834,47 @@ function fileMatcher(query) {
   return (path) => re.test(path.toLowerCase());
 }
 
+// A file's path in its group: inside its repository, or as labelled outside of one.
+const groupPath = (file) => (file.repo ? file.rel : file.label);
+
+// One group per repository (with its branch), and one for files outside any: what can be
+// committed where, and what never will be.
 function renderFileList(tab) {
-  const files = tab.changes.files.filter((f) => fileMatcher(tab.fileQuery || '')(f.label));
+  const match = fileMatcher(tab.fileQuery || '');
+  const files = tab.changes.files.filter((f) => match(groupPath(f)) || match(f.label));
   const list = tab.mrList;
   if (!files.length) {
     list.replaceChildren(el('div', 'mr-none', t(tab.changes.files.length ? 'changes.noMatch' : 'changes.none')));
     return;
   }
-  if (!store.get('changesTree', true)) {
-    list.replaceChildren(...files.map((file) => fileRow(tab, file, file.label, 0)));
-    return;
+  const groups = new Map();
+  for (const file of files) {
+    const key = file.repo ? file.repo.top : '';
+    if (!groups.has(key)) groups.set(key, { repo: file.repo, files: [] });
+    groups.get(key).files.push(file);
   }
-  // Folders with a single folder in them and no files are one row, as in GitLab: group/project.
+  const rows = [];
+  for (const [key, group] of [...groups].sort(([a], [b]) => (!a) - (!b) || a.localeCompare(b))) {
+    const head = el('div', `mr-group${group.repo ? '' : ' outside'}`);
+    if (group.repo) {
+      head.append(icon('branch'), el('strong', '', group.repo.name), el('span', 'muted', group.repo.branch || t('changes.detached')));
+      head.title = group.repo.top;
+    } else {
+      head.append(el('strong', '', t('git.outside')));
+      head.title = t('git.outsideHint');
+    }
+    rows.push(head);
+    rows.push(...(store.get('changesTree', true) ? treeRows(tab, group.files)
+      : group.files.map((file) => fileRow(tab, file, groupPath(file), 0))));
+  }
+  list.replaceChildren(...rows);
+}
+
+// Folders with a single folder in them and no files are one row, as in GitLab: group/project.
+function treeRows(tab, files) {
   const root = { dirs: new Map(), files: [] };
   for (const file of files) {
-    const parts = file.label.split('/');
+    const parts = groupPath(file).split('/');
     let node = root;
     for (const part of parts.slice(0, -1)) {
       if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
@@ -1862,12 +1896,12 @@ function renderFileList(tab) {
       rows.push(row);
       walk(dir, depth + 1);
     }
-    for (const file of node.files.sort((a, b) => a.label.localeCompare(b.label))) {
-      rows.push(fileRow(tab, file, file.label.split('/').pop(), depth));
+    for (const file of node.files.sort((a, b) => groupPath(a).localeCompare(groupPath(b)))) {
+      rows.push(fileRow(tab, file, groupPath(file).split('/').pop(), depth));
     }
   };
   walk(root, 0);
-  list.replaceChildren(...rows);
+  return rows;
 }
 
 function fileRow(tab, file, name, depth) {
@@ -1879,7 +1913,7 @@ function fileRow(tab, file, name, depth) {
   if (file.added != null && (file.added || file.removed)) {
     row.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `-${file.removed}`));
   }
-  row.append(statusIcon(file.status));
+  row.append(gitMark(file), statusIcon(file.status));
   const go = () => {
     const block = tab.mrBlocks.get(file.path);
     if (!block) return;
@@ -1897,6 +1931,35 @@ function middleEllipsis(name) {
   const cut = name.length > 16 ? name.length - 12 : name.length;
   box.append(el('span', 'mid-a', name.slice(0, cut)), el('span', 'mid-b', name.slice(cut)));
   return box;
+}
+
+// Where a file stands in git, for "will it be committed?": a small mark in the file list ...
+const GIT_MARKS = { committed: '✓', staged: '+', partly: '±', unstaged: '●', untracked: '?', ignored: '⊘' };
+
+function gitState(file) {
+  return file.repo ? file.state : 'outside';
+}
+
+function gitText(file) {
+  const state = gitState(file);
+  return state === 'committed' && file.commit
+    ? t('git.committedIn', { sha: file.commit.sha.slice(0, 7) })
+    : t(`git.${state}`);
+}
+
+function gitMark(file) {
+  const state = gitState(file);
+  const mark = el('span', `git-mark ${state}`, GIT_MARKS[state] || '');
+  mark.title = [gitText(file), file.commit?.subject].filter(Boolean).join(' · ');
+  return mark;
+}
+
+// ... and in words above its diff.
+function gitChip(file) {
+  const state = gitState(file);
+  const chip = el('span', `git-chip ${state}`, gitText(file));
+  chip.title = state === 'outside' ? t('git.outsideHint') : [file.repo.name, file.commit?.subject].filter(Boolean).join(' · ');
+  return chip;
 }
 
 const STATUS_ICONS = {
@@ -1948,6 +2011,7 @@ function fileBlock(tab, file) {
     via.title = t('changes.viaShellHint');
     head.append(via);
   }
+  head.append(gitChip(file));
   if (file.added != null && (file.added || file.removed)) {
     head.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `−${file.removed}`));
   }
