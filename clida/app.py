@@ -24,6 +24,7 @@ UPLOAD_LIMIT = 50 * 1024 * 1024
 ANCHOR = re.compile(r"[0-9a-f-]{36}#\d{1,4}")  # a message in the history: entry uuid # its place in it
 REWIND_TIMEOUT = 120
 PROMPT_MAX = 100_000  # characters a prompt from the window may have
+TYPED_MAX = 8_000  # characters typed in rather than pasted (see send_prompt): a few seconds of typing
 WINDOW_TTL = 90  # seconds a window counts as open after its last request; a hidden one polls once a minute
 
 TITLES_FILE = STATE_DIR / "titles.json"
@@ -188,7 +189,17 @@ class Desk:
         library = self.library.snapshot()
         notes = self.notes.session_previews()
         usage = self.index.usage()
-        worktrees = self.worktrees.branches()
+        worktrees = self.worktrees.all()
+        roots = [(os.path.realpath(e["path"]) + "/", sid) for sid, e in worktrees.items()]
+
+        def worktree_of(sid, cwd):
+            # Its own, or the one its folder is in: after /clear or /resume the CLI went on under a new id.
+            if sid not in worktrees and cwd and roots:
+                real = os.path.realpath(cwd) + "/"
+                sid = next((owner for root, owner in roots if real.startswith(root)), sid)
+            entry = worktrees.get(sid)
+            return {"branch": entry["branch"], "repo": os.path.basename(entry["repo"])} if entry else None
+
         out = []
         for info in infos:
             out.append({
@@ -197,7 +208,7 @@ class Desk:
                 "first_prompt": info["first_prompt"], "last_prompt": info["last_prompt"],
                 "folder": library["folder_of"].get(info["id"]), "archived": info["id"] in library["archived"],
                 "note": notes.get(info["id"]), "usage": usage["chats"].get(info["id"]),
-                "worktree": worktrees.get(info["id"]),
+                "worktree": worktree_of(info["id"], info["cwd"]),
             })
         known = {s["id"] for s in out}
         for term in self.terminals.all():
@@ -210,7 +221,18 @@ class Desk:
                     "folder": library["folder_of"].get(term.session_id),
                     "archived": term.session_id in library["archived"],
                     "note": notes.get(term.session_id), "usage": None,
-                    "worktree": worktrees.get(term.session_id),
+                    "worktree": worktree_of(term.session_id, term.cwd),
+                })
+        for sid, entry in worktrees.items():
+            if sid not in known:
+                # Stopped before its first message, so without a transcript: listed for its worktree,
+                # which would otherwise be out of reach.
+                out.append({
+                    "id": sid, "title": self._title(sid, None), "cwd": entry["path"],
+                    "cwd_label": _home_label(entry["path"]), "mtime": entry["created"],
+                    "first_prompt": None, "last_prompt": None, "folder": library["folder_of"].get(sid),
+                    "archived": sid in library["archived"], "note": notes.get(sid), "usage": None,
+                    "worktree": worktree_of(sid, None),
                 })
         out.sort(key=lambda s: s["mtime"], reverse=True)
         return {"sessions": out, "folders": library["folders"], "home": str(Path.home()),
@@ -222,14 +244,16 @@ class Desk:
             self.index.scan()
             info = self.index.get(session_id)
         if info is None:
-            if any(t.session_id == session_id for t in self.terminals.all()):
+            if any(t.session_id == session_id for t in self.terminals.all()) or self.worktrees.get(session_id):
                 return {"items": [], "truncated": False}
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
         return transcripts.render(info["path"])
 
     def search_messages(self, query) -> dict:
         """The chats whose messages hold every word of query, each with its best match."""
-        return {"hits": self.search.find(str(query or "")[:200])}
+        # Only the transcript each chat's history shows: a hit elsewhere could not be opened.
+        shown = {info["path"] for info in self.index.scan()}
+        return {"hits": self.search.find(str(query or "")[:200], shown)}
 
     def changes(self, session_id: str, brief: bool = False) -> dict:
         """What the chat changed, like a merge request: each file as before the chat against now.
@@ -243,7 +267,7 @@ class Desk:
         if info is None:
             self.index.scan()
             info = self.index.get(session_id)
-        cwd = info["cwd"] if info else next((t.cwd for t in self.terminals.all() if t.session_id == session_id), None)
+        cwd = self._chat_cwd(session_id, info)
         if info is None and cwd is None:
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
         files = self.changes_cache.get(session_id, self.index.paths(session_id)) if info else []
@@ -277,7 +301,15 @@ class Desk:
         # The branch of the chat's folder, or else of the first repository it worked in.
         where = cwd if cwd and os.path.isdir(cwd) else None
         git = (_git_state(where) if where else None) or (_git_state(repo["repos"][0]) if repo["repos"] else None)
-        return {"files": out, "git": git, "commits": repo["commits"], "worktree": self.worktrees.status(session_id)}
+        return {"files": out, "git": git, "commits": repo["commits"],
+                "worktree": self.worktrees.status(self.worktrees.key_for(session_id, cwd))}
+
+    def _chat_cwd(self, session_id: str, info):
+        """The chat's folder: from its transcript, its terminal, or (said nothing yet) its worktree."""
+        if info:
+            return info["cwd"]
+        term = next((t.cwd for t in self.terminals.all() if t.session_id == session_id), None)
+        return term or (self.worktrees.get(session_id) or {}).get("path")
 
     @staticmethod
     def _change_label(path: str, cwd) -> str:
@@ -314,7 +346,7 @@ class Desk:
         home = str(Path.home())
         seen, out = set(), []
         # Not another chat's worktree: a new chat there would work on that chat's branch.
-        worktrees = tuple(w.rstrip("/") + "/" for w in self.worktrees.paths())
+        worktrees = tuple(e["path"].rstrip("/") + "/" for e in self.worktrees.all().values())
         for info in sorted(self.index.scan(), key=lambda i: i["mtime"], reverse=True):
             cwd = info["cwd"]
             if cwd and cwd not in seen and not (cwd + "/").startswith(worktrees) and os.path.isdir(cwd):
@@ -355,7 +387,15 @@ class Desk:
                     cwd = self.worktrees.create(session_id, cwd, title)
                 except WorktreeError as e:
                     raise HttpError(400, tr("Worktree ließ sich nicht anlegen: ", "Could not create the worktree: ") + str(e))
-            term = self.terminals.start(cwd, name=title or None, session_id=session_id)
+            try:
+                term = self.terminals.start(cwd, name=title or None, session_id=session_id)
+            except Exception:
+                if body.get("worktree"):
+                    try:
+                        self.worktrees.remove(session_id)  # nothing happened in it yet
+                    except WorktreeError:
+                        pass
+                raise
             if title:
                 self.titles.set(term.session_id, title)
             if isinstance(folder, str) and folder:
@@ -364,19 +404,32 @@ class Desk:
 
     # -- the chat's own worktree ------------------------------------------------------------
 
+    def _worktree_key(self, session_id: str) -> str:
+        """The worktree record a chat works in (see Worktrees.key_for)."""
+        cwd = self._chat_cwd(session_id, self.index.get(session_id))
+        return self.worktrees.key_for(session_id, cwd) or session_id
+
     def merge_worktree(self, session_id: str) -> dict:
         try:
-            return self.worktrees.merge(session_id)
+            return self.worktrees.merge(self._worktree_key(session_id))
         except WorktreeError as e:
             raise HttpError(409, str(e))
 
     def remove_worktree(self, session_id: str) -> dict:
-        """Delete the chat's worktree and branch; only while no CLI works in it."""
-        if self._running(session_id):
-            raise HttpError(409, tr("Diese Sitzung läuft noch. Bitte zuerst beenden.",
-                                    "This session is still running. Please stop it first."))
+        """Delete the chat's worktree and branch; only while no CLI works in it, under whatever
+        session id (after /clear the terminal's is another)."""
+        key = self._worktree_key(session_id)
+        entry = self.worktrees.get(key)
+        if entry:
+            root = os.path.realpath(entry["path"]) + "/"
+            status = self.status()
+            cwds = ([t["cwd"] for t in status["terminals"] if t["status"] != "exited"]
+                    + [e.get("cwd") for e in status["external"]])
+            if self._running(key) or any(c and (os.path.realpath(c) + "/").startswith(root) for c in cwds):
+                raise HttpError(409, tr("In diesem Worktree läuft noch eine Session. Bitte zuerst beenden.",
+                                        "A session still runs in this worktree. Please stop it first."))
         try:
-            self.worktrees.remove(session_id)
+            self.worktrees.remove(key)
         except WorktreeError as e:
             raise HttpError(409, str(e))
         return {"ok": True}
@@ -413,6 +466,11 @@ class Desk:
         new_id = str(uuid.uuid4())
         try:
             path = transcripts.fork(info["path"], message, role == "user", new_id)
+        except transcripts.NoParent:
+            raise HttpError(404, tr("Was vor dieser Nachricht kam, steht nicht in ihrer Datei (der Chat wurde in einem "
+                                    "anderen Ordner fortgesetzt); bitte von einer Antwort aus abzweigen.",
+                                    "What came before this message is not in its file (the chat was resumed in another "
+                                    "folder); please fork from an answer instead."))
         except LookupError:
             raise HttpError(404, tr("Nachricht nicht im Verlauf gefunden", "Message not found in the history"))
         except ValueError:
@@ -420,7 +478,8 @@ class Desk:
                                     "There is nothing before the first message: just start a new chat."))
         except OSError as e:
             raise HttpError(500, tr("Abzweigen fehlgeschlagen: ", "Forking failed: ") + str(e))
-        title = (tr("Abzweig: ", "Fork: ") + self._title(session_id, info))[:200]
+        prefix, title = tr("Abzweig: ", "Fork: "), self._title(session_id, info)
+        title = (title if title.startswith(prefix) else prefix + title)[:200]  # a fork of a fork: once
         self.titles.set(new_id, title)
         transcripts.append_custom_title(path, new_id, title)
         folder = self.library.snapshot()["folder_of"].get(session_id)
@@ -629,20 +688,29 @@ class Desk:
         text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", str(text or "")).strip()
         if not text:
             raise HttpError(400, tr("Nichts zu senden", "Nothing to send"))
-        if len(text) > PROMPT_MAX:
+        if len(text) > (PROMPT_MAX if submit else TYPED_MAX):
             raise HttpError(413, tr("Text ist zu lang", "The text is too long"))
         # Only into a CLI that says it is idle, checked now: typed into a permission prompt, the
-        # Enter (or the text's own letters) would answer it. Without its own report, "idle" is just quiet output, as a prompt is.
+        # Enter (or the text's own letters) would answer it. Without its own report, "idle" is just
+        # quiet output, as a prompt is.
         entry = registry.running().get(term.pid)
         if entry is None or registry.cli_status(entry) != "idle":
             raise HttpError(409, tr("Die CLI ist gerade nicht bereit (sie arbeitet oder wartet auf eine Antwort). "
                                     "Die Kommentare bleiben erhalten.",
                                     "The CLI is not ready right now (it is working or waiting for an answer). "
                                     "The comments are kept."))
+        if not submit:
+            # Typed, not pasted: the CLI shows a paste of a few lines as "[Pasted text #1]", which
+            # cannot be changed. A line break is Esc+Enter (a new line, not send), and the text goes
+            # in small pieces, as a burst would be taken for a paste again.
+            data = text.replace("\t", "    ").replace("\n", "\x1b\r").encode()
+            for at in range(0, len(data), 64):
+                term.write(data[at:at + 64])
+                time.sleep(0.01)
+            return {"ok": True}
         term.write(b"\x1b[200~" + text.encode() + b"\x1b[201~")
-        if submit:
-            time.sleep(0.2)  # the CLI takes the paste in first; an Enter in the same read could be part of it
-            term.write(b"\r")
+        time.sleep(0.2)  # the CLI takes the paste in first; an Enter in the same read could be part of it
+        term.write(b"\r")
         return {"ok": True}
 
     def stop_terminal(self, terminal_id: str) -> dict:

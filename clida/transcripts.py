@@ -315,9 +315,33 @@ def append_custom_title(path: str, session_id: str, title: str):
         f.write(line.encode() + b"\n")
 
 
-# Not copied into a fork: titles and summaries are the original's, and cost-state would count the
-# original's cost a second time.
-_NOT_FORKED = {"custom-title", "ai-title", "summary", "last-prompt", "cost-state"}
+# Not copied into a fork: titles, names and summaries are the original's, and cost-state would
+# count the original's cost a second time. The CLI writes these with "type" as their first key.
+_NOT_FORKED = tuple(b'{"type":"%s"' % kind for kind in (
+    b"custom-title", b"ai-title", b"agent-name", b"agent-color", b"agent-setting", b"tag", b"summary",
+    b"last-prompt", b"cost-state"))
+
+
+class NoParent(LookupError):
+    """The prompt's predecessor is not in this transcript (it may be in another of the chat's)."""
+
+
+def _line_of(path: str, uuid: str, until=None):
+    """(end offset, entry) of the first line whose entry has this uuid, before until; or None."""
+    needle = b'"uuid":"' + uuid.encode() + b'"'  # quotes inside JSON strings are escaped: only a real key matches
+    at, found = 0, None
+    with open(path, "rb") as f:
+        for line in f:
+            at += len(line)
+            if until is not None and at > until:
+                break
+            if needle in line:
+                entry = _loads(line)
+                if entry is not None and entry.get("uuid") == uuid:
+                    found = (at, entry)
+                    if until is None:
+                        break  # the first one; with until, the last one before it
+    return found
 
 
 def fork(path: str, message: str, before: bool, new_id: str) -> str:
@@ -328,37 +352,47 @@ def fork(path: str, message: str, before: bool, new_id: str) -> str:
     The CLI resumes from the last entry and follows parentUuid back from it, so whatever else is
     in the copy (abandoned branches of an earlier /rewind) stays out of the conversation. The
     chat's file backups are copied too: the changes view and /rewind of the fork use them.
+    Line by line, as the CLI wrote them: a transcript can be large.
     """
     if not SESSION_ID.fullmatch(new_id):
         raise ValueError(f"not a session id: {new_id}")
-    entries = []
-    with open(path, "rb") as f:
-        for line in f:
-            entry = _loads(line)
-            if entry is not None:
-                entries.append(entry)
-    at = next((i for i, e in enumerate(entries) if e.get("uuid") == message), None)
-    if at is None:
+    found = _line_of(path, message)
+    if found is None:
         raise LookupError(message)
+    cut, entry = found
     if before:
-        parent = entries[at].get("parentUuid")
-        at = next((i for i in range(at - 1, -1, -1) if parent and entries[i].get("uuid") == parent), None)
-        if at is None:
+        parent = _str(entry.get("parentUuid"))
+        if not parent:
             raise ValueError("nothing before the first message")
+        found = _line_of(path, parent, until=cut - 1)
+        if found is None:
+            raise NoParent(parent)
+        cut = found[0]
+    old = b'"sessionId":"' + Path(path).stem.encode() + b'"'
     target = Path(path).with_name(new_id + ".jsonl")
     tmp = target.with_name(target.name + ".tmp")  # not *.jsonl: the index must not see it half written
-    with open(tmp, "wb") as f:
-        for entry in entries[:at + 1]:
-            if entry.get("type") in _NOT_FORKED:
-                continue
-            if "sessionId" in entry:
-                entry["sessionId"] = new_id
-            # ASCII escapes: a transcript may hold half an emoji (a lone surrogate), which UTF-8 cannot encode.
-            f.write(json.dumps(entry, separators=(",", ":")).encode() + b"\n")
-    os.replace(tmp, target)
     backups = FILE_HISTORY / Path(path).stem
-    if backups.is_dir():
-        shutil.copytree(backups, FILE_HISTORY / new_id, dirs_exist_ok=True)
+    try:
+        with open(path, "rb") as src, open(tmp, "wb") as out:
+            at = 0
+            for line in src:
+                at += len(line)
+                if at > cut:
+                    break
+                if not line.startswith(_NOT_FORKED):
+                    out.write(line.replace(old, b'"sessionId":"' + new_id.encode() + b'"'))
+        # The backups first: if they fail, no chat appears that is half there.
+        if backups.is_dir():
+            shutil.copytree(backups, FILE_HISTORY / new_id, dirs_exist_ok=True)
+        os.replace(tmp, target)
+    except BaseException:
+        shutil.rmtree(FILE_HISTORY / new_id, ignore_errors=True)
+        raise
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
     return str(target)
 
 

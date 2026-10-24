@@ -95,6 +95,8 @@ const state = {
   attention: new Set(),   // terminal ids that finished or need input while unseen
   hits: { query: '', map: new Map() },  // chats whose messages match the search (see searchMessages)
   hitsSeq: 0,
+  statusAsked: 0,   // numbers status answers (both kinds of load bring one), so an older one that
+  statusShown: 0,   // overtook a newer one cannot undo it and raise a notification a second time
   notices: new Map(),     // terminal id -> its system notification, closed once the tab is seen
   tabs: [],
   active: null,
@@ -262,9 +264,13 @@ function applyStatus(data) {
 async function refreshStatus() {
   let finished = false;
   const asked = Date.now();
+  const seq = ++state.statusAsked;
   try {
-    finished = applyStatus(await api('GET', '/api/status'));
+    const data = await api('GET', '/api/status');
     setOnline(true);
+    if (seq < state.statusShown) return;  // a newer answer is shown already
+    state.statusShown = seq;
+    finished = applyStatus(data);
   } catch (e) {
     setOnline(false, e.status);
     return;
@@ -301,6 +307,7 @@ function historyTab(tab) {
 
 async function refreshSessions() {
   const seq = ++state.sessionsSeq;
+  const statusSeq = ++state.statusAsked;
   let data;
   try {
     data = await api('GET', '/api/sessions');
@@ -315,7 +322,10 @@ async function refreshSessions() {
   state.byId = new Map(data.sessions.map((s) => [s.id, s]));
   state.folders = data.folders || [];
   state.costToday = data.cost_today ?? null;
-  applyStatus(data);
+  if (statusSeq >= state.statusShown) {
+    state.statusShown = statusSeq;
+    applyStatus(data);
+  }
   if (!state.renaming && !state.dragging) renderSidebar();
   paint();
 }
@@ -470,7 +480,7 @@ let searchTimer = 0;
 function searchMessages() {
   clearTimeout(searchTimer);
   const query = searchQuery();
-  if (query.length < SEARCH_MIN) return;
+  if (!query.split(/\s+/).some((word) => word.length >= SEARCH_MIN)) return;  // the server looks words up from three on
   searchTimer = setTimeout(async () => {
     const seq = ++state.hitsSeq;
     let data;
@@ -1410,16 +1420,20 @@ function applyNotifications(level) {
   askNotifyPermission();
 }
 
-// Browsers ask for the permission only on a click or key press, so the question waits for one.
+// Browsers ask for the permission only on a click or key press, so the question waits for one. A
+// question dismissed without an answer is asked again on a later click, three times at most.
 function askNotifyPermission() {
   if (notifyLevel === 'off' || !notifySupported() || Notification.permission !== 'default' || state.notifyAsking) return;
+  if ((state.notifyAsked || 0) >= 3) return;
   state.notifyAsking = true;
   const request = () => {
     window.removeEventListener('pointerdown', request, true);
     window.removeEventListener('keydown', request, true);
+    state.notifyAsked = (state.notifyAsked || 0) + 1;
     Notification.requestPermission().catch(() => {}).finally(() => {
       state.notifyAsking = false;
       if ($('#settings-dialog').open) renderSettings();  // its hint says whether they are allowed
+      askNotifyPermission();  // dismissed: still "default"
     });
   };
   window.addEventListener('pointerdown', request, true);
@@ -1434,7 +1448,7 @@ function notify(row) {
   const body = t(waiting ? 'notify.waitingBody' : row.status === 'exited' ? 'notify.exitedBody' : 'notify.doneBody');
   try {
     // One per terminal: the tag replaces an older notice of the same session.
-    const notice = new Notification(titleOf(row.session_id), { body, tag: row.id, icon: '/static/icon-1024.png' });
+    const notice = new Notification(titleOf(row.session_id), { body, tag: row.id, renotify: true, icon: '/static/icon-1024.png' });
     notice.onclick = () => {
       window.focus();
       notice.close();
@@ -1494,6 +1508,7 @@ function renderWorktreeBar(tab) {
     else if (wt.ahead === 0 && !wt.dirty) facts.push(t('worktree.noCommits'));
     if (wt.dirty) facts.push(t('worktree.dirty', { n: wt.dirty }));
     if (wt.behind) facts.push(t('worktree.behind', { n: wt.behind, base: wt.base }));
+    if (wt.base_missing) facts.push(t('worktree.baseMissing', { base: wt.base }));
   }
   const info = el('span', 'worktree-facts', facts.join(' · '));
   const actions = el('span', 'worktree-actions');
@@ -1540,7 +1555,9 @@ async function removeWorktree(tab) {
   if (!wt) return;
   const text = [...textWith('worktree.removeText', { branch: el('strong', '', wt.branch), path: el('code', '', wt.path) })];
   if (wt.dirty) text.push(' ', t('worktree.removeDirty', { n: wt.dirty }));
-  if (wt.ahead) text.push(' ', t('worktree.removeUnmerged', { n: wt.ahead, base: wt.base }));
+  // Commits no other branch has, whatever the base: deleting the branch loses them.
+  if (wt.unmerged) text.push(' ', t('worktree.removeUnmerged', { n: wt.unmerged }));
+  else if (wt.exists && wt.unmerged == null) text.push(' ', t('worktree.removeUnknown'));
   if (!(await ask({ title: t('worktree.removeTitle'), text, yes: t('worktree.remove'), danger: true }))) return;
   try {
     await worktreeAction(tab, 'DELETE', 'worktree');
@@ -1558,6 +1575,7 @@ async function loadHistory(tab, { quiet = false } = {}) {
   // A background refresh would pull a note being written out from under the cursor; catch up later.
   if (quiet && tab.histInner.querySelector('.note-editor')) {
     tab.stale = true;
+    revealMessage(tab);  // a jump asked for now, in what is shown, not later on its own
     return;
   }
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
@@ -1567,6 +1585,7 @@ async function loadHistory(tab, { quiet = false } = {}) {
     [data] = await Promise.all([api('GET', `/api/sessions/${sid}/messages`), loadNotes(tab, { render: false })]);
   } catch (e) {
     tab.histInner.replaceChildren(el('div', 'empty-note', e.message));
+    tab.jumpTo = null;
     return;
   }
   tab.items = data.items;
@@ -2006,10 +2025,12 @@ async function forkAt(tab, item) {
   if (before) typeWhenReady(started.id, item.text);
 }
 
+const TYPED_MAX = 8000;  // longer prompts go to the clipboard: typing them in would take too long
+
 // Type a prompt into a session that is starting, unsent, once its CLI says it is ready. If it
 // never does, the text goes to the clipboard instead.
 async function typeWhenReady(terminalId, text) {
-  for (let waited = 0; waited < 30000; waited += 500) {
+  for (let waited = 0; text.length <= TYPED_MAX && waited < 30000; waited += 500) {
     await sleep(500);
     await refreshStatus();
     const row = state.terminals.get(terminalId);
@@ -2024,7 +2045,7 @@ async function typeWhenReady(terminalId, text) {
     }
   }
   await writeClipboard(text);
-  toast(t('fork.copied'));
+  toast(t(text.length > TYPED_MAX ? 'fork.copiedLong' : 'fork.copied'));
 }
 
 async function rewindTo(tab, item) {
@@ -2035,7 +2056,13 @@ async function rewindTo(tab, item) {
   }
   // The files changed from this prompt on, as the history shows them: what the question names.
   const cwd = state.byId.get(sid)?.cwd;
-  const files = [...new Set(tab.items.slice(tab.items.indexOf(item))
+  // By uid: a reload with nothing new keeps the drawn messages but brings new item objects.
+  const from = tab.items.findIndex((other) => other.uid === item.uid);
+  if (from < 0) {
+    toast(t('search.notShown'));
+    return;
+  }
+  const files = [...new Set(tab.items.slice(from)
     .filter((step) => step.k === 'tool' && EDIT_TOOLS.includes(step.name) && step.summary && !step.error)
     .map((step) => (cwd && step.summary.startsWith(`${cwd}/`) ? step.summary.slice(cwd.length + 1) : step.summary)))];
   if (!files.length) {
@@ -3584,10 +3611,12 @@ function wire() {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     if (state.active) state.attention.delete(state.active);
+    if (state.active) closeNotice(state.active);  // seen now
     refreshSessions();
   });
   window.addEventListener('focus', () => {
     if (state.active) state.attention.delete(state.active);
+    if (state.active) closeNotice(state.active);
     paint();
   });
 }
@@ -3627,7 +3656,11 @@ async function start() {
   else if (state.tabs.length) activate(state.tabs[0].id);
   paint();
   askNotifyPermission();
-  everyTwoSeconds(refreshStatus);
+  everyTwoSeconds(() => {
+    if (state.ticking) return;  // an answer is slow (WSL's relay can hang): no pile of requests behind it
+    state.ticking = true;
+    refreshStatus().finally(() => { state.ticking = false; });
+  });
   setInterval(refreshSessions, 20000);
 }
 
