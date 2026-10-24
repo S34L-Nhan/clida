@@ -2247,7 +2247,7 @@ const rangeText = (comment) => {
   const old = comment.from.side === 'old' && comment.to.side === 'old';
   const from = comment.from.line;
   const to = comment.to.line;
-  return t('review.lines', { from, to, same: from === to && comment.from.side === comment.to.side }) + (old ? t('review.oldSide') : '');
+  return t('review.lines', { from, to, same: from === to }) + (old ? t('review.oldSide') : '');
 };
 
 function commentCard(tab, file, comment, lost = false) {
@@ -2749,9 +2749,21 @@ const SETTINGS = [
       { key: 'theme', label: 'settings.theme', hint: 'settings.themeHint', hintNodes: () => ({ cmd: el('code', '', '/theme (Auto (match terminal))') }),
         choices: () => [['system', t('theme.system')], ['light', t('theme.light')], ['dark', t('theme.dark')], ...THEMES],
         value: () => theme, apply: applyTheme },
+      { key: 'diffColors', label: 'settings.diffColors', hint: 'settings.diffColorsHint',
+        choices: () => ['subtle', 'normal', 'strong', 'vivid'].map((level) => [level, t(`diffColors.${level}`)]),
+        value: () => diffColors, apply: applyDiffColors },
     ],
   },
 ];
+
+// How strongly the changes view tints added and removed lines (data-diffs on <html>, see app.css).
+let diffColors = store.get('diffColors', 'normal');
+function applyDiffColors(level) {
+  diffColors = level;
+  store.set('diffColors', level);
+  document.documentElement.dataset.diffs = level;
+}
+applyDiffColors(diffColors);
 
 // The color schemes beyond CLIDA's own light and dark, by their usual names (see themes.css).
 const THEMES = [

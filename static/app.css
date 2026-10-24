@@ -416,23 +416,34 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .dl > span { white-space: pre; }
 .ln-pair { position: relative; display: grid; grid-template-columns: var(--lnw, 4ch) var(--lnw, 4ch); cursor: pointer; user-select: none; -webkit-user-select: none; }
 .ln { padding: 0 6px; text-align: right; color: var(--muted); opacity: 0.75; }
-.ln-pair:hover .ln { color: var(--accent); opacity: 1; }
-.cbtn { position: absolute; left: -2px; top: 50%; transform: translateY(-50%); display: none; width: 20px; height: 18px; padding: 0; border: none; border-radius: 5px; background: var(--accent); color: var(--accent-text); cursor: pointer; }
+.ln-pair:hover .ln { color: var(--review); opacity: 1; }
+.cbtn { position: absolute; left: -2px; top: 50%; transform: translateY(-50%); display: none; width: 20px; height: 18px; padding: 0; border: none; border-radius: 5px; background: var(--review); color: var(--bg); cursor: pointer; }
 .cbtn svg { width: 13px; height: 13px; }
 .dl:hover .cbtn { display: inline-grid; place-items: center; }
 .dl .sign { padding: 0 2px 0 6px; user-select: none; -webkit-user-select: none; }
 .dl .code { padding-right: 16px; }
-.dl.add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
-.dl.add .sign { color: var(--ok); }
-.dl.del { background: color-mix(in srgb, var(--danger) 14%, transparent); }
-.dl.del .sign { color: var(--danger); }
-.dl.hunk { display: block; padding: 2px 10px; color: var(--muted); background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.dl.sel { box-shadow: inset 3px 0 0 var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+/* How strongly added and removed lines are tinted: the "Diff-Farben" setting (data-diffs on <html>). */
+:root { --diff-mix: 18%; --diff-ln-mix: 28%; --diff-sel-mix: 22%; }
+:root[data-diffs="subtle"] { --diff-mix: 9%; --diff-ln-mix: 14%; --diff-sel-mix: 14%; }
+:root[data-diffs="strong"] { --diff-mix: 30%; --diff-ln-mix: 44%; --diff-sel-mix: 32%; }
+:root[data-diffs="vivid"] { --diff-mix: 45%; --diff-ln-mix: 62%; --diff-sel-mix: 42%; }
+.dl.add { background: color-mix(in srgb, var(--ok) var(--diff-mix), transparent); }
+.dl.add .sign { color: var(--ok); font-weight: 700; }
+.dl.add .ln-pair { background: color-mix(in srgb, var(--ok) var(--diff-ln-mix), transparent); }
+.dl.del { background: color-mix(in srgb, var(--danger) var(--diff-mix), transparent); }
+.dl.del .sign { color: var(--danger); font-weight: 700; }
+.dl.del .ln-pair { background: color-mix(in srgb, var(--danger) var(--diff-ln-mix), transparent); }
+:root[data-diffs="strong"] .dl.add .ln, :root[data-diffs="vivid"] .dl.add .ln,
+:root[data-diffs="strong"] .dl.del .ln, :root[data-diffs="vivid"] .dl.del .ln { color: var(--text); opacity: 1; }
+.dl.hunk { display: block; padding: 2px 10px; color: var(--muted); background: color-mix(in srgb, var(--muted) 12%, transparent); }
+/* Selected lines and comments in their own colour (--review, per theme), never the red of removals. */
+.dl.sel, .dl.add.sel, .dl.del.sel { box-shadow: inset 4px 0 0 var(--review); background: color-mix(in srgb, var(--review) var(--diff-sel-mix), transparent); }
 
 .cform, .ccard { position: sticky; left: 0; box-sizing: border-box; width: min(720px, calc(var(--mr-width, 800px) - 120px)); margin: 6px 10px 8px 60px; font: 13px/1.5 system-ui, sans-serif; white-space: normal; }
-.cform textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; resize: vertical; }
+.cform textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--review); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; resize: vertical; }
 .cform-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
-.ccard { padding: 8px 10px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel); }
+.ccard { padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--review) 40%, var(--border)); border-left: 4px solid var(--review); border-radius: 8px; background: color-mix(in srgb, var(--review) 8%, var(--panel)); }
+.ccard-head svg { color: var(--review); }
 .ccard-head { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
 .ccard-head span { flex: 1; }
 .ccard-head svg { width: 14px; height: 14px; }

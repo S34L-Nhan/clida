@@ -47,6 +47,7 @@
   --hl-number: #986801;
   --hl-comment: #a0a1a7;
   --hl-function: #4078f2;
+  --review: #3b6fd8;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #c18401;
   --hl-variable: #e45649;
   --hl-meta: #0184bc;
@@ -80,6 +81,7 @@
   --hl-number: #d19a66;
   --hl-comment: #7f848e;
   --hl-function: #61afef;
+  --review: #6ea8fe;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #e5c07b;
   --hl-variable: #e06c75;
   --hl-meta: #56b6c2;
@@ -129,6 +131,7 @@
   --hl-number: #c02c73;
   --hl-comment: #7f8e8e;
   --hl-function: #1f73ad;
+  --review: #268bd2;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #9b7500;
   --hl-variable: #c2420f;
   --hl-meta: #5b60b8;
@@ -162,6 +165,7 @@
   --hl-number: #d33682;
   --hl-comment: #6c8288;
   --hl-function: #268bd2;
+  --review: #268bd2;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #b58900;
   --hl-variable: #cb4b16;
   --hl-meta: #6c71c4;
@@ -211,6 +215,7 @@
   --hl-number: #c24d08;
   --hl-comment: #7c7f93;
   --hl-function: #1e66f5;
+  --review: #1e66f5;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #a3620c;
   --hl-variable: #d20f39;
   --hl-meta: #14857f;
@@ -244,6 +249,7 @@
   --hl-number: #fab387;
   --hl-comment: #7f849c;
   --hl-function: #89b4fa;
+  --review: #89b4fa;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #f9e2af;
   --hl-variable: #f38ba8;
   --hl-meta: #94e2d5;
@@ -277,6 +283,7 @@
   --hl-number: #b48ead;
   --hl-comment: #7b88a1;
   --hl-function: #88c0d0;
+  --review: #81a1c1;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #8fbcbb;
   --hl-variable: #dc8b92;
   --hl-meta: #7b9fc9;
@@ -310,6 +317,7 @@
   --hl-number: #bd93f9;
   --hl-comment: #7b88c0;
   --hl-function: #50fa7b;
+  --review: #bd93f9;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #8be9fd;
   --hl-variable: #ff5555;
   --hl-meta: #ffb86c;
@@ -343,6 +351,7 @@
   --hl-number: #d3869b;
   --hl-comment: #928374;
   --hl-function: #8ec07c;
+  --review: #83a598;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #fabd2f;
   --hl-variable: #fb4934;
   --hl-meta: #83a598;
@@ -376,6 +385,7 @@
   --hl-number: #ff9e64;
   --hl-comment: #6a73a0;
   --hl-function: #7aa2f7;
+  --review: #7aa2f7;  /* comments and selections in the changes view: apart from red and green */
   --hl-type: #2ac3de;
   --hl-variable: #f7768e;
   --hl-meta: #7dcfff;
