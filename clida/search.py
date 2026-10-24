@@ -55,6 +55,9 @@ class Search:
         self._db = None
         self._fts = False
         self._failed = {}  # transcript -> (size, mtime) it failed at: not read again until it changes
+        # Built when first needed, in the background: the standard search never asks for it.
+        self._built = threading.Event()
+        self._building = threading.Lock()
 
     # -- the database -----------------------------------------------------------------------
 
@@ -243,6 +246,9 @@ class Search:
         terms = [w for w in dict.fromkeys(query.lower().split()) if len(w) >= MIN_TERM][:MAX_TERMS]
         if not terms:
             return {}
+        if not self._built.is_set() and not self._built_before():
+            self._build()  # all transcripts, the first time ever: in the background
+            return None
         if not self._lock.acquire(timeout=0.5):
             return None  # a search waiting for the build would hold one of the window's connections
         try:
@@ -251,6 +257,34 @@ class Search:
             self._lock.release()
         return {sid: {"uid": uid, "role": role, "ts": ts, "count": n, **_snippet(text, terms)}
                 for sid, uid, role, ts, text, n in rows}
+
+    def _built_before(self) -> bool:
+        """An index from an earlier run: the search catches it up itself, that is quick."""
+        if not self._lock.acquire(timeout=0.5):
+            return False
+        try:
+            found = self._guarded(lambda: self._open().execute("SELECT 1 FROM files LIMIT 1").fetchone())
+        finally:
+            self._lock.release()
+        if found:
+            self._built.set()
+        return bool(found)
+
+    def _build(self):
+        """Catch the index up with every transcript, once per server, in a thread of its own: the
+        first time ever, that reads all of them."""
+        if not self._building.acquire(blocking=False):
+            return  # on its way
+
+        def run():
+            try:
+                self.refresh()
+            except Exception:
+                traceback.print_exc()  # find() tries again on its own, guarded
+            finally:
+                self._built.set()
+
+        threading.Thread(target=run, name="search-index", daemon=True).start()
 
     def _find(self, terms, paths):
         self._refresh()

@@ -493,8 +493,31 @@ const searchQuery = () => $('#search').value.trim().toLowerCase();
 // The chat's best matching message for this search, once the server has answered for it. While
 // the answer for a longer query is on its way, the shorter one's stand in: chats found only by
 // their messages would otherwise blink out with every key.
-const hitFor = (sid, query) => (query && state.hits.query && query.startsWith(state.hits.query)
+const hitFor = (sid, query) => (searchAdvanced && query && state.hits.query && query.startsWith(state.hits.query)
   ? state.hits.map.get(sid) : null) || null;
+
+// The standard search filters by title, folder and first and last prompt, in the window. The
+// advanced one also looks through what was said, on the server.
+let searchAdvanced = store.get('searchAdvanced', false);
+
+function applySearchMode() {
+  $('#search-advanced').checked = searchAdvanced;
+  $('#search').placeholder = t(searchAdvanced ? 'search.placeholderAdvanced' : 'search.placeholder');
+}
+
+function setSearchAdvanced(on) {
+  searchAdvanced = on;
+  store.set('searchAdvanced', on);
+  applySearchMode();
+  if (!on) {  // back to titles only: nothing of the message search stays on its way or on show
+    clearTimeout(searchTimer);
+    state.searchAbort?.abort();
+    state.searchIndexing = null;
+  }
+  renderSidebar();
+  paintSidebar();
+  if (on) searchMessages();
+}
 
 // ---- searching what was said ----------------------------------------------------------------
 // From three characters on, the search also looks through every chat's messages on the server
@@ -505,6 +528,7 @@ let searchTimer = 0;
 
 function searchMessages() {
   clearTimeout(searchTimer);
+  if (!searchAdvanced) return;
   const query = searchQuery();
   if (!query.split(/\s+/).some((word) => word.length >= SEARCH_MIN)) return;  // the server looks words up from three on
   searchTimer = setTimeout(async () => {
@@ -521,7 +545,7 @@ function searchMessages() {
     if (seq !== state.hitsSeq || searchQuery() !== query) return;  // typed on meanwhile
     state.searchIndexing = data.indexing ? query : null;
     if (data.indexing) {
-      // The first start reads every chat once; asked again shortly, the titles found meanwhile.
+      // The first advanced search reads every chat once; asked again shortly, titles shown meanwhile.
       searchTimer = setTimeout(searchMessages, 1500);
       if (!state.renaming && !state.dragging) renderSidebar();
       return;
@@ -620,7 +644,7 @@ function renderSidebar() {
     nodes.push(sessionItem(s));
   }
   if (archived.length) nodes.push(archiveNode(archived, query ? true : store.get('archiveOpen', false)));
-  if (query && state.searchIndexing === query) nodes.unshift(el('div', 'list-note', t('search.indexing')));
+  if (query && searchAdvanced && state.searchIndexing === query) nodes.unshift(el('div', 'list-note', t('search.indexing')));
   if (!nodes.length) nodes.push(el('div', 'list-empty', t(query ? 'list.noMatches' : 'list.empty')));
   const focused = document.activeElement?.closest('#session-list .item, #session-list .folder-head, #session-list .archive-head');
   const focusKey = focused && (focused.dataset.id || focused.dataset.folder || 'archive');
@@ -3516,6 +3540,8 @@ const appKey = (key) => (MAC ? `⌘⇧${key}` : `${t('key.ctrl')}+${t('key.shift
 function translatePage() {
   for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n);
   for (const node of document.querySelectorAll('[data-i18n-placeholder]')) node.placeholder = t(node.dataset.i18nPlaceholder);
+  for (const node of document.querySelectorAll('[data-i18n-title]')) node.title = t(node.dataset.i18nTitle);
+  applySearchMode();
   for (const node of document.querySelectorAll('[data-i18n-label]')) {
     const label = t(node.dataset.i18nLabel);
     node.setAttribute('aria-label', label);
@@ -3622,6 +3648,7 @@ function wire() {
     paintSidebar();
     searchMessages();
   });
+  $('#search-advanced').addEventListener('change', (ev) => setSearchAdvanced(ev.target.checked));
   document.addEventListener('keydown', changesKey);
 
   // No developer tools from the keyboard: F12, Ctrl+Shift+I/J/C and Ctrl+U (view source); on a Mac
