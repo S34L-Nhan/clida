@@ -37,6 +37,15 @@ The switch in the header has three views:
 
 **Fortsetzen** (resume) restarts a finished chat with `claude --resume`. **Beenden** (stop) ends a running one. Closing a tab does neither.
 
+### Back to a message
+
+Hover a message in the history for two more buttons next to the note icon:
+
+- **Abzweigen** (fork): a new chat with the conversation up to that point starts in the terminal. From an answer it ends with that answer; from one of your prompts it ends just before it, and the prompt is typed in again, unsent, for you to change. The chat you forked from stays as it is.
+- **Dateien zurücksetzen** (restore files), on your prompts: what Claude changed with Edit or Write from that prompt on goes back to how it was before, from the CLI's own checkpoints (what `/rewind` uses). Files it created are deleted; changes made by shell commands stay. Only while the chat is stopped.
+
+Together they are the CLI's `/rewind`, without losing the conversation as it was.
+
 ### Changes
 
 A merge-request view of everything the chat changed:

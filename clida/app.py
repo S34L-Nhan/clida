@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -16,10 +17,12 @@ from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .search import Search
 from .settings import Settings, tr
-from .terminals import UPLOADS, Terminals
+from .terminals import UPLOADS, Terminals, child_env
 from .worktrees import WorktreeError, Worktrees
 
 UPLOAD_LIMIT = 50 * 1024 * 1024
+ANCHOR = re.compile(r"[0-9a-f-]{36}#\d{1,4}")  # a message in the history: entry uuid # its place in it
+REWIND_TIMEOUT = 120
 PROMPT_MAX = 100_000  # characters a prompt from the window may have
 WINDOW_TTL = 90  # seconds a window counts as open after its last request; a hidden one polls once a minute
 
@@ -369,15 +372,88 @@ class Desk:
 
     def remove_worktree(self, session_id: str) -> dict:
         """Delete the chat's worktree and branch; only while no CLI works in it."""
-        status = self.status()
-        if (any(t["session_id"] == session_id and t["status"] != "exited" for t in status["terminals"])
-                or any(e["session_id"] == session_id for e in status["external"])):
+        if self._running(session_id):
             raise HttpError(409, tr("Diese Sitzung läuft noch. Bitte zuerst beenden.",
                                     "This session is still running. Please stop it first."))
         try:
             self.worktrees.remove(session_id)
         except WorktreeError as e:
             raise HttpError(409, str(e))
+        return {"ok": True}
+
+    # -- back to a message: its files, or the conversation up to it -----------------------------
+
+    def _running(self, session_id: str) -> bool:
+        status = self.status()
+        return (any(t["session_id"] == session_id and t["status"] != "exited" for t in status["terminals"])
+                or any(e["session_id"] == session_id for e in status["external"]))
+
+    @staticmethod
+    def _message(body: dict, roles=("user", "assistant")):
+        anchor, role = str(body.get("anchor") or ""), body.get("role")
+        if not ANCHOR.fullmatch(anchor) or role not in roles:
+            raise HttpError(400, tr("Ungültige Nachricht", "Invalid message"))
+        return anchor.split("#")[0], role
+
+    def _chat_folder(self, session_id: str):
+        info = self._require_session(session_id)
+        if not info["cwd"] or not os.path.isdir(info["cwd"]):
+            raise HttpError(400, tr("Arbeitsverzeichnis existiert nicht mehr: ",
+                                    "Working directory no longer exists: ") + str(info["cwd"]))
+        return info
+
+    def fork(self, session_id: str, body: dict) -> dict:
+        """A new chat with the conversation up to a message, started in a terminal.
+
+        At an answer the copy ends with that answer; at a prompt it ends just before it, so the
+        prompt can be written anew (the window types it in again, unsent).
+        """
+        message, role = self._message(body)
+        info = self._chat_folder(session_id)
+        new_id = str(uuid.uuid4())
+        try:
+            path = transcripts.fork(info["path"], message, role == "user", new_id)
+        except LookupError:
+            raise HttpError(404, tr("Nachricht nicht im Verlauf gefunden", "Message not found in the history"))
+        except ValueError:
+            raise HttpError(400, tr("Vor der ersten Nachricht gibt es nichts zu übernehmen: einfach einen neuen Chat starten.",
+                                    "There is nothing before the first message: just start a new chat."))
+        except OSError as e:
+            raise HttpError(500, tr("Abzweigen fehlgeschlagen: ", "Forking failed: ") + str(e))
+        title = (tr("Abzweig: ", "Fork: ") + self._title(session_id, info))[:200]
+        self.titles.set(new_id, title)
+        transcripts.append_custom_title(path, new_id, title)
+        folder = self.library.snapshot()["folder_of"].get(session_id)
+        if folder:
+            self.library.move(new_id, folder)
+        self.index.scan()
+        term = self.terminals.start(info["cwd"], resume=new_id)
+        return {"id": term.id, "session_id": new_id, "cwd": term.cwd}
+
+    def rewind_files(self, session_id: str, body: dict) -> dict:
+        """Put the files Claude changed with its edit tools back as they were before a prompt.
+
+        The CLI's own checkpoints do it (what /rewind restores from): claude --resume <chat>
+        --rewind-files <prompt> changes the files and exits. Only while the chat is not running:
+        the running CLI would not know its files went back.
+        """
+        message, _ = self._message(body, roles=("user",))
+        info = self._chat_folder(session_id)
+        if self._running(session_id):
+            raise HttpError(409, tr("Diese Sitzung läuft noch. Bitte zuerst beenden.",
+                                    "This session is still running. Please stop it first."))
+        # Checkpoints are on in the interactive CLI; a run like this one needs to ask for them.
+        env = {**child_env(), "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1"}
+        try:
+            out = subprocess.run([self.terminals.claude, "--resume", session_id, "--rewind-files", message],
+                                 cwd=info["cwd"], env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                                 timeout=REWIND_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise HttpError(500, tr("Die CLI ließ sich nicht starten: ", "The CLI did not run: ") + str(e))
+        said = transcripts.strip_ansi((out.stderr or out.stdout).decode("utf-8", "replace")).strip()
+        if out.returncode != 0:
+            raise HttpError(409, tr("Die CLI hat die Dateien nicht zurückgesetzt: ", "The CLI did not restore the files: ")
+                            + (said.splitlines()[-1] if said else f"exit {out.returncode}"))
         return {"ok": True}
 
     def create_folder(self, name) -> dict:
@@ -540,8 +616,9 @@ class Desk:
             term.write(report)
         return {"sent": len(terms)}
 
-    def send_prompt(self, terminal_id: str, text) -> dict:
-        """Type a prompt into a session and send it, e.g. the review comments of the changes view.
+    def send_prompt(self, terminal_id: str, text, submit: bool = True) -> dict:
+        """Type a prompt into a session and send it, e.g. the review comments of the changes view;
+        without submit it is only typed in, for the user to change and send.
 
         As one bracketed paste, so its line breaks stay in the message instead of sending it early.
         Control characters go: an ESC in it could end the paste and type keys into the CLI.
@@ -555,7 +632,7 @@ class Desk:
         if len(text) > PROMPT_MAX:
             raise HttpError(413, tr("Text ist zu lang", "The text is too long"))
         # Only into a CLI that says it is idle, checked now: typed into a permission prompt, the
-        # Enter would answer it. Without its own report, "idle" is just quiet output, as a prompt is.
+        # Enter (or the text's own letters) would answer it. Without its own report, "idle" is just quiet output, as a prompt is.
         entry = registry.running().get(term.pid)
         if entry is None or registry.cli_status(entry) != "idle":
             raise HttpError(409, tr("Die CLI ist gerade nicht bereit (sie arbeitet oder wartet auf eine Antwort). "
@@ -563,8 +640,9 @@ class Desk:
                                     "The CLI is not ready right now (it is working or waiting for an answer). "
                                     "The comments are kept."))
         term.write(b"\x1b[200~" + text.encode() + b"\x1b[201~")
-        time.sleep(0.2)  # the CLI takes the paste in first; an Enter in the same read could be part of it
-        term.write(b"\r")
+        if submit:
+            time.sleep(0.2)  # the CLI takes the paste in first; an Enter in the same read could be part of it
+            term.write(b"\r")
         return {"ok": True}
 
     def stop_terminal(self, terminal_id: str) -> dict:

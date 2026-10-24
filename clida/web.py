@@ -51,6 +51,8 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("PUT", rf"/api/sessions/{SID}/archived", "archive_session"),
     ("DELETE", rf"/api/sessions/{SID}", "delete_session"),
     ("POST", rf"/api/sessions/{SID}/worktree/merge", "merge_worktree"),
+    ("POST", rf"/api/sessions/{SID}/fork", "fork"),
+    ("POST", rf"/api/sessions/{SID}/rewind-files", "rewind_files"),
     ("DELETE", rf"/api/sessions/{SID}/worktree", "remove_worktree"),
     ("GET", rf"/api/sessions/{SID}/notes", "notes"),
     ("PUT", rf"/api/sessions/{SID}/notes/session", "session_note"),
@@ -289,6 +291,12 @@ class Handler(BaseHTTPRequestHandler):
     def route_remove_worktree(self, sid):
         self._send_json(200, self.desk.remove_worktree(sid))
 
+    def route_fork(self, sid):
+        self._send_json(200, self.desk.fork(sid, self._body()))
+
+    def route_rewind_files(self, sid):
+        self._send_json(200, self.desk.rewind_files(sid, self._body()))
+
     def route_notes(self, sid):
         self._send_json(200, self.desk.notes_of(sid))
 
@@ -351,7 +359,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ticket": ticket})
 
     def route_send_prompt(self, sid):
-        self._send_json(200, self.desk.send_prompt(sid, self._body().get("text")))
+        body = self._body()
+        self._send_json(200, self.desk.send_prompt(sid, body.get("text"), body.get("submit") is not False))
 
     def route_stop_terminal(self, sid):
         self._send_json(200, self.desk.stop_terminal(sid))

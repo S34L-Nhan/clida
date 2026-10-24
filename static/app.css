@@ -550,6 +550,7 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
 .dialog .check-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; cursor: pointer; }
 .dialog .check-row input { width: auto; height: auto; margin: 0; accent-color: var(--accent); }
 .dialog .dialog-hint { margin: 4px 0 0 24px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.ask-files { display: block; max-height: 180px; overflow-y: auto; margin-top: 10px; font-size: 12.5px; line-height: 1.6; }
 .error { color: var(--danger); min-height: 1.2em; margin: 10px 0 0; font-size: 13px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
@@ -726,20 +727,19 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
 .msg-wrap.found { animation: found 2.4s ease-out; border-radius: 10px; }
 @keyframes found { 0%, 35% { background: color-mix(in srgb, var(--accent) 14%, transparent); } 100% { background: transparent; } }
 ::highlight(clida-found) { background-color: color-mix(in srgb, var(--accent) 35%, transparent); }
-.msg-wrap .note-add {
+.msg-wrap .msg-tools {
   position: absolute;
   top: -4px;
   right: -6px;
-  display: inline-grid;
-  opacity: 0;  /* not display: none, which would also take it out of the keyboard's reach */
-  width: 28px;
-  height: 28px;
-  background: var(--panel);
-  border: 1px solid var(--border);
+  display: flex;
+  gap: 4px;
+  opacity: 0;  /* not display: none, which would also take the buttons out of the keyboard's reach */
 }
-.msg-wrap.user .note-add { right: auto; left: 0; }
-.msg-wrap:hover .note-add, .msg-wrap .note-add:focus-visible { opacity: 1; }
-.msg-wrap .note-add svg { width: 15px; height: 15px; }
+.msg-wrap.user .msg-tools { right: auto; left: 0; }
+.msg-wrap:hover .msg-tools, .msg-wrap .msg-tools:focus-within { opacity: 1; }
+.msg-tools .icon-btn { width: 28px; height: 28px; background: var(--panel); border: 1px solid var(--border); }
+.msg-tools .icon-btn:hover { background: var(--hover); }
+.msg-tools .icon-btn svg { width: 15px; height: 15px; }
 .note-card {
   margin: 4px 0 16px;
   padding: 8px 12px 10px;

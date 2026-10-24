@@ -40,6 +40,7 @@ const ICONS = {
   tree: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3.5" width="6" height="5" rx="1"/><rect x="13" y="10" width="7" height="4.5" rx="1"/><rect x="13" y="16" width="7" height="4.5" rx="1"/><path d="M7 8.5v10h6M7 12.3h6"/></svg>',
   list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg>',
   comment: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 5h16v11H10l-5 4v-4H4z"/></svg>',
+  fork: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v1.5a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7M12 11.5V17"/></svg>',
   width: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16M20 4v16M8 12h8M10.5 9.5L8 12l2.5 2.5M13.5 9.5L16 12l-2.5 2.5"/></svg>',
 };
 const icon = (name) => {
@@ -159,7 +160,7 @@ function enhanceCodeBlock(pre) {
   box.append(bar, pre);
 }
 
-async function copyText(text, button) {
+async function writeClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -170,6 +171,10 @@ async function copyText(text, button) {
     document.execCommand('copy');
     area.remove();
   }
+}
+
+async function copyText(text, button) {
+  await writeClipboard(text);
   button.replaceChildren(icon('check'), el('span', '', t('copied')));
   button.classList.add('done');
   clearTimeout(button.resetTimer);
@@ -1775,7 +1780,8 @@ function editSessionNote(tab) {
   }));
 }
 
-// A user or assistant message, with its add-note button and the notes anchored to it.
+// A user or assistant message, with its buttons (fork from here, restore the files, add a note)
+// and the notes anchored to it.
 function withNotes(tab, item) {
   const node = renderItem(item);
   if (!item.uid || (item.k !== 'user' && item.k !== 'assistant')) return [node];
@@ -1812,7 +1818,21 @@ function withNotes(tab, item) {
     editor.dataset.anchor = item.uid;
     wrap.after(editor);
   };
-  wrap.append(node, add);
+  const tools = el('div', 'msg-tools');
+  const fork = el('button', 'icon-btn');
+  fork.title = t(item.k === 'user' ? 'fork.beforeHint' : 'fork.afterHint');
+  fork.append(icon('fork'));
+  fork.onclick = () => forkAt(tab, item);
+  tools.append(fork);
+  if (item.k === 'user') {
+    const rewind = el('button', 'icon-btn');
+    rewind.title = t('rewind.hint');
+    rewind.append(icon('restore'));
+    rewind.onclick = () => rewindTo(tab, item);
+    tools.append(rewind);
+  }
+  tools.append(add);
+  wrap.append(node, tools);
   const cards = tab.notes.messages.filter((note) => note.anchor === item.uid).map((note) => noteCard(tab, note));
   return [wrap, ...cards];
 }
@@ -1960,6 +1980,81 @@ function toolInput(item) {
     pre.append(el('span', cls, line + '\n'));
   }
   return pre;
+}
+
+// ---- back to a message -------------------------------------------------------------------
+// Fork: a new chat with the conversation up to a message (from a prompt: up to just before it,
+// and the prompt is typed in again to be changed). Restore: the files Claude changed with its
+// edit tools from a prompt on go back to how they were before it, from the CLI's checkpoints.
+// Together they are the CLI's /rewind, without losing the chat as it was.
+
+const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit'];
+
+async function forkAt(tab, item) {
+  const before = item.k === 'user';
+  if (!(await ask({ title: t('fork.title'), text: t(before ? 'fork.textUser' : 'fork.textAssistant'), yes: t('fork.yes') }))) return;
+  let started;
+  try {
+    started = await change('POST', `/api/sessions/${tabSession(tab)}/fork`, { anchor: item.uid, role: item.k });
+    await refreshSessions();  // its title and terminal, before its tab opens
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  if (!findTab(started.id)) addTab(started.id, 'terminal', started.session_id);
+  activate(started.id);
+  if (before) typeWhenReady(started.id, item.text);
+}
+
+// Type a prompt into a session that is starting, unsent, once its CLI says it is ready. If it
+// never does, the text goes to the clipboard instead.
+async function typeWhenReady(terminalId, text) {
+  for (let waited = 0; waited < 30000; waited += 500) {
+    await sleep(500);
+    await refreshStatus();
+    const row = state.terminals.get(terminalId);
+    if (!row || row.status === 'exited') break;
+    if (row.status === 'idle' && row.reported) {
+      try {
+        await api('POST', `/api/terminals/${terminalId}/prompt`, { text, submit: false });
+        return;
+      } catch {
+        break;
+      }
+    }
+  }
+  await writeClipboard(text);
+  toast(t('fork.copied'));
+}
+
+async function rewindTo(tab, item) {
+  const sid = tabSession(tab);
+  if (state.bySession.has(sid) || state.external.has(sid)) {
+    toast(t('rewind.stopFirst'));
+    return;
+  }
+  // The files changed from this prompt on, as the history shows them: what the question names.
+  const cwd = state.byId.get(sid)?.cwd;
+  const files = [...new Set(tab.items.slice(tab.items.indexOf(item))
+    .filter((step) => step.k === 'tool' && EDIT_TOOLS.includes(step.name) && step.summary && !step.error)
+    .map((step) => (cwd && step.summary.startsWith(`${cwd}/`) ? step.summary.slice(cwd.length + 1) : step.summary)))];
+  if (!files.length) {
+    toast(t('rewind.none'));
+    return;
+  }
+  const list = el('span', 'ask-files');
+  for (const file of files.slice(0, 8)) list.append(el('code', '', file), el('br'));
+  if (files.length > 8) list.append(t('rewind.more', { n: files.length - 8 }));
+  const text = [t('rewind.text'), list];
+  if (!(await ask({ title: t('rewind.title'), text, yes: t('rewind.yes'), danger: true }))) return;
+  try {
+    await api('POST', `/api/sessions/${sid}/rewind-files`, { anchor: item.uid, role: item.k });
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  toast(t('rewind.done'));
+  loadChanges(tab);
 }
 
 // ---- changes ------------------------------------------------------------------------------

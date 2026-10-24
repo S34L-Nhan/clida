@@ -52,6 +52,10 @@ TOOL_TEXT_LIMIT = 4000
 MAX_ITEMS = 3000
 
 
+def strip_ansi(text: str) -> str:
+    return _ANSI.sub("", text)
+
+
 def _str(value):
     """value if it is a string; transcripts are written by another program, so check every type."""
     return value if isinstance(value, str) else None
@@ -309,6 +313,53 @@ def append_custom_title(path: str, session_id: str, title: str):
                       ensure_ascii=False, separators=(",", ":"))
     with open(path, "ab") as f:
         f.write(line.encode() + b"\n")
+
+
+# Not copied into a fork: titles and summaries are the original's, and cost-state would count the
+# original's cost a second time.
+_NOT_FORKED = {"custom-title", "ai-title", "summary", "last-prompt", "cost-state"}
+
+
+def fork(path: str, message: str, before: bool, new_id: str) -> str:
+    """Copy a chat up to one of its messages into a new chat new_id, as `claude --fork-session`
+    would, but cut there: up to and including the message, or, with before, up to the entry the
+    message follows (to write that prompt anew). Returns the new transcript's path.
+
+    The CLI resumes from the last entry and follows parentUuid back from it, so whatever else is
+    in the copy (abandoned branches of an earlier /rewind) stays out of the conversation. The
+    chat's file backups are copied too: the changes view and /rewind of the fork use them.
+    """
+    if not SESSION_ID.fullmatch(new_id):
+        raise ValueError(f"not a session id: {new_id}")
+    entries = []
+    with open(path, "rb") as f:
+        for line in f:
+            entry = _loads(line)
+            if entry is not None:
+                entries.append(entry)
+    at = next((i for i, e in enumerate(entries) if e.get("uuid") == message), None)
+    if at is None:
+        raise LookupError(message)
+    if before:
+        parent = entries[at].get("parentUuid")
+        at = next((i for i in range(at - 1, -1, -1) if parent and entries[i].get("uuid") == parent), None)
+        if at is None:
+            raise ValueError("nothing before the first message")
+    target = Path(path).with_name(new_id + ".jsonl")
+    tmp = target.with_name(target.name + ".tmp")  # not *.jsonl: the index must not see it half written
+    with open(tmp, "wb") as f:
+        for entry in entries[:at + 1]:
+            if entry.get("type") in _NOT_FORKED:
+                continue
+            if "sessionId" in entry:
+                entry["sessionId"] = new_id
+            # ASCII escapes: a transcript may hold half an emoji (a lone surrogate), which UTF-8 cannot encode.
+            f.write(json.dumps(entry, separators=(",", ":")).encode() + b"\n")
+    os.replace(tmp, target)
+    backups = FILE_HISTORY / Path(path).stem
+    if backups.is_dir():
+        shutil.copytree(backups, FILE_HISTORY / new_id, dirs_exist_ok=True)
+    return str(target)
 
 
 def _tool_summary(name: str, inp: dict) -> str:
