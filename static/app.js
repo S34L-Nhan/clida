@@ -1686,7 +1686,21 @@ function toolInput(item) {
 
 const DIFF_COLLAPSE_ROWS = 800;  // a diff with more rows starts collapsed
 const SCROLL_ANCHORING = CSS.supports('overflow-anchor', 'auto');
-const DIFF_ROW_PX = 19.4;  // one diff row: 12.5px type at line-height 1.55 (.net-diff)
+// The height of one diff row as the stylesheet draws it, measured once.
+let diffRowPx = 0;
+function rowHeight() {
+  if (!diffRowPx) {
+    const probe = el('div', 'net-diff');
+    probe.style.cssText = 'position:absolute;visibility:hidden;left:-9999px';
+    const row = el('div', 'dl');
+    row.append(el('span', 'code', 'x'));
+    probe.append(row);
+    document.body.append(probe);
+    diffRowPx = row.getBoundingClientRect().height || 19;
+    probe.remove();
+  }
+  return diffRowPx;
+}
 const PROMPT_CODE_LINES = 60;    // code lines quoted per comment in the prompt
 
 // Without the diffs unless the view is shown: the other tabs only need the counts, and showing
@@ -1723,7 +1737,9 @@ const saveReview = (tab) => store.set(reviewKey(tab), tab.review);
 function renderChanges(tab) {
   tab.changesStale = false;
   const { files } = tab.changes;
-  const keep = { main: tab.mrMain?.scrollTop || 0, side: tab.mrList?.scrollTop || 0 };
+  // Back to the same file and place after the redraw: the diffs above have only estimated
+  // heights until drawn, so the same scroll offset could be in another file.
+  const keep = { anchor: viewAnchor(tab), main: tab.mrMain?.scrollTop || 0, side: tab.mrList?.scrollTop || 0 };
   tab.mrObserver?.disconnect();
   tab.collapsed ||= new Set(files.filter((f) => (f.net?.length || 0) > DIFF_COLLAPSE_ROWS).map((f) => f.path));
   const layout = el('div', 'mr');
@@ -1802,8 +1818,25 @@ function renderChanges(tab) {
   layout.append(side, column);
   tab.changesInner.replaceChildren(layout);
   renderFileList(tab);
-  main.scrollTop = keep.main;
+  const anchored = keep.anchor && tab.mrBlocks.get(keep.anchor.path);
+  if (anchored) {
+    anchored.fill();
+    main.scrollTop = anchored.offsetTop - main.offsetTop + keep.anchor.offset;
+  } else {
+    main.scrollTop = keep.main;
+  }
   list.scrollTop = keep.side;
+}
+
+// The file at the top of the view and how far into it the view is.
+function viewAnchor(tab) {
+  if (!tab.mrMain || !tab.mrBlocks || !tab.mrMain.scrollTop) return null;
+  const top = tab.mrMain.getBoundingClientRect().top;
+  for (const [path, block] of tab.mrBlocks) {
+    const rect = block.getBoundingClientRect();
+    if (rect.bottom > top) return { path, offset: top - rect.top };
+  }
+  return null;
 }
 
 function changesTop(tab) {
@@ -2048,9 +2081,10 @@ function fileBlock(tab, file) {
     head.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `−${file.removed}`));
   }
   const body = el('div', 'mr-file-body');
-  // Until drawn, a diff holds its height (rows × line height): without it all the empty blocks
-  // would fit on screen at once and the observer would draw every one of them.
-  if (file.net?.length) body.style.minHeight = `${file.net.length * DIFF_ROW_PX}px`;
+  // Until drawn, a body holds about its height (rows × row height): without it all the empty
+  // blocks would fit on screen at once and the observer would draw every one of them.
+  const rows = file.net?.length || (!file.known ? file.steps.reduce((n, step) => n + step.lines.length + 2, 0) : 0);
+  body.style.minHeight = `${Math.max(rows * rowHeight(), 40)}px`;
   block.append(head, body);
   const showCollapsed = (collapsed) => {
     block.classList.toggle('collapsed', collapsed);
@@ -2073,7 +2107,7 @@ function fileBlock(tab, file) {
     // Drawn above the view, the browser keeps the view in place (scroll anchoring); Safari has
     // none, so there the view moves along by as much as the diff grew.
     const main = tab.mrMain;
-    const above = !SCROLL_ANCHORING && main && block.getBoundingClientRect().bottom <= main.getBoundingClientRect().top + 1;
+    const above = !SCROLL_ANCHORING && main && block.getBoundingClientRect().top < main.getBoundingClientRect().top;
     const before = block.offsetHeight;
     fillFile(tab, file, body);
     body.style.minHeight = '';
@@ -2316,7 +2350,7 @@ async function sendReview(tab) {
       // A CLI that never reports gets the explanation after a few seconds, not a minute; one that
       // reports late (a resumed one, a session file being rewritten) gets those seconds.
       unreported = row.status === 'idle' && !row.reported ? unreported + 1 : 0;
-      if (unreported >= 8) break;
+      if (unreported >= 20) break;  // 10 s
       await sleep(500);
       await refreshStatus();
       row = state.bySession.get(sid);
@@ -2335,6 +2369,7 @@ async function sendReview(tab) {
     saveReview(tab);
     // The sent comments' cards go now (one edited before the next load would be lost); the view
     // is drawn afresh when shown again.
+    closeCommentForm(tab);  // an edit of a sent comment would go nowhere
     for (const card of tab.changesInner.querySelectorAll('.ccard')) card.remove();
     tab.changesSignature = null;
     setView(tab, 'terminal');
