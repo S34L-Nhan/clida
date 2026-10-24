@@ -1704,7 +1704,7 @@ async function loadChanges(tab) {
   if (!brief) {
     const signature = JSON.stringify([language(), data]);
     // A comment being written stays: the view catches up once it is saved or dropped.
-    if (tab.changesInner.querySelector('.cform')) tab.changesStale = signature !== tab.changesSignature;
+    if (tab.changesInner.querySelector('.cform')) tab.changesStale ||= signature !== tab.changesSignature;
     else if (signature !== tab.changesSignature) renderChanges(tab);  // unchanged: keep scroll and open files
     tab.changesSignature = signature;
   }
@@ -1775,9 +1775,10 @@ function renderChanges(tab) {
     for (const entry of entries) if (entry.isIntersecting) entry.target.fill?.();
   }, { root: main, rootMargin: '600px 0px' });
   tab.mrBlocks = new Map();
-  // In the order of the file list: repository by repository, files outside any last.
+  // In the order of the file list: repository by repository, files outside any last, and in each
+  // the tree's order (folders before the files next to them).
   const ordered = [...files].sort((a, b) => (!a.repo) - (!b.repo) || (a.repo?.top || '').localeCompare(b.repo?.top || '')
-    || groupPath(a).localeCompare(groupPath(b)));
+    || treeCompare(groupPath(a), groupPath(b)));
   for (const file of ordered) {
     const block = fileBlock(tab, file);
     tab.mrBlocks.set(file.path, block);
@@ -1868,6 +1869,19 @@ function renderFileList(tab) {
       : group.files.map((file) => fileRow(tab, file, groupPath(file), 0))));
   }
   list.replaceChildren(...rows);
+}
+
+// The tree's order for two paths: by folder, a folder before the files beside it.
+function treeCompare(a, b) {
+  const x = a.split('/');
+  const y = b.split('/');
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    if (x[i] === y[i]) continue;
+    const xFile = i === x.length - 1;
+    const yFile = i === y.length - 1;
+    return xFile !== yFile ? (xFile ? 1 : -1) : x[i].localeCompare(y[i]);
+  }
+  return x.length - y.length;
 }
 
 // Folders with a single folder in them and no files are one row, as in GitLab: memodo/Service.
@@ -2032,7 +2046,13 @@ function fileBlock(tab, file) {
   block.fill = () => {
     if (block.dataset.filled || block.classList.contains('collapsed')) return;
     block.dataset.filled = '1';
+    // A diff drawn above what is in view would push it down (after a jump from the file list,
+    // the file jumped to): the view moves along by as much as the diff grew.
+    const main = tab.mrMain;
+    const above = main && block.getBoundingClientRect().bottom <= main.getBoundingClientRect().top + 1;
+    const before = block.offsetHeight;
     fillFile(tab, file, body);
+    if (above) main.scrollTop += block.offsetHeight - before;
   };
   block.setCollapsed(tab.collapsed.has(file.path));
   return block;
@@ -2132,7 +2152,7 @@ function codeLines(rows, from, to) {
   return rows.slice(from, to + 1).filter((r) => r[0] !== '@').map((r) => `${r[0] === ' ' ? ' ' : r[0]}${r[3]}`);
 }
 
-function commentForm(tab, initial, onSave) {
+function commentForm(tab, initial, onSave, onCancel = null) {
   const form = el('div', 'cform');
   const area = el('textarea');
   area.value = initial;
@@ -2145,6 +2165,7 @@ function commentForm(tab, initial, onSave) {
     closeCommentForm(tab);
     if (text) onSave(text);
     else if (tab.changesStale) renderChanges(tab);
+    else onCancel?.();
   };
   cancel.onclick = () => done('');
   save.onclick = () => done(area.value.trim());
@@ -2195,7 +2216,7 @@ function commentCard(tab, file, comment, lost = false) {
       comment.text = text;
       saveReview(tab);
       afterReviewChange(tab, file);
-    });
+    }, () => afterReviewChange(tab, file));  // cancelled: the card comes back as it was
     card.replaceWith(form);
     form.querySelector('textarea').focus();
   };
@@ -2277,7 +2298,9 @@ async function sendReview(tab) {
     await api('POST', `/api/terminals/${row.id}/prompt`, { text });
     tab.review = [];
     saveReview(tab);
-    renderChanges(tab);
+    // What tab.changes holds may be the counts only (loaded while the terminal was shown), so the
+    // view is redrawn from full data when it is shown again, not now.
+    tab.changesSignature = null;
     setView(tab, 'terminal');
   } catch (e) {
     toast(e.message);
