@@ -1686,6 +1686,7 @@ function toolInput(item) {
 
 const DIFF_COLLAPSE_ROWS = 800;  // a diff with more rows starts collapsed
 const SCROLL_ANCHORING = CSS.supports('overflow-anchor', 'auto');
+const DIFF_ROW_PX = 19.4;  // one diff row: 12.5px type at line-height 1.55 (.net-diff)
 const PROMPT_CODE_LINES = 60;    // code lines quoted per comment in the prompt
 
 // Without the diffs unless the view is shown: the other tabs only need the counts, and showing
@@ -1745,10 +1746,10 @@ function renderChanges(tab) {
     button.append(icon(mode === 'tree' ? 'tree' : 'list'));
     button.onclick = () => {
       store.set('changesTree', mode === 'tree');
-      for (const other of modes.children) other.classList.toggle('on', other === button);
       // The diffs take the list's order too, but not over a comment being written: they follow
       // once it is saved or dropped, as after a refresh.
       if (tab.changesInner.querySelector('.cform')) {
+        for (const other of modes.children) other.classList.toggle('on', other === button);
         tab.changesStale = true;
         renderFileList(tab);
       } else {
@@ -1867,6 +1868,7 @@ function renderFileList(tab) {
     groups.get(key).files.push(file);
   }
   const rows = [];
+  const byPath = pathCompare();
   for (const [key, group] of [...groups].sort(([a], [b]) => (!a) - (!b) || a.localeCompare(b))) {
     const head = el('div', `mr-group${group.repo ? '' : ' outside'}`);
     if (group.repo) {
@@ -1878,7 +1880,7 @@ function renderFileList(tab) {
     }
     rows.push(head);
     rows.push(...(store.get('changesTree', true) ? treeRows(tab, group.files)
-      : [...group.files].sort((a, b) => pathCompare()(groupPath(a), groupPath(b))).map((file) => fileRow(tab, file, groupPath(file), 0))));
+      : [...group.files].sort((a, b) => byPath(groupPath(a), groupPath(b))).map((file) => fileRow(tab, file, groupPath(file), 0))));
   }
   list.replaceChildren(...rows);
 }
@@ -1948,6 +1950,7 @@ function fileRow(tab, file, name, depth) {
     if (!block) return;
     if (tab.collapsed.delete(file.path)) block.setCollapsed(false);
     tab.mrMain.scrollTop = block.offsetTop - tab.mrMain.offsetTop;
+    block.fill();  // it is in view now; not left to the observer's next round
   };
   row.onclick = go;
   row.onkeydown = (ev) => { if (ev.key === 'Enter') go(); };
@@ -2045,12 +2048,18 @@ function fileBlock(tab, file) {
     head.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `−${file.removed}`));
   }
   const body = el('div', 'mr-file-body');
+  // Until drawn, a diff holds its height (rows × line height): without it all the empty blocks
+  // would fit on screen at once and the observer would draw every one of them.
+  if (file.net?.length) body.style.minHeight = `${file.net.length * DIFF_ROW_PX}px`;
   block.append(head, body);
-  block.setCollapsed = (collapsed) => {
+  const showCollapsed = (collapsed) => {
     block.classList.toggle('collapsed', collapsed);
     toggle.replaceChildren(icon(collapsed ? 'chevronRight' : 'chevronDown'));
     toggle.title = t(collapsed ? 'changes.expand' : 'changes.collapse');
-    if (!collapsed) block.fill();
+  };
+  block.setCollapsed = (collapsed) => {
+    showCollapsed(collapsed);
+    if (!collapsed) block.fill();  // opened by hand or by a jump: drawn now, it is in view
   };
   head.onclick = (ev) => {
     if (ev.target.closest('a')) return;
@@ -2067,9 +2076,10 @@ function fileBlock(tab, file) {
     const above = !SCROLL_ANCHORING && main && block.getBoundingClientRect().bottom <= main.getBoundingClientRect().top + 1;
     const before = block.offsetHeight;
     fillFile(tab, file, body);
+    body.style.minHeight = '';
     if (above) main.scrollTop += block.offsetHeight - before;
   };
-  block.setCollapsed(tab.collapsed.has(file.path));
+  showCollapsed(tab.collapsed.has(file.path));  // the diff itself waits for the observer
   return block;
 }
 
@@ -2300,8 +2310,13 @@ async function sendReview(tab) {
     const text = reviewPrompt(tab);
     if (!state.bySession.has(sid)) await resumeTab(tab);
     let row = state.bySession.get(sid);
+    let unreported = 0;  // polls in a row that found the CLI quiet but without its own report
     for (let waited = 0; row && !(row.status === 'idle' && row.reported) && waited < 60000; waited += 500) {
-      if (row.status === 'exited' || (row.status === 'idle' && !row.reported)) break;  // waiting would not change it
+      if (row.status === 'exited') break;
+      // A CLI that never reports gets the explanation after a few seconds, not a minute; one that
+      // reports late (a resumed one, a session file being rewritten) gets those seconds.
+      unreported = row.status === 'idle' && !row.reported ? unreported + 1 : 0;
+      if (unreported >= 8) break;
       await sleep(500);
       await refreshStatus();
       row = state.bySession.get(sid);
@@ -2318,8 +2333,10 @@ async function sendReview(tab) {
     await api('POST', `/api/terminals/${row.id}/prompt`, { text });
     tab.review = [];
     saveReview(tab);
-    renderReviewBar(tab);
-    tab.changesSignature = null;  // the comment cards go when the view is shown again, from fresh data
+    // The sent comments' cards go now (one edited before the next load would be lost); the view
+    // is drawn afresh when shown again.
+    for (const card of tab.changesInner.querySelectorAll('.ccard')) card.remove();
+    tab.changesSignature = null;
     setView(tab, 'terminal');
   } catch (e) {
     toast(e.message);

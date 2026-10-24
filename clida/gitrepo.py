@@ -20,6 +20,7 @@ MARGIN = 120  # seconds after the chat's last transcript write that still count 
 MAX_FILES = 200
 MAX_REPOS = 5
 OUTSIDE_TTL = 10  # seconds a folder counts as outside any repository before git is asked again
+TOP_TTL = 60  # seconds a folder's repository is kept
 DIFF_CACHE_ROWS = 200_000  # diff rows kept in memory over all files (each diff has at most 3001)
 
 
@@ -43,7 +44,9 @@ def _head_at(top: str, when: float):
     The reflog knows where HEAD was at any time, but only since the clone; before that, the
     newest commit of the current history made before then stands in.
     """
-    reflog = git(top, "reflog", "--date=unix", "--format=%H %gd") or ""
+    reflog = git(top, "reflog", "--date=unix", "--format=%H %gd")
+    if reflog is None:
+        return None  # git failed: the fallback below could only guess
     entries = []
     for line in reflog.splitlines():
         sha, _, ref = line.partition(" ")
@@ -102,7 +105,7 @@ class RepoChanges:
         # (top, base, rel) -> (stamp, diff fields); a diff can have thousands of rows, so by rows too
         self._diffs = Lru(400, budget=DIFF_CACHE_ROWS, weight=lambda fields: len(fields.get("net") or ()))
         self._states = Lru(32)  # (top, start) -> (repo state, git state of its files)
-        self._tops = Lru(2000)  # folder -> its repository's top folder ("" outside one, for OUTSIDE_TTL)
+        self._tops = Lru(2000)  # folder -> its repository's top folder, for TOP_TTL ("" outside one, for OUTSIDE_TTL)
 
     def _top(self, folder: str) -> str:
         """The repository a folder is in; for a deleted file, its nearest folder that is still there."""
@@ -111,14 +114,16 @@ class RepoChanges:
             folder = "" if parent == folder else parent
         if not folder:
             return ""
-        # "Outside a repository" holds only a few seconds: the chat may run git init there.
-        window = int(time.monotonic() // OUTSIDE_TTL)
-        top = self._tops.get(folder, None)
+        # Asked again after a while: the chat may run git init there, or in a folder below a
+        # repository (a project in a dotfiles home); "outside" sooner than a repository.
+        now = time.monotonic()
+        inside, outside = ("repo", int(now // TOP_TTL)), ("none", int(now // OUTSIDE_TTL))
+        top = self._tops.get(folder, inside)
         if top is None:
-            top = self._tops.get(folder, window)
+            top = self._tops.get(folder, outside)
         if top is None:
             top = (git(folder, "rev-parse", "--show-toplevel") or "").strip()
-            self._tops.put(folder, None if top else window, top)
+            self._tops.put(folder, inside if top else outside, top)
         return top
 
     def states(self, paths: list, start) -> dict:
@@ -144,8 +149,9 @@ class RepoChanges:
             key = (head, status, tuple(sorted(members)))
             hit = self._states.get((top, start), key)
             if hit is None:
-                hit = _states(top, start, head, status, members)
-                self._states.put((top, start), key, hit)
+                hit, complete = _states(top, start, head, status, members)
+                if complete:  # without the commits (git failed), asked again next time
+                    self._states.put((top, start), key, hit)
             out.update(hit)
         return out
 
@@ -183,7 +189,8 @@ class RepoChanges:
         hit = self._selections.get(slot, state)
         if hit is None:
             hit = _select(top, start, end, head, entries, stamps)
-            self._selections.put(slot, state, hit)
+            if not hit.get("failed"):  # a passing git failure is asked again, not kept
+                self._selections.put(slot, state, hit)
         return hit
 
     def _diff(self, top: str, base, picked: dict) -> dict:
@@ -203,7 +210,7 @@ def _select(top, start, end, head, entries, stamps) -> dict:
     base = _head_at(top, start) if head else ""
     if base is None:
         # Where the chat started is not known (git failed): better nothing than the whole history.
-        return {"files": [], "commits": [], "base": None}
+        return {"files": [], "commits": [], "base": None, "failed": True}
     last = head if until is None or not head else (_head_at(top, until) or head)
 
     def written_during(rel):
@@ -281,6 +288,7 @@ def _states(top, start, head, status, paths) -> dict:
     # Only commits since the chat started; without that start, none can be named the chat's. A
     # repository that had no commit yet when the chat started has only commits of the chat.
     base = _head_at(top, start) if head and start else None
+    complete = not (head and start and base is None)
     if head and start and base is not None and base != head:  # None: git could not tell; "": no commit yet
         log = git(top, "log", "-n", "500", "--format=%x00%H%x09%s", "--name-only", "-z", f"{base}..HEAD" if base else "HEAD")
         current = None
@@ -304,4 +312,4 @@ def _states(top, start, head, status, paths) -> dict:
         else:
             state = "committed"
         out[path] = {"repo": repo, "rel": rel, "state": state, "commit": commits.get(rel) if state == "committed" else None}
-    return out
+    return out, complete
