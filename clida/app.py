@@ -14,6 +14,7 @@ from pathlib import Path
 from . import STATE_DIR, browser, gitrepo, locate, registry, storage, transcripts
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
+from .search import Search
 from .settings import Settings, tr
 from .terminals import UPLOADS, Terminals
 from .worktrees import WorktreeError, Worktrees
@@ -109,6 +110,7 @@ class Desk:
         self.changes_cache = transcripts.ChangesCache()
         self.repo_changes = gitrepo.RepoChanges()
         self.worktrees = Worktrees()
+        self.search = Search()
         # New on every start: an open window that sees it change reloads, with the new code.
         self.boot = secrets.token_hex(6)
         self._windows = {}  # window id -> time of its last request (monotonic)
@@ -221,6 +223,10 @@ class Desk:
                 return {"items": [], "truncated": False}
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
         return transcripts.render(info["path"])
+
+    def search_messages(self, query) -> dict:
+        """The chats whose messages hold every word of query, each with its best match."""
+        return {"hits": self.search.find(str(query or "")[:200])}
 
     def changes(self, session_id: str, brief: bool = False) -> dict:
         """What the chat changed, like a merge request: each file as before the chat against now.

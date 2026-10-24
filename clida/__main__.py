@@ -61,7 +61,11 @@ def main():
     desk = Desk(_claude_binary())
     server = make_server(desk, _token(), args.host, args.port)
     (STATE_DIR / "server.pid").write_text(str(os.getpid()))
-    threading.Thread(target=desk.index.scan, name="initial-scan", daemon=True).start()
+    def warm_up():
+        desk.index.scan()
+        desk.search.refresh()  # a first build reads every transcript once; a search waits for it
+
+    threading.Thread(target=warm_up, name="initial-scan", daemon=True).start()
 
     def stop(signum, frame):
         threading.Thread(target=server.shutdown, daemon=True).start()

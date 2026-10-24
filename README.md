@@ -20,6 +20,7 @@ clida
 ### Chats
 
 - **Sidebar**: all past chats from `~/.claude/projects`, grouped by date, with search.
+- **Search**: finds chats by title and folder, and from three characters on also by what was said in them: every word must occur in one of your prompts or Claude's answers, in any case and also inside longer words. A found chat shows the passage; a click opens it at that message, with the words marked.
 - **Rename**: double-click a title, use the pencil icon, or click the heading.
 - **Folders**: create one with the folder icon, then drag chats in and out. Right-click a folder to rename or delete it.
 - **Archive and delete**: right-click a chat. *Archivieren* (archive) hides it but keeps it; *Löschen* (delete) removes it from disk for good, after asking.
@@ -126,6 +127,7 @@ Tabs can be reordered by dragging. Browser shortcuts that make no sense in an ap
 - `clida/`: the server, Python stdlib only. It listens on `127.0.0.1:47321`.
   - `terminals.py` runs each session as the real `claude` CLI in a pty.
   - `transcripts.py` indexes the transcripts in `~/.claude/projects/` incrementally, sums tokens and cost, and finds the files each chat edited.
+  - `search.py` keeps the full-text index of all prompts and answers (SQLite FTS5 with trigrams), read on incrementally like the chat index.
   - `gitrepo.py` adds what changed in the chat's git repositories. Every git call uses `--no-optional-locks`, so it never blocks Claude's own commits.
   - `registry.py` reads the state each running CLI reports in `~/.claude/sessions/`.
   - `worktrees.py` makes, merges and removes the worktrees of chats started in one.
@@ -153,6 +155,6 @@ Anyone who reaches the server can start terminals, so:
 
 ### Data
 
-Everything CLIDA stores is in `~/.clida`: settings, titles, folders, notes, which chat has which worktree, the chat index (a cache, safe to delete), uploads and the server log. The worktrees themselves live next to their repositories. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
+Everything CLIDA stores is in `~/.clida`: settings, titles, folders, notes, which chat has which worktree, the chat index and the search index (caches, safe to delete), uploads and the server log. The worktrees themselves live next to their repositories. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
 
 `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE` (path to the CLI) change the port and paths.

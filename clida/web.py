@@ -43,6 +43,7 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("GET", r"/api/sessions", "sessions"),
     ("GET", r"/api/status", "status"),
     ("GET", r"/api/cwds", "cwds"),
+    ("GET", r"/api/search", "search"),
     ("GET", rf"/api/sessions/{SID}/messages", "messages"),
     ("GET", rf"/api/sessions/{SID}/changes", "changes"),
     ("PUT", rf"/api/sessions/{SID}/title", "rename"),
@@ -258,6 +259,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_cwds(self):
         self._send_json(200, {"cwds": self.desk.cwds()})
+
+    def route_search(self):
+        query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
+        self._send_json(200, self.desk.search_messages(query))
 
     def route_messages(self, sid):
         self._send_json(200, self.desk.messages(sid))

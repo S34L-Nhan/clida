@@ -92,6 +92,8 @@ const state = {
   external: new Map(),    // session id -> CLI running outside CLIDA
   lastStatus: new Map(),  // terminal id -> previous status, to notice "finished"
   attention: new Set(),   // terminal ids that finished or need input while unseen
+  hits: { query: '', map: new Map() },  // chats whose messages match the search (see searchMessages)
+  hitsSeq: 0,
   notices: new Map(),     // terminal id -> its system notification, closed once the tab is seen
   tabs: [],
   active: null,
@@ -445,7 +447,97 @@ function timeLabel(mtime) {
 }
 
 function matchesSearch(s, query) {
-  return !query || [s.title, s.cwd_label, s.first_prompt, s.last_prompt].some((v) => v && v.toLowerCase().includes(query));
+  return !query || [s.title, s.cwd_label, s.first_prompt, s.last_prompt].some((v) => v && v.toLowerCase().includes(query))
+    || !!hitFor(s.id, query);
+}
+
+const searchQuery = () => $('#search').value.trim().toLowerCase();
+// The chat's best matching message for this search, once the server has answered for it.
+const hitFor = (sid, query) => (query && state.hits.query === query ? state.hits.map.get(sid) : null) || null;
+
+// ---- searching what was said ----------------------------------------------------------------
+// From three characters on, the search also looks through every chat's messages on the server
+// (clida/search.py). A chat found there shows the passage, and a click opens it at that message.
+
+const SEARCH_MIN = 3;
+let searchTimer = 0;
+
+function searchMessages() {
+  clearTimeout(searchTimer);
+  const query = searchQuery();
+  if (query.length < SEARCH_MIN) return;
+  searchTimer = setTimeout(async () => {
+    const seq = ++state.hitsSeq;
+    let data;
+    try {
+      data = await api('GET', `/api/search?q=${encodeURIComponent(query)}`);
+    } catch {
+      return;  // a server from before the search: titles only
+    }
+    if (seq !== state.hitsSeq || searchQuery() !== query) return;  // typed on meanwhile
+    state.hits = { query, map: new Map(Object.entries(data.hits)) };
+    if (!state.renaming && !state.dragging) {
+      renderSidebar();
+      paintSidebar();
+    }
+  }, 250);
+}
+
+function hitLine(hit) {
+  const line = el('div', 'item-hit');
+  // In front: the two lines may cut the end off.
+  if (hit.count > 1) line.append(el('span', 'item-hit-count', t('search.count', { n: hit.count })));
+  let at = 0;
+  for (const [from, to] of hit.marks) {
+    line.append(hit.text.slice(at, from), el('mark', '', hit.text.slice(from, to)));
+    at = to;
+  }
+  line.append(hit.text.slice(at));
+  return line;
+}
+
+// The found message: in view, briefly lit, the search words marked (CSS Custom Highlight API).
+function revealMessage(tab) {
+  const uid = tab.jumpTo;
+  if (!uid) return;
+  tab.jumpTo = null;
+  const index = tab.items.findIndex((item) => item.uid === uid);
+  if (index < 0) {
+    toast(t('search.notShown'));
+    return;
+  }
+  if (!tab.showAll && index < tab.items.length - HISTORY_WINDOW) {
+    tab.showAll = true;
+    renderHistory(tab);
+  }
+  const node = tab.histInner.querySelector(`.msg-wrap[data-uid="${CSS.escape(uid)}"]`);
+  if (!node) return;
+  node.scrollIntoView({ block: 'center' });
+  for (const lit of tab.histInner.querySelectorAll('.msg-wrap.found')) lit.classList.remove('found');
+  void node.offsetWidth;  // restart the animation
+  node.classList.add('found');
+  node.addEventListener('animationend', () => node.classList.remove('found'), { once: true });
+  markWords(node, tab.jumpQuery || '');
+}
+
+function markWords(node, query) {
+  if (!window.Highlight || !CSS.highlights) return;
+  const words = query.split(/\s+/).filter((w) => w.length >= SEARCH_MIN);
+  const ranges = [];
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    const low = text.data.toLowerCase();
+    if (low.length !== text.data.length) continue;  // lowercasing moved the places (İ)
+    for (const word of words) {
+      for (let i = low.indexOf(word); i >= 0; i = low.indexOf(word, i + word.length)) {
+        const range = new Range();
+        range.setStart(text, i);
+        range.setEnd(text, i + word.length);
+        ranges.push(range);
+      }
+    }
+  }
+  CSS.highlights.set('clida-found', new Highlight(...ranges));
 }
 
 function renderSidebar() {
@@ -499,6 +591,7 @@ function sessionItem(s) {
   item.title = [s.note && t('note.tooltip', { note: s.note }), s.first_prompt?.slice(0, 300)].filter(Boolean).join('\n\n');
   const text = el('div', 'item-text');
   const title = el('div', 'item-title', s.title);
+  const hit = hitFor(s.id, searchQuery());
   const where = s.worktree ? `${s.worktree.repo} · ${s.worktree.branch}` : s.cwd_label;
   const meta = el('div', 'item-meta', [where, timeLabel(s.mtime)].filter(Boolean).join(' · '));
   if (s.worktree) {
@@ -512,15 +605,18 @@ function sessionItem(s) {
     meta.prepend(mark);
   }
   text.append(title, meta);
+  if (hit) text.append(hitLine(hit));
   const rename = el('button', 'icon-btn');
   rename.title = t('rename');
   rename.append(icon('pencil'));
   rename.onclick = (ev) => { ev.stopPropagation(); startRename(title, s.id); };
   title.ondblclick = (ev) => { ev.stopPropagation(); startRename(title, s.id); };
-  item.onclick = () => openSession(s.id);
+  // Found in its messages: opened at that message.
+  const open = () => openSession(s.id, hit ? { at: hit.uid, query: searchQuery() } : {});
+  item.onclick = open;
   item.tabIndex = 0;
   item.setAttribute('role', 'button');
-  item.onkeydown = (ev) => onItemKey(ev, item, () => openSession(s.id), () => startRename(title, s.id));
+  item.onkeydown = (ev) => onItemKey(ev, item, open, () => startRename(title, s.id));
   if (!s.archived) {
     item.draggable = true;
     item.ondragstart = (ev) => startDrag(ev, s.id);
@@ -898,12 +994,22 @@ function saveTabs() {
 
 // Open a chat: in the tab of its running terminal, else in the tab that shows it already, else in a
 // new history tab. A terminal tab's id is the terminal's, a history tab's id is the chat's.
-function openSession(sid) {
+// at: a message to show, in the history (a search hit); query: the words to mark in it.
+function openSession(sid, { at = null, query = '' } = {}) {
   const term = state.bySession.get(sid);
   const shown = term ? findTab(term.id) : state.tabs.find((tab) => tabSession(tab) === sid);
-  if (shown) return activate(shown.id);
-  addTab(term ? term.id : sid, term ? 'terminal' : 'history', sid);
-  activate(term ? term.id : sid);
+  const tab = shown || addTab(term ? term.id : sid, term && !at ? 'terminal' : 'history', sid);
+  if (at) {
+    tab.jumpTo = at;
+    tab.jumpQuery = query;
+    if (tab.view !== 'history') {
+      tab.view = 'history';
+      tab.refresh.title = t('history.reload');
+    }
+  }
+  activate(tab.id);
+  // A history already loaded is not loaded again by showing it; the jump needs the latest one.
+  if (at && tab.loaded && !tab.stale) loadHistory(tab, { quiet: true });
 }
 
 function addTab(id, view, sid = id) {
@@ -1462,9 +1568,13 @@ async function loadHistory(tab, { quiet = false } = {}) {
   tab.truncated = data.truncated;
   tab.loaded = true;
   tab.stale = false;
-  if (quiet && historySignature(tab) === tab.shownSignature) return;  // nothing new: leave it be
+  if (quiet && historySignature(tab) === tab.shownSignature) {  // nothing new: leave it be
+    revealMessage(tab);
+    return;
+  }
   renderHistory(tab, { keepPlace: quiet && !atBottom });
   if (!quiet || atBottom) box.scrollTop = box.scrollHeight;
+  revealMessage(tab);
 }
 
 const historySignature = (tab) => JSON.stringify([language(), tab.showAll, tab.truncated, tab.items, tab.notes]);
@@ -3299,7 +3409,10 @@ function wire() {
   window.addEventListener('blur', closeMenu);
   window.addEventListener('resize', closeMenu);
   $('#session-list').addEventListener('scroll', closeMenu);
-  $('#search').addEventListener('input', renderSidebar);
+  $('#search').addEventListener('input', () => {
+    renderSidebar();
+    searchMessages();
+  });
   document.addEventListener('keydown', changesKey);
 
   // No developer tools from the keyboard: F12, Ctrl+Shift+I/J/C and Ctrl+U (view source); on a Mac
