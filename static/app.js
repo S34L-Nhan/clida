@@ -74,8 +74,14 @@ const quote = (text) => t('quoted', { text });
 
 // t() for a text with elements in it: each {placeholder} named in nodes is put in as that node.
 function textWith(key, nodes) {
-  return t(key).split(/(\{\w+\})/).filter(Boolean)
-    .map((part) => (/^\{\w+\}$/.test(part) && nodes[part.slice(1, -1)]) || part);
+  const used = new Set();
+  return t(key).split(/(\{\w+\})/).filter(Boolean).map((part) => {
+    const node = /^\{\w+\}$/.test(part) && nodes[part.slice(1, -1)];
+    if (!node) return part;
+    if (used.has(node)) return node.cloneNode(true);  // a node stands in one place only
+    used.add(node);
+    return node;
+  });
 }
 
 const state = {
@@ -489,7 +495,13 @@ function sessionItem(s) {
   item.title = [s.note && t('note.tooltip', { note: s.note }), s.first_prompt?.slice(0, 300)].filter(Boolean).join('\n\n');
   const text = el('div', 'item-text');
   const title = el('div', 'item-title', s.title);
-  const meta = el('div', 'item-meta', [s.cwd_label, timeLabel(s.mtime)].filter(Boolean).join(' · '));
+  const where = s.worktree ? `${s.worktree.repo} · ${s.worktree.branch}` : s.cwd_label;
+  const meta = el('div', 'item-meta', [where, timeLabel(s.mtime)].filter(Boolean).join(' · '));
+  if (s.worktree) {
+    const mark = el('span', 'branch-mark');
+    mark.append(icon('branch'));
+    meta.prepend(mark);
+  }
   if (s.note) {
     const mark = el('span', 'note-mark');
     mark.append(icon('note'));
@@ -962,12 +974,14 @@ function buildView(tab) {
   overlay.hidden = true;
   termWrap.append(termHost, overlay);
   body.append(hist, changesPane, termWrap);
+  const worktreeBar = el('div', 'worktree-bar');
+  worktreeBar.hidden = true;
   const sessionNote = el('div', 'session-note');
   sessionNote.hidden = true;
-  root.append(head, sessionNote, body);
+  root.append(head, worktreeBar, sessionNote, body);
   $('#views').append(root);
   Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, changesBtn, refresh, attach, noteBtn,
-    resume, stop, sessionNote, hist, histInner, changesPane, changesInner, termWrap, termHost, overlay });
+    resume, stop, worktreeBar, sessionNote, hist, histInner, changesPane, changesInner, termWrap, termHost, overlay });
   labelView(tab);
 }
 
@@ -1248,6 +1262,7 @@ function paintView(tab) {
   tab.hist.hidden = showTerm || showChanges;
   tab.changesPane.hidden = !showChanges;
   tab.termWrap.hidden = !showTerm;
+  renderWorktreeBar(tab);
 }
 
 function paint() {
@@ -1263,6 +1278,89 @@ function paint() {
   }
   const waiting = state.attention.size;
   document.title = waiting ? `(${waiting}) CLIDA` : 'CLIDA';
+}
+
+// ---- the chat's own worktree --------------------------------------------------------------
+// A chat started in a git worktree of its own works on its own branch, in a folder next to the
+// repository (see clida/worktrees.py). The bar under the header says where that branch stands,
+// and merges it into the branch the chat started from, or removes worktree and branch.
+
+function renderWorktreeBar(tab) {
+  const wt = tab.changesCounts?.worktree || null;
+  const signature = JSON.stringify([language(), wt, !!tab.worktreeBusy]);
+  if (signature === tab.worktreeSignature) return;  // painted every 2 s: keep focus and hover
+  tab.worktreeSignature = signature;
+  const bar = tab.worktreeBar;
+  bar.hidden = !wt;
+  if (!wt) {
+    bar.replaceChildren();
+    return;
+  }
+  const where = el('span', 'worktree-where');
+  where.append(icon('branch'), ...textWith(wt.base ? 'worktree.from' : 'worktree.detached',
+    { branch: el('strong', '', wt.branch), base: el('strong', '', wt.base || '') }));
+  where.title = wt.path;
+  const facts = [];
+  if (!wt.exists) facts.push(t('worktree.gone'));
+  else {
+    if (wt.ahead) facts.push(t('worktree.ahead', { n: wt.ahead }));
+    else if (wt.ahead === 0 && !wt.dirty) facts.push(t('worktree.noCommits'));
+    if (wt.dirty) facts.push(t('worktree.dirty', { n: wt.dirty }));
+    if (wt.behind) facts.push(t('worktree.behind', { n: wt.behind, base: wt.base }));
+  }
+  const info = el('span', 'worktree-facts', facts.join(' · '));
+  const actions = el('span', 'worktree-actions');
+  if (wt.exists && wt.base) {
+    const merge = el('button', 'btn', t('worktree.merge', { base: wt.base }));
+    merge.title = t('worktree.mergeHint');
+    merge.disabled = !!tab.worktreeBusy;
+    merge.onclick = () => mergeWorktree(tab);
+    actions.append(merge);
+  }
+  const remove = el('button', 'btn danger', t('worktree.remove'));
+  remove.disabled = !!tab.worktreeBusy;
+  remove.onclick = () => removeWorktree(tab);
+  actions.append(remove);
+  bar.replaceChildren(where, info, actions);
+}
+
+async function worktreeAction(tab, method, path) {
+  tab.worktreeBusy = true;
+  renderWorktreeBar(tab);
+  try {
+    return await change(method, `/api/sessions/${tabSession(tab)}/${path}`);
+  } finally {
+    tab.worktreeBusy = false;
+    await loadChanges(tab);  // paints the bar again, with where the branch stands now
+  }
+}
+
+async function mergeWorktree(tab) {
+  const wt = tab.changesCounts?.worktree;
+  if (!wt) return;
+  const text = textWith('worktree.mergeText', { branch: el('strong', '', wt.branch), base: el('strong', '', wt.base) });
+  if (!(await ask({ title: t('worktree.mergeTitle'), text, yes: t('worktree.merge', { base: wt.base }) }))) return;
+  try {
+    const done = await worktreeAction(tab, 'POST', 'worktree/merge');
+    toast(t('worktree.merged', { branch: wt.branch, base: done.into }));
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+async function removeWorktree(tab) {
+  const wt = tab.changesCounts?.worktree;
+  if (!wt) return;
+  const text = [...textWith('worktree.removeText', { branch: el('strong', '', wt.branch), path: el('code', '', wt.path) })];
+  if (wt.dirty) text.push(' ', t('worktree.removeDirty', { n: wt.dirty }));
+  if (wt.ahead) text.push(' ', t('worktree.removeUnmerged', { n: wt.ahead, base: wt.base }));
+  if (!(await ask({ title: t('worktree.removeTitle'), text, yes: t('worktree.remove'), danger: true }))) return;
+  try {
+    await worktreeAction(tab, 'DELETE', 'worktree');
+    toast(t('worktree.removed', { branch: wt.branch }));
+  } catch (e) {
+    toast(e.message);
+  }
 }
 
 // ---- history ------------------------------------------------------------------------------
@@ -2788,6 +2886,7 @@ async function openNewDialog() {
     return option;
   }));
   $('#new-folder-row').hidden = !state.folders.length;
+  $('#new-worktree').checked = store.get('newWorktree', false);
   dialog.showModal();
   cwdInput.focus();
   cwdInput.select();
@@ -2813,12 +2912,15 @@ async function submitNewChat(ev) {
   const cwd = $('#new-cwd').value.trim();
   const title = $('#new-title').value.trim();
   const folder = $('#new-folder').value || null;
+  const worktree = $('#new-worktree').checked;
   const submit = $('#new-form [type="submit"]');
   if (submit.disabled) return;
   submit.disabled = true;  // also stops Enter: a form does not submit through a disabled button
   try {
-    const started = await api('POST', '/api/terminals', { cwd, title, folder });
-    store.set('lastCwd', started.cwd);
+    const started = await api('POST', '/api/terminals', { cwd, title, folder, worktree });
+    // The folder asked for, not the worktree's: the next chat starts from the repository again.
+    store.set('lastCwd', worktree ? cwd : started.cwd);
+    store.set('newWorktree', worktree);
     $('#new-dialog').close();
     if (folder) expandFolder(folder);
     await refreshSessions();

@@ -47,6 +47,16 @@ A merge-request view of everything the chat changed:
 
 Files come from two sources: Claude's Edit and Write calls, and the git repositories the chat worked in (which also catches shell commands and commits). Git cannot tell who changed a file, so other changes in the same repository during the chat show up too. Files over 512 KB and binary files get no diff.
 
+### Worktrees
+
+Tick *In eigenem Git-Worktree* (in its own git worktree) when you start a chat, and it works on a branch of its own, `clida/<title>`, in a folder next to the repository: `<repo>.worktrees/<title>`. Parallel chats on one repository then never write into each other's files, and the changes view shows only that chat's work.
+
+- A bar under the header shows the branch, how many commits it is ahead, and what is not committed yet.
+- **In … mergen** (merge into …) merges the branch into the branch the chat started from, where that is checked out. Only committed work goes; a conflict aborts the merge and leaves everything as it was.
+- **Worktree entfernen** (remove worktree) deletes the folder and the branch once the chat is stopped. The history stays.
+
+Files git does not track (`.env`, `node_modules`) are not in a new worktree, and the CLI asks once whether you trust the new folder.
+
 ### Notes
 
 Private notes that Claude never sees:
@@ -117,6 +127,7 @@ Tabs can be reordered by dragging. Browser shortcuts that make no sense in an ap
   - `transcripts.py` indexes the transcripts in `~/.claude/projects/` incrementally, sums tokens and cost, and finds the files each chat edited.
   - `gitrepo.py` adds what changed in the chat's git repositories. Every git call uses `--no-optional-locks`, so it never blocks Claude's own commits.
   - `registry.py` reads the state each running CLI reports in `~/.claude/sessions/`.
+  - `worktrees.py` makes, merges and removes the worktrees of chats started in one.
   - `library.py` (folders, archive), `notes.py`, `settings.py`, `ws.py` (WebSocket for the terminal).
 - `static/`: the frontend, plain JavaScript without a build step. `i18n.js` holds all texts in both languages.
 - `bin/clida`: the launcher, plain bash that also runs on macOS's bash 3.2.
@@ -141,6 +152,6 @@ Anyone who reaches the server can start terminals, so:
 
 ### Data
 
-Everything CLIDA stores is in `~/.clida`: settings, titles, folders, notes, the chat index (a cache, safe to delete), uploads and the server log. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
+Everything CLIDA stores is in `~/.clida`: settings, titles, folders, notes, which chat has which worktree, the chat index (a cache, safe to delete), uploads and the server log. The worktrees themselves live next to their repositories. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
 
 `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE` (path to the CLI) change the port and paths.

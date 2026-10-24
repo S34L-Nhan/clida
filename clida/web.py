@@ -49,6 +49,8 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("PUT", rf"/api/sessions/{SID}/folder", "move_session"),
     ("PUT", rf"/api/sessions/{SID}/archived", "archive_session"),
     ("DELETE", rf"/api/sessions/{SID}", "delete_session"),
+    ("POST", rf"/api/sessions/{SID}/worktree/merge", "merge_worktree"),
+    ("DELETE", rf"/api/sessions/{SID}/worktree", "remove_worktree"),
     ("GET", rf"/api/sessions/{SID}/notes", "notes"),
     ("PUT", rf"/api/sessions/{SID}/notes/session", "session_note"),
     ("POST", rf"/api/sessions/{SID}/notes", "add_note"),
@@ -275,6 +277,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_delete_session(self, sid):
         self._send_json(200, self.desk.delete_session(sid))
+
+    def route_merge_worktree(self, sid):
+        self._send_json(200, self.desk.merge_worktree(sid))
+
+    def route_remove_worktree(self, sid):
+        self._send_json(200, self.desk.remove_worktree(sid))
 
     def route_notes(self, sid):
         self._send_json(200, self.desk.notes_of(sid))

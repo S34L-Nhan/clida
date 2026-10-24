@@ -8,6 +8,7 @@ import shutil
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from . import STATE_DIR, browser, gitrepo, locate, registry, storage, transcripts
@@ -15,6 +16,7 @@ from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
 from .settings import Settings, tr
 from .terminals import UPLOADS, Terminals
+from .worktrees import WorktreeError, Worktrees
 
 UPLOAD_LIMIT = 50 * 1024 * 1024
 PROMPT_MAX = 100_000  # characters a prompt from the window may have
@@ -106,6 +108,7 @@ class Desk:
         self.terminals = Terminals(claude)
         self.changes_cache = transcripts.ChangesCache()
         self.repo_changes = gitrepo.RepoChanges()
+        self.worktrees = Worktrees()
         # New on every start: an open window that sees it change reloads, with the new code.
         self.boot = secrets.token_hex(6)
         self._windows = {}  # window id -> time of its last request (monotonic)
@@ -180,6 +183,7 @@ class Desk:
         library = self.library.snapshot()
         notes = self.notes.session_previews()
         usage = self.index.usage()
+        worktrees = self.worktrees.branches()
         out = []
         for info in infos:
             out.append({
@@ -188,6 +192,7 @@ class Desk:
                 "first_prompt": info["first_prompt"], "last_prompt": info["last_prompt"],
                 "folder": library["folder_of"].get(info["id"]), "archived": info["id"] in library["archived"],
                 "note": notes.get(info["id"]), "usage": usage["chats"].get(info["id"]),
+                "worktree": worktrees.get(info["id"]),
             })
         known = {s["id"] for s in out}
         for term in self.terminals.all():
@@ -200,6 +205,7 @@ class Desk:
                     "folder": library["folder_of"].get(term.session_id),
                     "archived": term.session_id in library["archived"],
                     "note": notes.get(term.session_id), "usage": None,
+                    "worktree": worktrees.get(term.session_id),
                 })
         out.sort(key=lambda s: s["mtime"], reverse=True)
         return {"sessions": out, "folders": library["folders"], "home": str(Path.home()),
@@ -262,7 +268,7 @@ class Desk:
         # The branch of the chat's folder, or else of the first repository it worked in.
         where = cwd if cwd and os.path.isdir(cwd) else None
         git = (_git_state(where) if where else None) or (_git_state(repo["repos"][0]) if repo["repos"] else None)
-        return {"files": out, "git": git, "commits": repo["commits"]}
+        return {"files": out, "git": git, "commits": repo["commits"], "worktree": self.worktrees.status(session_id)}
 
     @staticmethod
     def _change_label(path: str, cwd) -> str:
@@ -298,9 +304,11 @@ class Desk:
     def cwds(self) -> list:
         home = str(Path.home())
         seen, out = set(), []
+        # Not another chat's worktree: a new chat there would work on that chat's branch.
+        worktrees = tuple(w.rstrip("/") + "/" for w in self.worktrees.paths())
         for info in sorted(self.index.scan(), key=lambda i: i["mtime"], reverse=True):
             cwd = info["cwd"]
-            if cwd and cwd not in seen and os.path.isdir(cwd):
+            if cwd and cwd not in seen and not (cwd + "/").startswith(worktrees) and os.path.isdir(cwd):
                 seen.add(cwd)
                 out.append(cwd)
         if home not in seen:
@@ -332,12 +340,39 @@ class Desk:
                 raise HttpError(400, tr("Verzeichnis existiert nicht: ", "Directory does not exist: ") + cwd)
             title = " ".join(str(body.get("title") or "").split())[:200]
             folder = body.get("folder")
-            term = self.terminals.start(cwd, name=title or None)
+            session_id = str(uuid.uuid4())
+            if body.get("worktree"):
+                try:
+                    cwd = self.worktrees.create(session_id, cwd, title)
+                except WorktreeError as e:
+                    raise HttpError(400, tr("Worktree ließ sich nicht anlegen: ", "Could not create the worktree: ") + str(e))
+            term = self.terminals.start(cwd, name=title or None, session_id=session_id)
             if title:
                 self.titles.set(term.session_id, title)
             if isinstance(folder, str) and folder:
                 self.library.move(term.session_id, folder)  # a folder deleted meanwhile is skipped
         return {"id": term.id, "session_id": term.session_id, "cwd": term.cwd}
+
+    # -- the chat's own worktree ------------------------------------------------------------
+
+    def merge_worktree(self, session_id: str) -> dict:
+        try:
+            return self.worktrees.merge(session_id)
+        except WorktreeError as e:
+            raise HttpError(409, str(e))
+
+    def remove_worktree(self, session_id: str) -> dict:
+        """Delete the chat's worktree and branch; only while no CLI works in it."""
+        status = self.status()
+        if (any(t["session_id"] == session_id and t["status"] != "exited" for t in status["terminals"])
+                or any(e["session_id"] == session_id for e in status["external"])):
+            raise HttpError(409, tr("Diese Sitzung läuft noch. Bitte zuerst beenden.",
+                                    "This session is still running. Please stop it first."))
+        try:
+            self.worktrees.remove(session_id)
+        except WorktreeError as e:
+            raise HttpError(409, str(e))
+        return {"ok": True}
 
     def create_folder(self, name) -> dict:
         return self.library.create_folder(_folder_name(name))
@@ -376,6 +411,7 @@ class Desk:
         except (OSError, ValueError) as e:
             raise HttpError(500, tr("Löschen fehlgeschlagen: ", "Deleting failed: ") + str(e))
         self.library.forget(session_id)
+        self.worktrees.forget(session_id)  # the worktree itself stays: it may hold work
         self.titles.set(session_id, None)
         shutil.rmtree(UPLOADS / session_id, ignore_errors=True)
         self.notes.forget(session_id)

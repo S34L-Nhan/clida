@@ -236,7 +236,8 @@ class Terminals:
         self._lock = threading.Lock()
         self._by_id = {}
 
-    def start(self, cwd: str, resume: str = None, name: str = None) -> Terminal:
+    def start(self, cwd: str, resume: str = None, name: str = None, session_id: str = None) -> Terminal:
+        """Run the CLI in cwd: resuming a chat, or a new one (under session_id, if given)."""
         with self._lock:
             if resume:
                 for current in self._by_id.values():
@@ -245,7 +246,7 @@ class Terminals:
                 argv = ["--resume", resume]
                 session_id = resume
             else:
-                session_id = str(uuid.uuid4())
+                session_id = session_id or str(uuid.uuid4())
                 argv = ["--session-id", session_id] + (["--name", name] if name else [])
             # The CLI only reads pasted file paths inside its directories; this one gets the uploads.
             uploads = UPLOADS / session_id

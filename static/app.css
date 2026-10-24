@@ -534,6 +534,9 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
   cursor: pointer;
 }
 .chip:hover { color: var(--text); border-color: var(--accent); }
+.dialog .check-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; cursor: pointer; }
+.dialog .check-row input { width: auto; height: auto; margin: 0; accent-color: var(--accent); }
+.dialog .dialog-hint { margin: 4px 0 0 24px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .error { color: var(--danger); min-height: 1.2em; margin: 10px 0 0; font-size: 13px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
@@ -753,6 +756,26 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
 .note-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .note-hint { margin-right: auto; color: var(--muted); font-size: 12px; }
 .note-mark svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; color: var(--warn); }
+.branch-mark svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; color: var(--accent); }
+
+/* ---- the chat's own worktree ------------------------------------------------------------ */
+
+.worktree-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 6px 20px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg));
+  font-size: 13px;
+  flex: none;
+}
+.worktree-where { display: inline-flex; align-items: center; gap: 6px; }
+.worktree-where svg { width: 14px; height: 14px; color: var(--accent); }
+.worktree-facts { color: var(--muted); }
+.worktree-actions { display: flex; gap: 8px; margin-left: auto; }
+.worktree-actions .btn { padding: 3px 10px; font-size: 12.5px; }
 
 /* ---- one window ------------------------------------------------------------------------- */
 
