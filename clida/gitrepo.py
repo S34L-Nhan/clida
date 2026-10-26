@@ -39,11 +39,19 @@ def git(cwd, *args, binary=False, timeout=10, stdin=None, ok=(0,)):
     return out.stdout if binary else out.stdout.decode("utf-8", "replace")
 
 
+def _linked_worktree(top: str) -> bool:
+    """Whether top is a worktree made with git worktree add: its git dir is not the common one."""
+    dirs = (git(top, "rev-parse", "--git-dir", "--git-common-dir") or "").splitlines()
+    return len(dirs) == 2 and os.path.realpath(os.path.join(top, dirs[0])) != os.path.realpath(os.path.join(top, dirs[1]))
+
+
 def _head_at(top: str, when: float):
     """The commit HEAD pointed to at a time: "" if there was none yet, None if git could not tell.
 
     The reflog knows where HEAD was at any time, but only since the clone; before that, the
-    newest commit of the current history made before then stands in.
+    newest commit of the current history made before then stands in. A linked worktree made
+    after that time (a chat moved into it later) starts where the worktree did: an older commit
+    of its branch would count the commits others made in between as the chat's.
     """
     reflog = git(top, "reflog", "--date=unix", "--format=%H %gd")
     if reflog is None:
@@ -57,6 +65,8 @@ def _head_at(top: str, when: float):
             continue
     if entries and entries[-1][1] <= when:
         return next(sha for sha, at in entries if at <= when)  # newest first
+    if entries and _linked_worktree(top):
+        return entries[-1][0]  # the oldest entry: git worktree add
     found = git(top, "rev-list", "-1", f"--before={int(when)}", "HEAD")
     return None if found is None else found.strip()  # a timeout or error is not "no commit yet"
 

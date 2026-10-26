@@ -305,6 +305,10 @@ class Worktrees:
         home = os.path.join(main, ".claude", "worktrees")
         slug = _slug(name or (branch or "").rsplit("/", 1)[-1], session_id[:8])
         with self._creating:
+            # Checked here, not only by the caller: two windows can ask for one chat at once, and the
+            # second record would take the first one's place.
+            if self.key_for(session_id) is not None:
+                raise WorktreeError(tr("Dieser Chat hat schon einen Worktree.", "This chat has a worktree already."))
             # Nor a folder another chat's record names: deleted by hand, it would be found for both.
             recorded = {e["path"] for e in self.all().values()}
             used = [u.rstrip("/") for u in used if u]

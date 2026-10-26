@@ -525,9 +525,13 @@ class Desk:
         """Delete the chat's worktree and branch; only while no CLI works in it, under whatever
         session id (after /clear the terminal's is another)."""
         key = self._require_worktree(session_id)
+        self.status()  # first notes in the record the id a CLI went on under
         entry = self.worktrees.get(key)
         if entry:
-            if self._running(key) or self._running_in(entry["path"]):
+            # By each id of the record too: a chat moved in later (EnterWorktree) keeps its terminal
+            # in the repository, so after /clear its folder does not tell that it works here.
+            ids = (key, *entry.get("sessions", ()))
+            if any(self._running(sid) for sid in ids) or self._running_in(entry["path"]):
                 raise HttpError(409, tr("In diesem Worktree läuft noch eine Session. Bitte zuerst beenden.",
                                         "A session still runs in this worktree. Please stop it first."))
         try:
