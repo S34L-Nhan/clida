@@ -3357,11 +3357,8 @@ async function openNewDialog() {
   cwdInput.select();
   try {
     const { cwds } = await api('GET', '/api/cwds');
-    $('#cwd-list').replaceChildren(...cwds.map((cwd) => {
-      const option = el('option');
-      option.value = cwd;
-      return option;
-    }));
+    cwdInput.pickGroups = [{ label: 'cwd.recent', names: cwds }];
+    cwdInput.dispatchEvent(new Event('choices'));  // a list opened before they came
     $('#cwd-chips').replaceChildren(...cwds.slice(0, 6).map((cwd) => {
       const chip = el('button', 'chip', cwd.startsWith(state.home) ? '~' + cwd.slice(state.home.length) : cwd);
       chip.type = 'button';
@@ -3411,8 +3408,8 @@ function showBranches(choice, found) {
   const local = new Set(found.local);
   // A branch only a remote has (origin/x) is taken as x: the server makes a local one tracking it.
   const remoteOnly = new Set(found.remote.map((name) => name.slice(name.indexOf('/') + 1)).filter((name) => !local.has(name)));
-  choice.base.branchGroups = [{ label: 'branches.local', names: found.local }, { label: 'branches.remote', names: found.remote }];
-  choice.branch.branchGroups = [{ label: 'branches.local', names: found.local.filter((name) => !busy.has(name)) },
+  choice.base.pickGroups = [{ label: 'branches.local', names: found.local }, { label: 'branches.remote', names: found.remote }];
+  choice.branch.pickGroups = [{ label: 'branches.local', names: found.local.filter((name) => !busy.has(name)) },
     { label: 'branches.remoteOnly', names: [...remoteOnly] },
     // Shown, not offered: typing the ticket's number should say why its branch is not there.
     { label: 'branches.busy', names: found.local.filter((name) => busy.has(name)), busy: true }];
@@ -3421,7 +3418,7 @@ function showBranches(choice, found) {
 
 // An open branch list draws again: new branches, or a fetch that starts or ends.
 function redrawBranches(choice) {
-  for (const input of [choice.base, choice.branch]) input.dispatchEvent(new Event('branches'));
+  for (const input of [choice.base, choice.branch]) input.dispatchEvent(new Event('choices'));
 }
 
 // git fetch on request: a branch made on the remote after the last fetch (the ticket's, in GitLab)
@@ -3462,16 +3459,22 @@ async function fetchOnce(choice, cwd, error) {
   }
 }
 
-// The branch fields get a list of their own instead of the browser's <datalist>: that one shows
-// over a thousand branches unstyled, local and remote mixed, and filtered by the prefilled value.
-// The list opens on a click, on typing or on ↓, filters by what was typed, and shows the first
-// BRANCH_GROUP_MAX of each group. It lives in the dialog (the top layer) and is placed fixed under
-// the field, as the dialog would cut it off or scroll.
-const BRANCH_GROUP_MAX = 30;
+// Fields with suggestions get a list of their own instead of the browser's <datalist>, which shows
+// them unstyled in the system's look and filtered by the prefilled value: the chat's folder (the
+// recent ones) and the worktree's branches (over a thousand in a big repository, local and remote
+// apart). The list opens on a click, on typing or on ↓, filters by what was typed, and shows the
+// first PICK_GROUP_MAX of each group. It lives in the dialog (the top layer) and is placed fixed
+// under the field, as the dialog would cut it off or scroll.
+//
+// The field carries what it offers: pickGroups ([{ label, names, busy }], busy ones shown but not
+// offered) and, for a row at the end, pickAction ({ run, running, label, runningLabel }, run
+// answering true once done). none names the text for nothing that matches; without it the list
+// closes then, as for a folder being typed that nobody worked in yet.
+const PICK_GROUP_MAX = 30;
 
-function branchPicker(input) {
+function listPicker(input, { none } = {}) {
   const dialog = input.closest('dialog');
-  const list = el('div', 'branch-list');
+  const list = el('div', 'pick-list');
   list.id = `${input.id}-list`;
   list.setAttribute('role', 'listbox');
   list.hidden = true;
@@ -3489,9 +3492,10 @@ function branchPicker(input) {
     input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');
   };
-  const pick = (name) => {
-    input.value = name;
+  const pick = (value) => {
+    input.value = value;
     close();
+    input.dispatchEvent(new Event('change'));  // as a typed value would on leaving the field
   };
   const mark = (at) => {
     options[active]?.classList.remove('active');
@@ -3512,17 +3516,18 @@ function branchPicker(input) {
     list.style.top = up ? '' : `${box.bottom + 4}px`;
     list.style.bottom = up ? `${innerHeight - box.top + 4}px` : '';
   };
+  // Whether there is anything to show.
   const render = () => {
     const query = typed ? input.value.trim().toLowerCase() : '';
     const rows = [];
     options = [];
     active = -1;
-    for (const group of input.branchGroups || []) {
+    for (const group of input.pickGroups || []) {
       const names = query ? group.names.filter((name) => name.toLowerCase().includes(query)) : group.names;
       if (!names.length) continue;
-      rows.push(el('div', 'branch-group', t(group.label)));
-      for (const name of names.slice(0, BRANCH_GROUP_MAX)) {
-        const option = el('div', group.busy ? 'branch-option busy' : name === input.value ? 'branch-option current' : 'branch-option', name);
+      rows.push(el('div', 'pick-group', t(group.label)));
+      for (const name of names.slice(0, PICK_GROUP_MAX)) {
+        const option = el('div', group.busy ? 'pick-option busy' : name === input.value ? 'pick-option current' : 'pick-option', name);
         option.title = name;
         option.setAttribute('role', 'option');
         if (group.busy) option.setAttribute('aria-disabled', 'true');
@@ -3532,21 +3537,21 @@ function branchPicker(input) {
         }
         rows.push(option);
       }
-      if (names.length > BRANCH_GROUP_MAX) rows.push(el('div', 'branch-note', t('branches.more', { n: names.length - BRANCH_GROUP_MAX })));
+      if (names.length > PICK_GROUP_MAX) rows.push(el('div', 'pick-note', t('pick.more', { n: names.length - PICK_GROUP_MAX })));
     }
-    if (!rows.length) rows.push(el('div', 'branch-note', t('branches.none')));
-    // Also in the list, as the open list covers the button under the fields.
-    if (input.branchAction) {
-      const running = input.branchFetching();
-      const action = el('div', running ? 'branch-action fetching' : 'branch-action');
-      action.append(icon('refresh'), el('span', '', t(running ? 'branches.fetching' : 'branches.fetch')));
-      rows.push(action);
+    if (!rows.length && none) rows.push(el('div', 'pick-note', t(none)));
+    const action = input.pickAction;
+    if (action) {
+      const running = action.running();
+      const row = el('div', running ? 'pick-action running' : 'pick-action');
+      row.append(icon('refresh'), el('span', '', t(running ? action.runningLabel : action.label)));
+      rows.push(row);
     }
     list.replaceChildren(...rows);
+    return rows.length > 0;
   };
   const open = () => {
-    if (input.disabled) return;
-    render();
+    if (input.disabled || !render()) return close();
     list.hidden = false;
     input.setAttribute('aria-expanded', 'true');
     place();
@@ -3558,12 +3563,12 @@ function branchPicker(input) {
 
   list.addEventListener('mousedown', (ev) => {
     ev.preventDefault();  // the field keeps the focus, also on the scrollbar
-    if (ev.target.closest('.branch-action')) {
+    if (ev.target.closest('.pick-action')) {
       // Failed: closed, so the dialog's error under it shows. Done: drawn again by the event.
-      input.branchAction().then((ok) => ok || close());
+      input.pickAction.run().then((ok) => ok || close());
       return;
     }
-    const option = ev.target.closest('.branch-option:not(.busy)');
+    const option = ev.target.closest('.pick-option:not(.busy)');
     if (option) pick(option.textContent);
   });
   input.addEventListener('mousedown', () => {
@@ -3576,9 +3581,10 @@ function branchPicker(input) {
     open();
   });
   input.addEventListener('blur', close);
-  input.addEventListener('branches', () => {
+  // New choices, or an action that starts or ends: drawn again, with what was typed.
+  input.addEventListener('choices', () => {
     if (list.hidden) return;
-    render();
+    if (!render()) return close();
     place();
   });
   input.addEventListener('keydown', (ev) => {
@@ -4219,20 +4225,21 @@ function wire() {
     else if (action === 'close-dialog') ev.target.closest('dialog')?.close();
   });
   $('#new-form').addEventListener('submit', submitNewChat);
+  listPicker($('#new-cwd'));
   $('#move-form').addEventListener('submit', submitMove);
   $('#new-worktree').addEventListener('change', loadNewBranches);
   $('#new-cwd').addEventListener('change', loadNewBranches);
   for (const prefix of ['new', 'move']) {
     const choice = branchChoice(prefix);
-    branchPicker(choice.base);
-    branchPicker(choice.branch);
+    listPicker(choice.base, { none: 'branches.none' });
+    listPicker(choice.branch, { none: 'branches.none' });
     // The new chat's folder is the one in its field; the moved chat's, the one its branches came from.
     const fetchRemote = () => fetchBranches(choice, prefix === 'new' ? $('#new-cwd').value.trim() : choice.box.dataset.cwd,
       $(`#${prefix}-error`));
     choice.fetch.onclick = fetchRemote;
     for (const input of [choice.base, choice.branch]) {
-      input.branchAction = fetchRemote;
-      input.branchFetching = () => Boolean(choice.fetching);
+      input.pickAction = { run: fetchRemote, running: () => Boolean(choice.fetching),
+        label: 'branches.fetch', runningLabel: 'branches.fetching' };
     }
     for (const radio of [choice.fresh, choice.existing]) {
       radio.addEventListener('change', () => {
