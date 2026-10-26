@@ -3508,7 +3508,9 @@ function listPicker(input, { none } = {}) {
   };
   const place = () => {
     const box = input.getBoundingClientRect();
-    const below = innerHeight - box.bottom - 12;
+    // Not over the dialog's buttons, else a click on "Start" lands in the list.
+    const floor = Math.min(innerHeight, dialog.querySelector('.dialog-actions')?.getBoundingClientRect().top ?? innerHeight);
+    const below = floor - box.bottom - 12;
     const up = below < 160 && box.top > below;
     list.style.left = `${box.left}px`;
     list.style.width = `${box.width}px`;
@@ -3526,7 +3528,10 @@ function listPicker(input, { none } = {}) {
       const names = query ? group.names.filter((name) => name.toLowerCase().includes(query)) : group.names;
       if (!names.length) continue;
       rows.push(el('div', 'pick-group', t(group.label)));
-      for (const name of names.slice(0, PICK_GROUP_MAX)) {
+      let shown = names.slice(0, PICK_GROUP_MAX);
+      // The field's value is listed even past the first ones, so the list opens on it.
+      if (!query && names.includes(input.value) && !shown.includes(input.value)) shown = [input.value, ...shown.slice(0, -1)];
+      for (const name of shown) {
         const option = el('div', group.busy ? 'pick-option busy' : name === input.value ? 'pick-option current' : 'pick-option', name);
         option.title = name;
         option.setAttribute('role', 'option');
