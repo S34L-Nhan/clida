@@ -117,6 +117,26 @@ def _unmerged(where: str, branch: str, head: bool, own: bool = True):
     return int(count) if count and count.strip().isdigit() else None
 
 
+def _undeletable(path: str) -> list:
+    """The folders under path whose entries this user cannot delete: they belong to another user
+    (root, from a docker container that wrote vendor/ or a cache into the worktree, say)."""
+    blocked = []
+    for folder, dirs, files in os.walk(path, onerror=lambda e: blocked.append(e.filename)):
+        if (dirs or files) and not os.access(folder, os.W_OK | os.X_OK):
+            blocked.append(folder)
+            dirs[:] = []  # it stays, whatever is in it
+    return blocked
+
+
+def _registered(repo: str, path: str):
+    """Whether git lists path as one of repo's worktrees; None if git does not answer."""
+    out = git(repo, "worktree", "list", "--porcelain")
+    if out is None:
+        return None
+    real = os.path.realpath(path)
+    return any(os.path.realpath(line[len("worktree "):]) == real for line in out.splitlines() if line.startswith("worktree "))
+
+
 def _exists(top: str, ref: str) -> bool:
     return bool((git(top, "rev-parse", "--verify", "-q", ref, ok=(0, 1)) or "").strip())
 
@@ -479,8 +499,32 @@ class Worktrees:
         entry = self.get(session_id)
         if entry is None:
             raise WorktreeError(tr("Dieser Chat hat keinen eigenen Worktree.", "This chat has no worktree of its own."))
-        if os.path.isdir(entry["path"]):
-            _run(entry["repo"], "worktree", "remove", "--force", entry["path"], timeout=120)
+        path = entry["path"]
+        if os.path.isdir(path):
+            # Checked first: git worktree remove stops at what it cannot delete, but only after it
+            # deleted the rest and its own record of the worktree.
+            blocked = _undeletable(path)
+            if blocked:
+                shown = ", ".join(os.path.relpath(folder, path) for folder in blocked[:3]) + (" …" if len(blocked) > 3 else "")
+                raise WorktreeError(tr(
+                    f"Nicht alles im Worktree lässt sich löschen: {shown} gehört einem anderen Benutzer (etwa root, "
+                    "aus einem Docker-Container). Bitte das zuerst selbst löschen (im Container oder mit sudo rm -rf), "
+                    "dann erneut entfernen.",
+                    f"Not everything in the worktree can be deleted: {shown} belongs to another user (root, from a "
+                    "docker container, say). Please delete that first yourself (in the container or with sudo rm -rf), "
+                    "then remove again."))
+            registered = _registered(entry["repo"], path)
+            if registered is None:
+                raise WorktreeError(tr("Git nennt die Worktrees des Repositorys nicht; bitte gleich noch einmal.",
+                                       "git does not list the repository's worktrees; please try again in a moment."))
+            if registered:
+                _run(entry["repo"], "worktree", "remove", "--force", path, timeout=120)
+            else:
+                # Git lost track of it (a removal that stopped in the middle, say): the folder goes by hand.
+                try:
+                    shutil.rmtree(path)
+                except OSError as e:
+                    raise WorktreeError(f"{e.filename}: {e.strerror}")
         else:
             # Only this one: a bare prune would also drop worktrees on a drive that is not mounted.
             git(entry["repo"], "worktree", "remove", "--force", entry["path"], timeout=60)
