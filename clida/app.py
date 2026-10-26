@@ -378,6 +378,16 @@ class Desk:
         found = self.worktrees.branches(cwd) if os.path.isdir(cwd) else None
         return found or {"default": None, "local": [], "remote": [], "checked_out": []}
 
+    def fetch_branches(self, body: dict) -> dict:
+        """git fetch, then the branches (see Worktrees.fetch): one made on the remote just now."""
+        cwd = os.path.abspath(os.path.expanduser(str(body.get("cwd") or "~")))
+        if not os.path.isdir(cwd):
+            raise HttpError(400, tr("Verzeichnis existiert nicht: ", "Directory does not exist: ") + cwd)
+        try:
+            return self.worktrees.fetch(cwd)
+        except WorktreeError as e:
+            raise HttpError(502, tr("git fetch schlug fehl: ", "git fetch failed: ") + str(e))
+
     def start_terminal(self, body: dict) -> dict:
         resume = body.get("resume")
         if resume:

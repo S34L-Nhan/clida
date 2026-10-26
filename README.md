@@ -64,7 +64,7 @@ Tick *In eigenem Git-Worktree* (in its own git worktree) when you start a chat, 
 The worktree takes one of two branches:
 
 - **Neuer Branch clida/… von** (new branch from): a branch of its own, `clida/<title>`, from the base in the field. The field proposes the remote's default branch (`origin/HEAD`): the local branch of that name, or `origin/<name>` when the local one only lags behind it. Any local or remote branch goes; an empty field starts from where the repository stands. The new branch has no upstream.
-- **Bestehender Branch** (existing branch): a branch there is already, such as a ticket's branch made in GitLab. One only a remote has gets a local branch that tracks it; a new one needs a `git fetch` first. Git gives a branch to one worktree only, so a branch checked out elsewhere is not offered.
+- **Bestehender Branch** (existing branch): a branch there is already, such as a ticket's branch made in GitLab. One only a remote has gets a local branch that tracks it. A branch made on the remote after the last fetch shows after **Branches vom Remote holen (git fetch)**, under the fields or at the end of their list: CLIDA runs `git fetch --all` without a terminal, so a remote that would ask for a login fails with git's message. Git gives a branch to one worktree only, so a branch checked out elsewhere shows greyed out and cannot be taken.
 
 In the chat:
 

@@ -586,6 +586,39 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
 .branch-option.busy { color: var(--muted); cursor: default; }
 .branch-option.busy:hover { background: none; }
 .branch-note { padding: 6px 8px; color: var(--muted); font-size: 12px; }
+.branch-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 7px 8px 5px;
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.branch-action:hover { text-decoration: underline; }
+.branch-action svg { width: 14px; height: 14px; }
+.branch-action.fetching { color: var(--muted); cursor: default; text-decoration: none; }
+.branch-action.fetching svg { animation: spin 1s linear infinite; }
+.dialog .branch-fetch { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; }
+.link-btn:disabled { color: var(--muted); cursor: default; text-decoration: none; }
+.link-btn [data-icon] svg { width: 14px; height: 14px; }
+.link-btn.fetching [data-icon] svg { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.fetch-state { color: var(--muted); font-size: 12px; }
 .dialog .dialog-hint { margin: 4px 0 0 24px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .ask-files { display: block; max-height: 180px; overflow-y: auto; margin-top: 10px; font-size: 12.5px; line-height: 1.6; }
 .error { color: var(--danger); min-height: 1.2em; margin: 10px 0 0; font-size: 13px; }

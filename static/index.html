@@ -75,6 +75,7 @@
         <input id="new-base" class="branch-input" autocomplete="off" spellcheck="false" data-i18n-placeholder="new.basePlaceholder" data-i18n-label="new.wtNew">
         <label class="check-row" for="new-wt-existing"><input id="new-wt-existing" name="new-wt-mode" type="radio" value="existing"> <span data-i18n="new.wtExisting">Bestehender Branch</span></label>
         <input id="new-branch" class="branch-input" autocomplete="off" spellcheck="false" data-i18n-placeholder="new.branchPlaceholder" data-i18n-label="new.wtExisting">
+        <div class="branch-fetch"><button type="button" id="new-fetch" class="link-btn"><span data-icon="refresh"></span><span data-i18n="branches.fetch">Branches vom Remote holen (git fetch)</span></button><span id="new-fetch-state" class="fetch-state"></span></div>
       </div>
       <p class="dialog-hint" data-i18n="new.worktreeHint"></p>
       <p id="new-error" class="error" role="alert"></p>
@@ -94,6 +95,7 @@
         <input id="move-base" class="branch-input" autocomplete="off" spellcheck="false" data-i18n-placeholder="new.basePlaceholder" data-i18n-label="new.wtNew">
         <label class="check-row" for="move-wt-existing"><input id="move-wt-existing" name="move-wt-mode" type="radio" value="existing"> <span data-i18n="new.wtExisting">Bestehender Branch</span></label>
         <input id="move-branch" class="branch-input" autocomplete="off" spellcheck="false" data-i18n-placeholder="new.branchPlaceholder" data-i18n-label="new.wtExisting">
+        <div class="branch-fetch"><button type="button" id="move-fetch" class="link-btn"><span data-icon="refresh"></span><span data-i18n="branches.fetch">Branches vom Remote holen (git fetch)</span></button><span id="move-fetch-state" class="fetch-state"></span></div>
       </div>
       <p id="move-error" class="error" role="alert"></p>
       <div class="dialog-actions">

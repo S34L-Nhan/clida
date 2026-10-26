@@ -41,12 +41,12 @@ def _slug(text: str, fallback: str) -> str:
     return slug or fallback
 
 
-def _run(cwd, *args, timeout=30, ok=(0,)):
+def _run(cwd, *args, timeout=30, ok=(0,), env=None):
     """git's output; raises with git's own message when it fails. On a timeout the whole process
     group goes: git worktree add runs a checkout of its own, which would go on otherwise."""
     try:
         proc = subprocess.Popen(["git", "-C", cwd, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                start_new_session=True)
+                                start_new_session=True, env=env)
     except OSError as e:
         raise WorktreeError(tr(f"git {args[0]} ließ sich nicht starten: {e}", f"git {args[0]} did not start: {e}"))
     try:
@@ -269,6 +269,18 @@ class Worktrees:
             return None
         return {"default": _default_base(top), "local": _refs(top, "refs/heads/"),
                 "remote": _refs(top, "refs/remotes/"), "checked_out": sorted(_checked_out(top))}
+
+    def fetch(self, cwd: str):
+        """git fetch for cwd's repository, so that a branch made on the remote after the last fetch
+        (a ticket's, in GitLab) can be picked; then the branches as branches() gives them."""
+        top = (git(cwd, "rev-parse", "--show-toplevel") or "").rstrip("\n")
+        if not top:
+            raise WorktreeError(tr("Der Ordner liegt in keinem Git-Repository.", "The folder is not in a git repository."))
+        if not (git(top, "remote") or "").split():
+            raise WorktreeError(tr("Das Repository hat kein Remote.", "The repository has no remote."))
+        # No prompt for a login: the server has no terminal to ask in, so git fails at once instead.
+        _run(top, "fetch", "--all", "--quiet", timeout=120, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        return self.branches(top)
 
     def create(self, session_id: str, cwd: str, name: str, used=(), base=None, branch=None) -> str:
         """Make the chat's worktree in cwd's repository; returns the folder the chat starts in (the

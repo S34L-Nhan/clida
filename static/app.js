@@ -3380,6 +3380,7 @@ function branchChoice(prefix) {
   return {
     box: $(`#${prefix}-worktree-box`), fresh: $(`#${prefix}-wt-new`), existing: $(`#${prefix}-wt-existing`),
     base: $(`#${prefix}-base`), branch: $(`#${prefix}-branch`),
+    fetch: $(`#${prefix}-fetch`), fetchState: $(`#${prefix}-fetch-state`),
   };
 }
 
@@ -3388,6 +3389,7 @@ function resetBranchChoice(choice) {
   choice.existing.checked = existing;
   choice.fresh.checked = !existing;
   choice.branch.value = '';
+  choice.fetchState.textContent = '';
   delete choice.box.dataset.cwd;
   showWorktreeMode(choice);
 }
@@ -3400,6 +3402,11 @@ async function loadBranches(choice, cwd) {
     found = await api('GET', `/api/branches?cwd=${encodeURIComponent(cwd)}`);
   } catch { /* suggestions are optional */ }
   if (choice.box.dataset.cwd !== cwd) return;  // another folder was chosen meanwhile
+  showBranches(choice, found);
+  choice.base.value = found.default || '';
+}
+
+function showBranches(choice, found) {
   const busy = new Set(found.checked_out);
   const local = new Set(found.local);
   // A branch only a remote has (origin/x) is taken as x: the server makes a local one tracking it.
@@ -3409,7 +3416,33 @@ async function loadBranches(choice, cwd) {
     { label: 'branches.remoteOnly', names: [...remoteOnly] },
     // Shown, not offered: typing the ticket's number should say why its branch is not there.
     { label: 'branches.busy', names: found.local.filter((name) => busy.has(name)), busy: true }];
-  choice.base.value = found.default || '';
+}
+
+// git fetch on request: a branch made on the remote after the last fetch (the ticket's, in GitLab)
+// is in no list before. A base the user typed stays; for another folder the proposed one comes.
+async function fetchBranches(choice, cwd, error) {
+  if (choice.fetch.disabled) return false;
+  const other = cwd !== choice.box.dataset.cwd;
+  choice.box.dataset.cwd = cwd;
+  choice.fetch.disabled = true;
+  choice.fetch.classList.add('fetching');
+  choice.fetchState.textContent = t('branches.fetching');
+  error.textContent = '';
+  try {
+    const found = await api('POST', '/api/branches/fetch', { cwd });
+    if (choice.box.dataset.cwd !== cwd) return false;
+    showBranches(choice, found);
+    if (other || !choice.base.value) choice.base.value = found.default || '';
+    choice.fetchState.textContent = t('branches.fetched', { time: dates().clock.format(new Date()) });
+    return true;
+  } catch (e) {
+    choice.fetchState.textContent = '';
+    error.textContent = e.message;
+    return false;
+  } finally {
+    choice.fetch.disabled = false;
+    choice.fetch.classList.remove('fetching');
+  }
 }
 
 // The branch fields get a list of their own instead of the browser's <datalist>: that one shows
@@ -3485,6 +3518,12 @@ function branchPicker(input) {
       if (names.length > BRANCH_GROUP_MAX) rows.push(el('div', 'branch-note', t('branches.more', { n: names.length - BRANCH_GROUP_MAX })));
     }
     if (!rows.length) rows.push(el('div', 'branch-note', t('branches.none')));
+    // Also in the list, as the open list covers the button under the fields.
+    if (input.branchAction) {
+      const action = el('div', 'branch-action');
+      action.append(icon('refresh'), el('span', '', t('branches.fetch')));
+      rows.push(action);
+    }
     list.replaceChildren(...rows);
   };
   const open = () => {
@@ -3501,6 +3540,19 @@ function branchPicker(input) {
 
   list.addEventListener('mousedown', (ev) => {
     ev.preventDefault();  // the field keeps the focus, also on the scrollbar
+    const action = ev.target.closest('.branch-action:not(.fetching)');
+    if (action) {
+      action.classList.add('fetching');
+      action.lastChild.textContent = t('branches.fetching');
+      // Done: the list again, with what was typed; failed: closed, so the dialog's error shows.
+      input.branchAction().then((ok) => {
+        if (list.hidden) return;
+        if (!ok) return close();
+        render();
+        place();
+      });
+      return;
+    }
     const option = ev.target.closest('.branch-option:not(.busy)');
     if (option) pick(option.textContent);
   });
@@ -4155,9 +4207,16 @@ function wire() {
   $('#move-form').addEventListener('submit', submitMove);
   $('#new-worktree').addEventListener('change', loadNewBranches);
   $('#new-cwd').addEventListener('change', loadNewBranches);
-  for (const choice of [branchChoice('new'), branchChoice('move')]) {
+  for (const prefix of ['new', 'move']) {
+    const choice = branchChoice(prefix);
     branchPicker(choice.base);
     branchPicker(choice.branch);
+    // The new chat's folder is the one in its field; the moved chat's, the one its branches came from.
+    const fetch = () => fetchBranches(choice, prefix === 'new' ? $('#new-cwd').value.trim() : choice.box.dataset.cwd,
+      $(`#${prefix}-error`));
+    choice.fetch.onclick = fetch;
+    choice.base.branchAction = fetch;
+    choice.branch.branchAction = fetch;
     for (const radio of [choice.fresh, choice.existing]) {
       radio.addEventListener('change', () => {
         showWorktreeMode(choice);
