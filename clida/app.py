@@ -25,6 +25,7 @@ from .worktrees import WorktreeError, Worktrees
 
 UPLOAD_LIMIT = 50 * 1024 * 1024
 ANCHOR = re.compile(r"[0-9a-f-]{36}#\d{1,4}")  # a message in the history: entry uuid # its place in it
+_WORKTREE_MADE = re.compile(r"\bworktree\s+(?:add|move)\b")  # a shell command that makes or moves a worktree
 REWIND_TIMEOUT = 120
 PROMPT_MAX = 100_000  # characters a prompt from the window may have
 TYPED_MAX = 8_000  # characters typed in rather than pasted (see send_prompt): a few seconds of typing; as in app.js
@@ -282,12 +283,16 @@ class Desk:
         cwd = self._chat_cwd(session_id, info)
         if info is None and cwd is None:
             raise HttpError(404, tr("Chat nicht gefunden", "Chat not found"))
-        files = self.changes_cache.get(session_id, self.index.paths(session_id)) if info else []
+        paths = self.index.paths(session_id) if info else []
+        files = self.changes_cache.get(session_id, paths) if info else []
         repo = {"files": [], "commits": [], "repos": []}
         window = self._chat_window(session_id, info)
         if window:
+            # Worktrees the chat worked in through the shell (git worktree add, then sed or a script
+            # there): no edit tool names their files, so they count by their folder in its commands.
+            shell = self._shell_worktrees(cwd, self.changes_cache.commands(paths))
             # Deduplicated first: a chat edits many files in few folders, and the limit is on folders.
-            dirs = list(dict.fromkeys(d for d in ([cwd] if cwd else []) + [os.path.dirname(f["path"]) for f in files]
+            dirs = list(dict.fromkeys(d for d in ([cwd] if cwd else []) + shell + [os.path.dirname(f["path"]) for f in files]
                                       if os.path.isdir(d)))[:20]
             repo = self.repo_changes.get(dirs, *window, brief=brief)
             # Matched by real path: git reports /mnt/d/work/x for a file Claude edited as ~/work/x.
@@ -318,6 +323,26 @@ class Desk:
             # Given its worktree later, the chat works there only once its CLI went in (EnterWorktree).
             worktree["entered"] = (os.path.realpath(cwd) + "/").startswith(os.path.realpath(worktree["path"]) + "/")
         return {"files": out, "git": git, "commits": repo["commits"], "worktree": worktree}
+
+    @staticmethod
+    def _shell_worktrees(cwd, commands) -> list:
+        """The worktrees of cwd's repository that the chat made or moved with its shell commands
+        (git worktree add/move), named by their path or by the part under the main checkout
+        (.claude/worktrees/x). Not one it only looked into (git -C … status): that may be another
+        chat's, whose changes would count as this one's."""
+        text = "\n".join(command for command in commands if _WORKTREE_MADE.search(command))
+        if not cwd or not text:
+            return []
+        listing = gitrepo.git(cwd, "worktree", "list", "--porcelain", timeout=3) or ""
+        trees = [line[len("worktree "):] for line in listing.splitlines() if line.startswith("worktree ")]
+        found = []
+        for path in trees[1:]:  # the first is the main checkout
+            inside = os.path.relpath(path, trees[0])
+            names = [path] + ([inside] if "/" in inside and not inside.startswith("..") else [])
+            # Whole names only: .claude/worktrees/w1 is not w12.
+            if any(re.search(re.escape(name) + r"(?![\w.-])", text) for name in names):
+                found.append(path)
+        return found
 
     def _chat_cwd(self, session_id: str, info):
         """The chat's folder: from its transcript (where the CLI moved it last), its terminal, or (said

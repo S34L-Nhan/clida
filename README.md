@@ -55,7 +55,7 @@ A merge-request view of everything the chat changed:
 - **Git state** per file: ✓ committed (with the commit), ● not committed, + staged, ± partly staged, ? untracked, ⊘ ignored. Files outside any repository, like Claude's memory, form their own group: they are never committed.
 - **Comments**: click a line number, or drag over several lines, and write a question. *An Claude senden* (send to Claude) sends all comments to this chat's session as one message, with file, lines and code. If the chat is not running, CLIDA resumes it first.
 
-Files come from two sources: Claude's Edit and Write calls, and the git repositories the chat worked in (which also catches shell commands and commits). Git cannot tell who changed a file, so other changes in the same repository during the chat show up too. Files over 512 KB and binary files get no diff.
+Files come from two sources: Claude's Edit and Write calls, and the git repositories the chat worked in (which also catches shell commands and commits). A worktree the chat made itself with `git worktree add` (or moved there with `git worktree move`) counts as one of them, also when the chat only changed files there with sed or a script; one it only looked into (`git -C … status`) does not, as it may be another chat's. Git cannot tell who changed a file, so other changes in the same repository during the chat show up too. Files over 512 KB and binary files get no diff.
 
 ### Worktrees
 

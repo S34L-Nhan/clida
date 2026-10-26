@@ -23,7 +23,7 @@ from .settings import tr
 
 PROJECTS = CLAUDE_HOME / "projects"
 INDEX_FILE = STATE_DIR / "index.json"
-INDEX_VERSION = 4
+INDEX_VERSION = 5
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 # Metadata entries are written with "type" as their first key.
@@ -42,6 +42,9 @@ _SKIP_PREFIXES = (
     b'{"type":"cost-state"',
 )
 _HIDDEN_TAGS = ("<local-command-caveat>", "<system-reminder>", "<task-notification>", "<command-message>")
+# The CLI wraps pasted text in these (<pasted_content id="…">…</pasted_content id="…">): it is still
+# what the human sent, not a command's output.
+_PASTED = re.compile(r"</?pasted_content\b[^>]*>")
 # OSC sequences end with BEL or with ESC \ (hyperlinks); stopping at any ESC keeps the match short.
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
@@ -94,7 +97,7 @@ def _user_text(entry: dict):
         content = "\n".join(_str(b.get("text")) or "" for b in blocks if b.get("type") == "text")
     if not isinstance(content, str):
         return None
-    text = content.strip()
+    text = _PASTED.sub("", content).strip()
     if not text or text.startswith("<") or text.startswith("[Request interrupted"):
         return None
     return text
@@ -464,7 +467,7 @@ def _user_string_items(text: str):
         return []
     if stripped.startswith("[Request interrupted"):
         return [{"k": "note", "text": tr("Unterbrochen", "Interrupted")}]
-    return [{"k": "user", "text": stripped}]
+    return [{"k": "user", "text": _PASTED.sub("", stripped).strip()}]
 
 
 def _uid(uuid, n: int):
@@ -583,8 +586,9 @@ def changes(path: str) -> dict:
 
     Only tool calls that succeeded count. "backup" is the file's name in the CLI's file history
     (~/.claude/file-history/<session>/<backup>@v<n>, what /rewind restores from), if it kept one.
+    "commands": the chat's shell commands, which name the folders it worked in with sed or a script.
     """
-    files, calls, tracked, cwd = {}, {}, {}, None
+    files, calls, tracked, cwd, commands = {}, {}, {}, None, []
     with open(path, "rb") as f:
         for line in f:
             if line.startswith(_SNAPSHOT):
@@ -613,6 +617,10 @@ def changes(path: str) -> dict:
                     target = _str(inp.get("file_path")) or _str(inp.get("notebook_path"))
                     if target:
                         calls[block.get("id")] = (target, block["name"], inp, _str(entry.get("timestamp")))
+                elif block.get("type") == "tool_use" and block.get("name") == "Bash":
+                    inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+                    if _str(inp.get("command")):
+                        commands.append(inp["command"])
                 elif block.get("type") == "tool_result" and block.get("tool_use_id") in calls:
                     target, name, inp, ts = calls.pop(block["tool_use_id"])
                     if block.get("is_error"):
@@ -639,7 +647,7 @@ def changes(path: str) -> dict:
         target = changed["path"]
         keys = [target] + ([os.path.relpath(target, cwd)] if cwd else [])
         changed["backup"] = next((tracked[k] for k in keys if k in tracked), None)
-    return {"files": files}
+    return {"files": files, "commands": commands}
 
 
 def classify(data: bytes):
@@ -720,6 +728,10 @@ class ChangesCache:
         with self._lock:
             self._parsed[path] = (st.st_size, st.st_mtime, parsed)
         return parsed
+
+    def commands(self, paths: list) -> list:
+        """The shell commands of a chat over all its transcripts."""
+        return [command for path in paths for command in self._parse(path).get("commands", ())]
 
     def get(self, session_id: str, paths: list) -> list:
         """The files of a chat over all its transcripts (resuming from another folder can leave two)."""
