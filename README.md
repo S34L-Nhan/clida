@@ -59,11 +59,18 @@ Files come from two sources: Claude's Edit and Write calls, and the git reposito
 
 ### Worktrees
 
-Tick *In eigenem Git-Worktree* (in its own git worktree) when you start a chat, and it works on a branch of its own, `clida/<title>`, in a folder next to the repository: `<repo>.worktrees/<title>`. Parallel chats on one repository then never write into each other's files, and the changes view shows only that chat's work.
+Tick *In eigenem Git-Worktree* (in its own git worktree) when you start a chat, and it works in a folder of its own inside the repository, where the CLI keeps its worktrees too: `<repo>/.claude/worktrees/<title>`. Parallel chats on one repository then never write into each other's files, and the changes view shows only that chat's work. If the repository does not ignore that folder yet, CLIDA adds `**/.claude/worktrees/` to its `.git/info/exclude` (local, unlike `.gitignore`).
 
-- A bar under the header shows the branch, how many commits it is ahead, and what is not committed yet.
-- **In … mergen** (merge into …) merges the branch into the branch the chat started from, where that is checked out. It refuses while changes in the worktree are not committed; a conflict aborts the merge and leaves everything as it was.
-- **Worktree entfernen** (remove worktree) deletes the folder and the branch once no session works in it. The history stays; the question names any commits that no other branch has.
+The worktree takes one of two branches:
+
+- **Neuer Branch clida/… von** (new branch from): a branch of its own, `clida/<title>`, from the base in the field. The field proposes the remote's default branch (`origin/HEAD`): the local branch of that name, or `origin/<name>` when the local one only lags behind it. Any local or remote branch goes; an empty field starts from where the repository stands. The new branch has no upstream.
+- **Bestehender Branch** (existing branch): a branch there is already, such as a ticket's branch made in GitLab. One only a remote has gets a local branch that tracks it; a new one needs a `git fetch` first. Git gives a branch to one worktree only, so a branch checked out elsewhere is not offered.
+
+In the chat:
+
+- A bar under the header shows the branch, how many commits it is ahead of its base, and what is not committed yet.
+- **In … mergen** (merge into …) merges a `clida/…` branch into its base, where that is checked out. It refuses while changes in the worktree are not committed; a conflict aborts the merge and leaves everything as it was. A remote base and an existing branch have no merge button: they go by push and merge request.
+- **Worktree entfernen** (remove worktree) deletes the folder once no session works in it, and the branch if CLIDA made it; an existing branch stays. The history stays; the question names any commits that would be lost.
 - A chat that goes on under a new id (`/clear`, `/resume`) and a fork of the chat work in the same worktree and show the same bar. Deleting the chat hands the worktree to one of them; a chat that holds its worktree alone asks first, as without it CLIDA could not reach the worktree any more.
 
 Files git does not track (`.env`, `node_modules`) are not in a new worktree, and the CLI asks once whether you trust the new folder. On WSL, keep such repositories in the Linux file system: a worktree made from `/mnt/c/...` works in WSL, but Windows git and IDEs cannot use it, and checking out there is slow.
@@ -144,7 +151,7 @@ Tabs can be reordered by dragging. Browser shortcuts that make no sense in an ap
   - `search.py` keeps the full-text index of all prompts and answers (SQLite FTS5 with trigrams), read on incrementally like the chat index.
   - `gitrepo.py` adds what changed in the chat's git repositories. Every git call uses `--no-optional-locks`, so it never blocks Claude's own commits.
   - `registry.py` reads the state each running CLI reports in `~/.claude/sessions/`.
-  - `worktrees.py` makes, merges and removes the worktrees of chats started in one.
+  - `worktrees.py` makes, merges and removes the worktrees of chats started in one, and lists the branches the new-chat dialog offers.
   - `keybindings.py` reads and writes the shortcuts: CLIDA's own and the CLI's `~/.claude/keybindings.json`, with the CLI actions the settings list and their defaults.
   - `library.py` (folders, archive), `notes.py`, `settings.py`, `ws.py` (WebSocket for the terminal).
 - `static/`: the frontend, plain JavaScript without a build step. `i18n.js` holds all texts in both languages. `tick.js` is a worker that times the status poll, so a minimized window still notices a session that waits.
@@ -170,6 +177,6 @@ Anyone who reaches the server can start terminals, so:
 
 ### Data
 
-Everything CLIDA stores is in `~/.clida`: settings, its own keyboard shortcuts, titles, folders, notes, which chat has which worktree, the chat index and the search index (caches, safe to delete), uploads and the server log. The worktrees themselves live next to their repositories. A fork is a new transcript in `~/.claude/projects/` next to its original, with a copy of the original's file backups in `~/.claude/file-history/`. Shortcuts for the CLI are saved in its own `~/.claude/keybindings.json`. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
+Everything CLIDA stores is in `~/.clida`: settings, its own keyboard shortcuts, titles, folders, notes, which chat has which worktree, the chat index and the search index (caches, safe to delete), uploads and the server log. The worktrees themselves live in their repositories, in `.claude/worktrees/` (before, next to them in `<repo>.worktrees/`, where older ones stay). A fork is a new transcript in `~/.claude/projects/` next to its original, with a copy of the original's file backups in `~/.claude/file-history/`. Shortcuts for the CLI are saved in its own `~/.claude/keybindings.json`. A file that cannot be read is moved aside as `<name>.corrupt-<time>` instead of being overwritten.
 
 `CLIDA_PORT`, `CLIDA_HOME` and `CLIDA_CLAUDE` (path to the CLI) change the port and paths.

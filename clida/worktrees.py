@@ -22,6 +22,7 @@ from .settings import tr
 
 WORKTREES_FILE = STATE_DIR / "worktrees.json"
 BRANCH_PREFIX = "clida/"
+EXCLUDE_LINE = "**/.claude/worktrees/"  # in info/exclude, which stays local, unlike .gitignore
 # What a checkout is in the middle of: CLIDA's merge must neither start on top of it nor abort it.
 _IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply")
 
@@ -103,14 +104,93 @@ def _branch_name(ref):
     return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else None
 
 
-def _unmerged(where: str, branch: str, head: bool):
-    """Commits no other branch has: what removing the worktree and branch would lose. head: the
-    worktree's HEAD too (run in the worktree), where commits on a detached HEAD or another branch
-    would be lost along with it. None: unknown."""
-    tips = (["HEAD"] if head else []) + [f"refs/heads/{branch}"]
+def _unmerged(where: str, branch: str, head: bool, own: bool = True):
+    """Commits no other branch has: what removing the worktree, and with own its branch, would
+    lose. head: the worktree's HEAD too (run in the worktree), where commits on a detached HEAD or
+    another branch would be lost along with it. None: unknown."""
+    tips = (["HEAD"] if head else []) + ([f"refs/heads/{branch}"] if own else [])
+    if not tips:
+        return 0  # the folder is gone and the branch stays
     # --exclude before --branches names the branch without refs/heads/ (see git rev-parse).
-    count = git(where, "rev-list", "--count", *tips, "--not", f"--exclude={branch}", "--branches", timeout=5)
+    exclude = [f"--exclude={branch}"] if own else []
+    count = git(where, "rev-list", "--count", *tips, "--not", *exclude, "--branches", timeout=5)
     return int(count) if count and count.strip().isdigit() else None
+
+
+def _exists(top: str, ref: str) -> bool:
+    return bool((git(top, "rev-parse", "--verify", "-q", ref, ok=(0, 1)) or "").strip())
+
+
+def _refs(top: str, prefix: str) -> list:
+    """The branch names under refs/heads/ or refs/remotes/, newest commit first, without a
+    remote's HEAD."""
+    out = []
+    # A ref name has no spaces, so the space parts it from its symref.
+    for line in (git(top, "for-each-ref", "--sort=-committerdate", "--format=%(refname) %(symref)", prefix) or "").splitlines():
+        ref, _, symref = line.partition(" ")
+        if ref.startswith(prefix) and not symref:
+            out.append(ref[len(prefix):])
+    return out
+
+
+def _default_base(top: str):
+    """What a new branch starts from unless the chat says otherwise: the remote's default branch
+    (origin/HEAD), as the local branch of that name unless that only lags behind it (a local
+    development a month behind would start the work a month back). Without origin/HEAD: the branch
+    the folder has checked out, None on a detached HEAD."""
+    remote = (git(top, "symbolic-ref", "-q", "refs/remotes/origin/HEAD", ok=(0, 1)) or "").strip()
+    if not remote.startswith("refs/remotes/origin/"):
+        return _branch_name(git(top, "symbolic-ref", "-q", "HEAD", ok=(0, 1)))
+    local = remote[len("refs/remotes/origin/"):]
+    # No local branch of that name, or git failing, gives no counts: then the remote one.
+    counts = (git(top, "rev-list", "--left-right", "--count", f"refs/heads/{local}...{remote}", timeout=5) or "").split()
+    if len(counts) == 2 and not (counts[0] == "0" and counts[1] != "0"):
+        return local
+    return remote[len("refs/remotes/"):]
+
+
+def _base_ref(top: str, base: str) -> str:
+    """The full ref of a base given as development or origin/development."""
+    for ref in (f"refs/heads/{base}", f"refs/remotes/{base}"):
+        if _exists(top, ref):
+            return ref
+    raise WorktreeError(tr(f"Den Branch {base} gibt es nicht.", f"There is no branch {base}."))
+
+
+def _take_branch(top: str, branch: str):
+    """How git worktree add checks a branch there is already out: (options, start point, whether
+    that makes the local branch). A branch only a remote has gets a local one that tracks it."""
+    holder = _checked_out(top).get(branch)
+    if holder:
+        raise WorktreeError(tr(f"{branch} ist schon in {holder} ausgecheckt; Git gibt einen Branch nur einem Worktree.",
+                               f"{branch} is checked out in {holder} already; git gives a branch to one worktree only."))
+    if _exists(top, f"refs/heads/{branch}"):
+        return [], [branch], False
+    remotes = [r for r in (git(top, "remote") or "").split() if _exists(top, f"refs/remotes/{r}/{branch}")]
+    if len(remotes) == 1:
+        return ["--track", "-b", branch], [f"{remotes[0]}/{branch}"], True
+    if remotes:
+        raise WorktreeError(tr(f"{branch} gibt es auf mehreren Remotes ({', '.join(remotes)}); bitte den lokalen Branch selbst anlegen.",
+                               f"{branch} is on several remotes ({', '.join(remotes)}); please make the local branch yourself."))
+    raise WorktreeError(tr(f"Den Branch {branch} gibt es weder lokal noch auf einem Remote. Ist er neu, bitte erst git fetch.",
+                           f"There is no branch {branch}, neither local nor on a remote. If it is new, please git fetch first."))
+
+
+def _exclude(main: str, home: str):
+    """Keep the worktrees out of the repository's own git status (and git add), unless they are
+    ignored already."""
+    if git(main, "check-ignore", home, ok=(0, 1)) != "":  # its name if ignored, None if git failed
+        return
+    where = (git(main, "rev-parse", "--git-path", "info/exclude") or "").rstrip("\n")
+    if not where:
+        raise WorktreeError(tr("Git nennt die exclude-Datei des Repositorys nicht.",
+                               "git does not name the repository's exclude file."))
+    where = os.path.join(main, where)  # relative to main, or absolute in a submodule
+    os.makedirs(os.path.dirname(where), exist_ok=True)
+    with open(where, "a+", encoding="utf-8") as f:
+        f.seek(0)
+        text = f.read()
+        f.write(("" if not text or text.endswith("\n") else "\n") + EXCLUDE_LINE + "\n")
 
 
 class Worktrees:
@@ -120,8 +200,10 @@ class Worktrees:
         # a while to check a large repository out, and the window asks for the others meanwhile.
         self._creating = threading.Lock()
         self._merging = threading.Lock()  # one merge at a time: a failing one must not abort another's
-        # session id -> {"repo", "path", "branch", "base", "created", "sessions"}; "sessions": the ids
-        # the chat went on under (/clear, /resume in the CLI) and its forks, which work there too.
+        # session id -> {"repo", "path", "branch", "base", "base_ref", "own_branch", "created", "sessions"};
+        # "base_ref": the base's full ref, refs/heads/… or refs/remotes/…; "own_branch": CLIDA made the
+        # branch (and deletes it with the worktree); "sessions": the ids the chat went on under
+        # (/clear, /resume in the CLI) and its forks, which work there too.
         self._data = storage.load(WORKTREES_FILE) or {}
 
     def get(self, session_id: str):
@@ -178,9 +260,23 @@ class Worktrees:
     def _save(self):
         storage.save(WORKTREES_FILE, self._data)
 
-    def create(self, session_id: str, cwd: str, name: str, used=()) -> str:
-        """Make the chat's worktree from where cwd's repository stands; returns the folder the chat
-        starts in (the same place inside the new worktree as cwd is inside its repository).
+    def branches(self, cwd: str):
+        """For the new-chat dialog: the local and remote branches of cwd's repository, newest first,
+        the base a new branch starts from by default, and the branches checked out already (git
+        gives a branch to one worktree only). None outside a repository."""
+        top = (git(cwd, "rev-parse", "--show-toplevel") or "").rstrip("\n")
+        if not top:
+            return None
+        return {"default": _default_base(top), "local": _refs(top, "refs/heads/"),
+                "remote": _refs(top, "refs/remotes/"), "checked_out": sorted(_checked_out(top))}
+
+    def create(self, session_id: str, cwd: str, name: str, used=(), base=None, branch=None) -> str:
+        """Make the chat's worktree in cwd's repository; returns the folder the chat starts in (the
+        same place inside the new worktree as cwd is inside its repository).
+
+        base: the local or remote branch a new branch clida/<name> starts from; without it, where
+        the repository stands. branch: a branch there is already, checked out instead of a new one
+        (base is then not used); CLIDA never deletes it.
 
         used: the folders chats have worked in. A folder in one of them is not given out again,
         even with its worktree long removed: resuming that chat, or restoring its files, would
@@ -193,55 +289,65 @@ class Worktrees:
         head = (git(top, "rev-parse", "--verify", "-q", "HEAD", ok=(0, 1)) or "").strip()
         if not head:
             raise WorktreeError(tr("Das Repository hat noch keinen Commit.", "The repository has no commit yet."))
-        # Not --short: with a tag of the same name it answers "heads/main".
-        base = _branch_name(git(top, "symbolic-ref", "-q", "HEAD", ok=(0, 1)))
+        if branch:
+            options, start, made = _take_branch(top, branch)
+            base = base_ref = None
+        elif base:
+            base_ref = _base_ref(top, base)
+            start, made = [base_ref], True
+        else:
+            # Not --short: with a tag of the same name it answers "heads/main".
+            base = _branch_name(git(top, "symbolic-ref", "-q", "HEAD", ok=(0, 1)))
+            base_ref, start, made = base and f"refs/heads/{base}", [head], True
         main = _main_checkout(top) or top
-        # A submodule's worktrees go beside the superproject (beside the submodule would be inside
-        # it), named after the submodule; git still works in the submodule's own repository.
-        superproject = (git(top, "rev-parse", "--show-superproject-working-tree") or "").rstrip("\n")
-        beside = superproject or main
-        home = os.path.join(os.path.dirname(beside), os.path.basename(beside) + ".worktrees")
-        slug = _slug(name, session_id[:8])
-        if superproject:
-            slug = f"{_slug(os.path.basename(top), 'sub')}-{slug}"
+        # Where the CLI puts its own worktrees: inside the repository, so a container or tool that
+        # mounts only the repository reaches them too. A submodule has its own.
+        home = os.path.join(main, ".claude", "worktrees")
+        slug = _slug(name or (branch or "").rsplit("/", 1)[-1], session_id[:8])
         with self._creating:
             # Nor a folder another chat's record names: deleted by hand, it would be found for both.
             recorded = {e["path"] for e in self.all().values()}
             used = [u.rstrip("/") for u in used if u]
             for n in range(1, 100):
                 candidate = slug if n == 1 else f"{slug}-{n}"
-                branch = BRANCH_PREFIX + candidate
+                new = None if branch else BRANCH_PREFIX + candidate
                 path = os.path.join(home, candidate)
                 worked_in = any(u == path or u.startswith(path + "/") for u in used)
-                taken = git(top, "rev-parse", "--verify", "-q", f"refs/heads/{branch}", ok=(0, 1))
+                taken = git(top, "rev-parse", "--verify", "-q", f"refs/heads/{new}", ok=(0, 1)) if new else ""
                 if (path not in recorded and not worked_in and not os.path.exists(path)
                         and taken is not None and not taken.strip()):
                     break
             else:
                 raise WorktreeError(tr("Kein freier Name für den Worktree.", "No free name for the worktree."))
+            if new:
+                # No upstream: from origin/development it would be that, and git push would refuse.
+                options = ["--no-track", "-b", new]
+            made_dirs = [d for d in (os.path.dirname(home), home) if not os.path.isdir(d)]
             try:
                 os.makedirs(home, exist_ok=True)
-            except OSError as e:
-                raise WorktreeError(f"{home}: {e.strerror}")
-            try:
-                _run(top, "worktree", "add", "-b", branch, path, head, timeout=120)
-            except WorktreeError as failed:
+                _exclude(main, home)
+                _run(top, "worktree", "add", *options, path, *start, timeout=120)
+            except (OSError, WorktreeError) as failed:
                 # A failing post-checkout hook (git-lfs missing, say) or the timeout can leave the
                 # folder and the branch behind; nothing would list them, so they go again.
                 # Twice --force: an interrupted add leaves the worktree locked ("initializing").
                 git(top, "worktree", "remove", "--force", "--force", path, timeout=60)  # also when the folder is gone
-                git(top, "branch", "-D", branch)
-                try:
-                    os.rmdir(home)  # if this was to be its first worktree
-                except OSError:
-                    pass
+                if made:
+                    git(top, "branch", "-D", new or branch)
+                for folder in reversed(made_dirs):  # if this was to be its first worktree
+                    try:
+                        os.rmdir(folder)
+                    except OSError:
+                        break
+                if isinstance(failed, OSError):
+                    failed = WorktreeError(f"{failed.filename}: {failed.strerror}")
                 if os.path.exists(path):  # the cleanup failed too (a slow drive): say what is left
                     raise WorktreeError(f"{failed} " + tr(f"Übrig blieb der Ordner {path}; bitte selbst löschen.",
                                                           f"The folder {path} was left behind; please delete it."))
-                raise
+                raise failed
             with self._lock:
-                self._data[session_id] = {"repo": main, "path": path, "branch": branch, "base": base,
-                                          "created": time.time()}
+                self._data[session_id] = {"repo": main, "path": path, "branch": new or branch, "base": base,
+                                          "base_ref": base_ref, "own_branch": not branch, "created": time.time()}
                 self._save()
         # Both resolved: git's top has symlinks resolved (~/work may be /mnt/d/work).
         inner = os.path.normpath(os.path.join(path, os.path.relpath(os.path.realpath(cwd), os.path.realpath(top))))
@@ -254,22 +360,26 @@ class Worktrees:
         if entry is None:
             return None
         path, branch, base = entry["path"], entry["branch"], entry["base"]
-        out = {"path": path, "branch": branch, "base": base, "exists": os.path.isdir(path),
+        # Records from before base_ref and own_branch: a local base, and a branch CLIDA made.
+        base_ref = entry.get("base_ref") or (base and f"refs/heads/{base}")
+        own = entry.get("own_branch", True)
+        out = {"path": path, "branch": branch, "base": base, "exists": os.path.isdir(path), "own_branch": own,
+               "base_local": bool(base_ref and base_ref.startswith("refs/heads/")),
                "dirty": None, "ahead": None, "behind": None, "unmerged": None, "base_missing": False, "head": None}
         if not out["exists"]:
             # Gone by hand: the branch may still hold commits, which removing would delete.
-            out["unmerged"] = _unmerged(entry["repo"], branch, head=False)
+            out["unmerged"] = _unmerged(entry["repo"], branch, head=False, own=own)
             return out
         status = git(path, "status", "--porcelain=v1", timeout=5)
         out["dirty"] = None if status is None else len(status.splitlines())
-        out["unmerged"] = _unmerged(path, branch, head=True)
+        out["unmerged"] = _unmerged(path, branch, head=True, own=own)
         # What is checked out there, if not the chat's branch (a checkout or rebase in it): "" detached.
         current = git(path, "symbolic-ref", "-q", "HEAD", ok=(0, 1))
         if current is not None and _branch_name(current) != branch:
             out["head"] = _branch_name(current) or ""
-        if base:
-            out["base_missing"] = not (git(path, "rev-parse", "--verify", "-q", f"refs/heads/{base}", ok=(0, 1)) or "").strip()
-            counts = (git(path, "rev-list", "--left-right", "--count", f"refs/heads/{base}...refs/heads/{branch}",
+        if base_ref:
+            out["base_missing"] = not _exists(path, base_ref)
+            counts = (git(path, "rev-list", "--left-right", "--count", f"{base_ref}...refs/heads/{branch}",
                           timeout=5) or "").split()
             if len(counts) == 2:
                 out["behind"], out["ahead"] = int(counts[0]), int(counts[1])
@@ -288,9 +398,19 @@ class Worktrees:
         base, branch = entry["base"], entry["branch"]
         if not state["exists"]:
             raise WorktreeError(tr("Der Worktree existiert nicht mehr.", "The worktree no longer exists."))
+        if not state["own_branch"]:
+            raise WorktreeError(tr(f"Der Chat arbeitet auf dem bestehenden Branch {branch}; den mergt CLIDA nicht. "
+                                   "Bitte pushen und einen Merge Request stellen.",
+                                   f"The chat works on the existing branch {branch}, which CLIDA does not merge. "
+                                   "Please push it and open a merge request."))
         if not base:
             raise WorktreeError(tr("Der Chat startete ohne Branch (detached HEAD); bitte selbst mergen.",
                                    "The chat started without a branch (detached HEAD); please merge it yourself."))
+        if not state["base_local"]:
+            raise WorktreeError(tr(f"{base} ist ein Remote-Branch; CLIDA mergt nur in lokale. "
+                                   "Bitte pushen und einen Merge Request stellen.",
+                                   f"{base} is a remote branch; CLIDA merges into local ones only. "
+                                   "Please push and open a merge request."))
         if state["head"] is not None:
             raise WorktreeError(tr(f"Im Worktree ist nicht mehr {branch} ausgecheckt; bitte zurückwechseln oder selbst mergen.",
                                    f"{branch} is no longer checked out in the worktree; please switch back or merge it yourself."))
@@ -338,7 +458,8 @@ class Worktrees:
         return {"merged": True, "into": base, "where": target}
 
     def remove(self, session_id: str):
-        """Delete the worktree folder and its branch, uncommitted and unmerged work included."""
+        """Delete the worktree folder, uncommitted work included, and the branch if CLIDA made it,
+        unmerged work included."""
         entry = self.get(session_id)
         if entry is None:
             raise WorktreeError(tr("Dieser Chat hat keinen eigenen Worktree.", "This chat has no worktree of its own."))
@@ -347,9 +468,10 @@ class Worktrees:
         else:
             # Only this one: a bare prune would also drop worktrees on a drive that is not mounted.
             git(entry["repo"], "worktree", "remove", "--force", entry["path"], timeout=60)
-        git(entry["repo"], "branch", "-D", entry["branch"])  # may be gone already
+        if entry.get("own_branch", True):
+            git(entry["repo"], "branch", "-D", entry["branch"])  # may be gone already
         try:
-            os.rmdir(os.path.dirname(entry["path"]))  # <repo>.worktrees, once its last worktree is gone
+            os.rmdir(os.path.dirname(entry["path"]))  # .claude/worktrees (<repo>.worktrees before), once its last worktree is gone
         except OSError:
             pass
         with self._lock:

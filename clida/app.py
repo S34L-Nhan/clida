@@ -366,6 +366,12 @@ class Desk:
             out.append(home)
         return out[:40]
 
+    def branches(self, cwd: str) -> dict:
+        """What a worktree for a new chat in cwd can start from or take (see Worktrees.branches)."""
+        cwd = os.path.abspath(os.path.expanduser(cwd or "~"))
+        found = self.worktrees.branches(cwd) if os.path.isdir(cwd) else None
+        return found or {"default": None, "local": [], "remote": [], "checked_out": []}
+
     def start_terminal(self, body: dict) -> dict:
         resume = body.get("resume")
         if resume:
@@ -406,10 +412,11 @@ class Desk:
             folder = body.get("folder")
             session_id = str(uuid.uuid4())
             if body.get("worktree"):
+                base, branch = (" ".join(str(body.get(key) or "").split()) or None for key in ("base", "branch"))
                 try:
                     # Never a folder a chat worked in: resuming that chat would work in the new one's.
                     used = [info["cwd"] for info in self.index.scan()] + [t.cwd for t in self.terminals.all()]
-                    cwd = self.worktrees.create(session_id, cwd, title, used)
+                    cwd = self.worktrees.create(session_id, cwd, title, used, base=base, branch=branch)
                 except WorktreeError as e:
                     raise HttpError(400, tr("Worktree ließ sich nicht anlegen: ", "Could not create the worktree: ") + str(e))
             try:

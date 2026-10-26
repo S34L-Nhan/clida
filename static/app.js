@@ -1602,7 +1602,8 @@ function renderWorktreeBar(tab) {
   }
   const info = el('span', 'worktree-facts', facts.join(' · '));
   const actions = el('span', 'worktree-actions');
-  if (wt.exists && wt.base) {
+  // Into a local base only: a remote one (origin/development) and a ticket's branch go by merge request.
+  if (wt.exists && wt.base && wt.base_local !== false) {
     const merge = el('button', 'btn', t('worktree.merge', { base: wt.base }));
     merge.dataset.role = 'merge';
     merge.title = t('worktree.mergeHint');
@@ -1657,7 +1658,9 @@ async function removeWorktree(tab) {
   await loadChanges(tab);
   const wt = tab.changesCounts?.worktree;
   if (!wt) return;
-  const text = [...textWith('worktree.removeText', { branch: el('strong', '', wt.branch), path: el('code', '', wt.path) })];
+  const keeps = wt.own_branch === false;  // a branch there was already: only the folder goes
+  const text = [...textWith(keeps ? 'worktree.removeTextKeep' : 'worktree.removeText',
+    { branch: el('strong', '', wt.branch), path: el('code', '', wt.path) })];
   if (wt.dirty) text.push(' ', t('worktree.removeDirty', { n: wt.dirty }));
   // Commits no other branch has, whatever the base: deleting the branch loses them.
   if (wt.unmerged) text.push(' ', t('worktree.removeUnmerged', { n: wt.unmerged }));
@@ -1665,7 +1668,7 @@ async function removeWorktree(tab) {
   if (!(await ask({ title: t('worktree.removeTitle'), text, yes: t('worktree.remove'), danger: true }))) return;
   try {
     await worktreeAction(tab, 'DELETE', 'worktree');
-    toast(t('worktree.removed', { branch: wt.branch }));
+    toast(t(keeps ? 'worktree.removedKeep' : 'worktree.removed', { branch: wt.branch }));
   } catch (e) {
     toast(e.message);
   }
@@ -3304,6 +3307,8 @@ async function openNewDialog() {
   }));
   $('#new-folder-row').hidden = !state.folders.length;
   $('#new-worktree').checked = store.get('newWorktree', false);
+  resetBranchChoice(branchChoice('new'));
+  loadNewBranches();
   dialog.showModal();
   cwdInput.focus();
   cwdInput.select();
@@ -3318,10 +3323,75 @@ async function openNewDialog() {
       const chip = el('button', 'chip', cwd.startsWith(state.home) ? '~' + cwd.slice(state.home.length) : cwd);
       chip.type = 'button';
       chip.title = cwd;
-      chip.onclick = () => { cwdInput.value = cwd; $('#new-title').focus(); };
+      chip.onclick = () => { cwdInput.value = cwd; $('#new-title').focus(); loadNewBranches(); };
       return chip;
     }));
   } catch { /* suggestions are optional */ }
+}
+
+// A worktree takes a new branch from a base, or a branch there is already (a ticket's). The new
+// chat dialog has this choice, its parts named <prefix>-…. The
+// suggestions are the branches of the chat's repository, asked again for another folder; the base
+// starts as the one the server proposes for that repository.
+function branchChoice(prefix) {
+  return {
+    box: $(`#${prefix}-worktree-box`), fresh: $(`#${prefix}-wt-new`), existing: $(`#${prefix}-wt-existing`),
+    base: $(`#${prefix}-base`), branch: $(`#${prefix}-branch`),
+    baseList: $(`#${prefix}-base-list`), branchList: $(`#${prefix}-branch-list`),
+  };
+}
+
+function resetBranchChoice(choice) {
+  const existing = store.get('newWorktreeMode', 'new') === 'existing';
+  choice.existing.checked = existing;
+  choice.fresh.checked = !existing;
+  choice.branch.value = '';
+  delete choice.box.dataset.cwd;
+  showWorktreeMode(choice);
+}
+
+async function loadBranches(choice, cwd) {
+  if (cwd === choice.box.dataset.cwd) return;
+  choice.box.dataset.cwd = cwd;
+  let found = { default: null, local: [], remote: [], checked_out: [] };
+  try {
+    found = await api('GET', `/api/branches?cwd=${encodeURIComponent(cwd)}`);
+  } catch { /* suggestions are optional */ }
+  if (choice.box.dataset.cwd !== cwd) return;  // another folder was chosen meanwhile
+  const options = (names) => names.map((name) => {
+    const option = el('option');
+    option.value = name;
+    return option;
+  });
+  const busy = new Set(found.checked_out);
+  const local = new Set(found.local);
+  // A branch only a remote has (origin/x) is taken as x: the server makes a local one tracking it.
+  const remoteOnly = new Set(found.remote.map((name) => name.slice(name.indexOf('/') + 1)).filter((name) => !local.has(name)));
+  choice.baseList.replaceChildren(...options([...found.local, ...found.remote]));
+  choice.branchList.replaceChildren(...options([...found.local.filter((name) => !busy.has(name)), ...remoteOnly]));
+  choice.base.value = found.default || '';
+}
+
+function showWorktreeMode(choice) {
+  choice.base.disabled = choice.existing.checked;
+  choice.branch.disabled = !choice.existing.checked;
+}
+
+// What the server is to make: { branch } or { base } (empty: where the repository stands), or null
+// with the error said when the branch is missing.
+function chosenBranch(choice, error) {
+  if (!choice.existing.checked) return { base: choice.base.value.trim() };
+  const branch = choice.branch.value.trim();
+  if (branch) return { branch };
+  error.textContent = t('new.branchMissing');
+  choice.branch.focus();
+  return null;
+}
+
+function loadNewBranches() {
+  const choice = branchChoice('new');
+  choice.box.hidden = !$('#new-worktree').checked;
+  if (!choice.box.hidden) loadBranches(choice, $('#new-cwd').value.trim());
 }
 
 async function submitNewChat(ev) {
@@ -3330,14 +3400,18 @@ async function submitNewChat(ev) {
   const title = $('#new-title').value.trim();
   const folder = $('#new-folder').value || null;
   const worktree = $('#new-worktree').checked;
+  const choice = branchChoice('new');
+  const chosen = worktree ? chosenBranch(choice, $('#new-error')) : {};
+  if (!chosen) return;
   const submit = $('#new-form [type="submit"]');
   if (submit.disabled) return;
   submit.disabled = true;  // also stops Enter: a form does not submit through a disabled button
   try {
-    const started = await api('POST', '/api/terminals', { cwd, title, folder, worktree });
+    const started = await api('POST', '/api/terminals', { cwd, title, folder, worktree, ...chosen });
     // The folder asked for, not the worktree's: the next chat starts from the repository again.
     store.set('lastCwd', worktree ? cwd : started.cwd);
     store.set('newWorktree', worktree);
+    if (worktree) store.set('newWorktreeMode', choice.existing.checked ? 'existing' : 'new');
     if (worktree && !started.worktree) toast(t('worktree.notMade'));  // a server older than this page
     $('#new-dialog').close();
     if (folder) expandFolder(folder);
@@ -3916,6 +3990,16 @@ function wire() {
     else if (action === 'close-dialog') $('#new-dialog').close();
   });
   $('#new-form').addEventListener('submit', submitNewChat);
+  $('#new-worktree').addEventListener('change', loadNewBranches);
+  $('#new-cwd').addEventListener('change', loadNewBranches);
+  for (const choice of [branchChoice('new')]) {
+    for (const radio of [choice.fresh, choice.existing]) {
+      radio.addEventListener('change', () => {
+        showWorktreeMode(choice);
+        (choice.existing.checked ? choice.branch : choice.base).focus();
+      });
+    }
+  }
   $('#ask-cancel').onclick = () => answer(false);
   $('#ask-yes').onclick = () => answer(true);
   $('#ask-dialog').addEventListener('cancel', (ev) => {  // Esc

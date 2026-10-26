@@ -554,6 +554,10 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
 .dialog .check-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; cursor: pointer; }
 .dialog .check-row input { width: auto; height: auto; margin: 0; accent-color: var(--accent); }
 .dialog .check-row input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dialog .worktree-choice { margin-left: 24px; }
+.dialog .worktree-choice .check-row { margin-top: 10px; }
+.dialog .branch-input { margin-top: 6px; font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; font-size: 13px; }
+.dialog .branch-input:disabled { opacity: 0.5; }
 .dialog .dialog-hint { margin: 4px 0 0 24px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .ask-files { display: block; max-height: 180px; overflow-y: auto; margin-top: 10px; font-size: 12.5px; line-height: 1.6; }
 .error { color: var(--danger); min-height: 1.2em; margin: 10px 0 0; font-size: 13px; }
