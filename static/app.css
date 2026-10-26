@@ -560,6 +560,32 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
 .dialog .worktree-choice .check-row { margin-top: 10px; }
 .dialog .branch-input { margin-top: 6px; font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; font-size: 13px; }
 .dialog .branch-input:disabled { opacity: 0.5; }
+.branch-list {
+  position: fixed;
+  z-index: 30;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.branch-group { padding: 8px 8px 3px; color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.branch-option {
+  padding: 5px 8px;
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.branch-option:hover, .branch-option.active { background: var(--hover); }
+.branch-option.current { color: var(--accent); }
+.branch-option.busy { color: var(--muted); cursor: default; }
+.branch-option.busy:hover { background: none; }
+.branch-note { padding: 6px 8px; color: var(--muted); font-size: 12px; }
 .dialog .dialog-hint { margin: 4px 0 0 24px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .ask-files { display: block; max-height: 180px; overflow-y: auto; margin-top: 10px; font-size: 12.5px; line-height: 1.6; }
 .error { color: var(--danger); min-height: 1.2em; margin: 10px 0 0; font-size: 13px; }

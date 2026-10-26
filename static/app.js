@@ -3380,7 +3380,6 @@ function branchChoice(prefix) {
   return {
     box: $(`#${prefix}-worktree-box`), fresh: $(`#${prefix}-wt-new`), existing: $(`#${prefix}-wt-existing`),
     base: $(`#${prefix}-base`), branch: $(`#${prefix}-branch`),
-    baseList: $(`#${prefix}-base-list`), branchList: $(`#${prefix}-branch-list`),
   };
 }
 
@@ -3401,18 +3400,138 @@ async function loadBranches(choice, cwd) {
     found = await api('GET', `/api/branches?cwd=${encodeURIComponent(cwd)}`);
   } catch { /* suggestions are optional */ }
   if (choice.box.dataset.cwd !== cwd) return;  // another folder was chosen meanwhile
-  const options = (names) => names.map((name) => {
-    const option = el('option');
-    option.value = name;
-    return option;
-  });
   const busy = new Set(found.checked_out);
   const local = new Set(found.local);
   // A branch only a remote has (origin/x) is taken as x: the server makes a local one tracking it.
   const remoteOnly = new Set(found.remote.map((name) => name.slice(name.indexOf('/') + 1)).filter((name) => !local.has(name)));
-  choice.baseList.replaceChildren(...options([...found.local, ...found.remote]));
-  choice.branchList.replaceChildren(...options([...found.local.filter((name) => !busy.has(name)), ...remoteOnly]));
+  choice.base.branchGroups = [{ label: 'branches.local', names: found.local }, { label: 'branches.remote', names: found.remote }];
+  choice.branch.branchGroups = [{ label: 'branches.local', names: found.local.filter((name) => !busy.has(name)) },
+    { label: 'branches.remoteOnly', names: [...remoteOnly] },
+    // Shown, not offered: typing the ticket's number should say why its branch is not there.
+    { label: 'branches.busy', names: found.local.filter((name) => busy.has(name)), busy: true }];
   choice.base.value = found.default || '';
+}
+
+// The branch fields get a list of their own instead of the browser's <datalist>: that one shows
+// over a thousand branches unstyled, local and remote mixed, and filtered by the prefilled value.
+// The list opens on a click, on typing or on ↓, filters by what was typed, and shows the first
+// BRANCH_GROUP_MAX of each group. It lives in the dialog (the top layer) and is placed fixed under
+// the field, as the dialog would cut it off or scroll.
+const BRANCH_GROUP_MAX = 30;
+
+function branchPicker(input) {
+  const dialog = input.closest('dialog');
+  const list = el('div', 'branch-list');
+  list.id = `${input.id}-list`;
+  list.setAttribute('role', 'listbox');
+  list.hidden = true;
+  dialog.append(list);
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-controls', list.id);
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-expanded', 'false');
+  let typed = false;  // the prefilled value is no filter: the list shows everything until one types
+  let options = [];
+  let active = -1;
+
+  const close = () => {
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+  };
+  const pick = (name) => {
+    input.value = name;
+    close();
+  };
+  const mark = (at) => {
+    options[active]?.classList.remove('active');
+    active = at;
+    const option = options[active];
+    if (!option) return input.removeAttribute('aria-activedescendant');
+    option.classList.add('active');
+    option.scrollIntoView({ block: 'nearest' });
+    input.setAttribute('aria-activedescendant', option.id);
+  };
+  const place = () => {
+    const box = input.getBoundingClientRect();
+    const below = innerHeight - box.bottom - 12;
+    const up = below < 160 && box.top > below;
+    list.style.left = `${box.left}px`;
+    list.style.width = `${box.width}px`;
+    list.style.maxHeight = `${Math.min(280, up ? box.top - 12 : below)}px`;
+    list.style.top = up ? '' : `${box.bottom + 4}px`;
+    list.style.bottom = up ? `${innerHeight - box.top + 4}px` : '';
+  };
+  const render = () => {
+    const query = typed ? input.value.trim().toLowerCase() : '';
+    const rows = [];
+    options = [];
+    active = -1;
+    for (const group of input.branchGroups || []) {
+      const names = query ? group.names.filter((name) => name.toLowerCase().includes(query)) : group.names;
+      if (!names.length) continue;
+      rows.push(el('div', 'branch-group', t(group.label)));
+      for (const name of names.slice(0, BRANCH_GROUP_MAX)) {
+        const option = el('div', group.busy ? 'branch-option busy' : name === input.value ? 'branch-option current' : 'branch-option', name);
+        option.title = name;
+        option.setAttribute('role', 'option');
+        if (group.busy) option.setAttribute('aria-disabled', 'true');
+        else {
+          option.id = `${list.id}-${options.length}`;
+          options.push(option);
+        }
+        rows.push(option);
+      }
+      if (names.length > BRANCH_GROUP_MAX) rows.push(el('div', 'branch-note', t('branches.more', { n: names.length - BRANCH_GROUP_MAX })));
+    }
+    if (!rows.length) rows.push(el('div', 'branch-note', t('branches.none')));
+    list.replaceChildren(...rows);
+  };
+  const open = () => {
+    if (input.disabled) return;
+    render();
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    place();
+    list.scrollTop = 0;
+    // The value in the field, if listed: in view and the place ↓ and ↑ go on from.
+    const current = options.findIndex((option) => option.classList.contains('current'));
+    if (current >= 0) mark(current);
+  };
+
+  list.addEventListener('mousedown', (ev) => {
+    ev.preventDefault();  // the field keeps the focus, also on the scrollbar
+    const option = ev.target.closest('.branch-option:not(.busy)');
+    if (option) pick(option.textContent);
+  });
+  input.addEventListener('mousedown', () => {
+    if (!list.hidden) return close();
+    typed = false;
+    open();
+  });
+  input.addEventListener('input', () => {
+    typed = true;
+    open();
+  });
+  input.addEventListener('blur', close);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      if (list.hidden) {
+        typed = false;
+        open();
+      } else if (options.length) {
+        const step = ev.key === 'ArrowDown' ? 1 : -1;
+        mark(active < 0 ? (step > 0 ? 0 : options.length - 1) : (active + step + options.length) % options.length);
+      }
+    } else if (ev.key === 'Enter' && !list.hidden && active >= 0) {
+      pick(options[active].textContent);  // not the form's submit
+    } else if (ev.key === 'Escape' && !list.hidden) {
+      close();  // not the dialog
+    } else return;
+    ev.preventDefault();
+  });
+  dialog.addEventListener('scroll', () => list.hidden || place());
+  addEventListener('resize', close);
 }
 
 function showWorktreeMode(choice) {
@@ -4037,6 +4156,8 @@ function wire() {
   $('#new-worktree').addEventListener('change', loadNewBranches);
   $('#new-cwd').addEventListener('change', loadNewBranches);
   for (const choice of [branchChoice('new'), branchChoice('move')]) {
+    branchPicker(choice.base);
+    branchPicker(choice.branch);
     for (const radio of [choice.fresh, choice.existing]) {
       radio.addEventListener('change', () => {
         showWorktreeMode(choice);
