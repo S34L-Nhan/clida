@@ -3416,16 +3416,36 @@ function showBranches(choice, found) {
     { label: 'branches.remoteOnly', names: [...remoteOnly] },
     // Shown, not offered: typing the ticket's number should say why its branch is not there.
     { label: 'branches.busy', names: found.local.filter((name) => busy.has(name)), busy: true }];
+  redrawBranches(choice);
+}
+
+// An open branch list draws again: new branches, or a fetch that starts or ends.
+function redrawBranches(choice) {
+  for (const input of [choice.base, choice.branch]) input.dispatchEvent(new Event('branches'));
 }
 
 // git fetch on request: a branch made on the remote after the last fetch (the ticket's, in GitLab)
-// is in no list before. A base the user typed stays; for another folder the proposed one comes.
-async function fetchBranches(choice, cwd, error) {
-  if (choice.fetch.disabled) return false;
+// is in no list before. A request while one runs gets that one's answer: true once the branches
+// are there, false if it failed (said in error).
+function fetchBranches(choice, cwd, error) {
+  if (!choice.fetching) {
+    choice.fetching = fetchOnce(choice, cwd, error).finally(() => {
+      choice.fetching = null;
+      choice.fetch.disabled = false;
+      choice.fetch.classList.remove('fetching');
+      redrawBranches(choice);
+    });
+    choice.fetch.disabled = true;
+    choice.fetch.classList.add('fetching');
+    redrawBranches(choice);
+  }
+  return choice.fetching;
+}
+
+// A base the user typed stays; for another folder the proposed one comes.
+async function fetchOnce(choice, cwd, error) {
   const other = cwd !== choice.box.dataset.cwd;
   choice.box.dataset.cwd = cwd;
-  choice.fetch.disabled = true;
-  choice.fetch.classList.add('fetching');
   choice.fetchState.textContent = t('branches.fetching');
   error.textContent = '';
   try {
@@ -3439,9 +3459,6 @@ async function fetchBranches(choice, cwd, error) {
     choice.fetchState.textContent = '';
     error.textContent = e.message;
     return false;
-  } finally {
-    choice.fetch.disabled = false;
-    choice.fetch.classList.remove('fetching');
   }
 }
 
@@ -3520,8 +3537,9 @@ function branchPicker(input) {
     if (!rows.length) rows.push(el('div', 'branch-note', t('branches.none')));
     // Also in the list, as the open list covers the button under the fields.
     if (input.branchAction) {
-      const action = el('div', 'branch-action');
-      action.append(icon('refresh'), el('span', '', t('branches.fetch')));
+      const running = input.branchFetching();
+      const action = el('div', running ? 'branch-action fetching' : 'branch-action');
+      action.append(icon('refresh'), el('span', '', t(running ? 'branches.fetching' : 'branches.fetch')));
       rows.push(action);
     }
     list.replaceChildren(...rows);
@@ -3540,17 +3558,9 @@ function branchPicker(input) {
 
   list.addEventListener('mousedown', (ev) => {
     ev.preventDefault();  // the field keeps the focus, also on the scrollbar
-    const action = ev.target.closest('.branch-action:not(.fetching)');
-    if (action) {
-      action.classList.add('fetching');
-      action.lastChild.textContent = t('branches.fetching');
-      // Done: the list again, with what was typed; failed: closed, so the dialog's error shows.
-      input.branchAction().then((ok) => {
-        if (list.hidden) return;
-        if (!ok) return close();
-        render();
-        place();
-      });
+    if (ev.target.closest('.branch-action')) {
+      // Failed: closed, so the dialog's error under it shows. Done: drawn again by the event.
+      input.branchAction().then((ok) => ok || close());
       return;
     }
     const option = ev.target.closest('.branch-option:not(.busy)');
@@ -3566,6 +3576,11 @@ function branchPicker(input) {
     open();
   });
   input.addEventListener('blur', close);
+  input.addEventListener('branches', () => {
+    if (list.hidden) return;
+    render();
+    place();
+  });
   input.addEventListener('keydown', (ev) => {
     if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
       if (list.hidden) {
@@ -4212,11 +4227,13 @@ function wire() {
     branchPicker(choice.base);
     branchPicker(choice.branch);
     // The new chat's folder is the one in its field; the moved chat's, the one its branches came from.
-    const fetch = () => fetchBranches(choice, prefix === 'new' ? $('#new-cwd').value.trim() : choice.box.dataset.cwd,
+    const fetchRemote = () => fetchBranches(choice, prefix === 'new' ? $('#new-cwd').value.trim() : choice.box.dataset.cwd,
       $(`#${prefix}-error`));
-    choice.fetch.onclick = fetch;
-    choice.base.branchAction = fetch;
-    choice.branch.branchAction = fetch;
+    choice.fetch.onclick = fetchRemote;
+    for (const input of [choice.base, choice.branch]) {
+      input.branchAction = fetchRemote;
+      input.branchFetching = () => Boolean(choice.fetching);
+    }
     for (const radio of [choice.fresh, choice.existing]) {
       radio.addEventListener('change', () => {
         showWorktreeMode(choice);
