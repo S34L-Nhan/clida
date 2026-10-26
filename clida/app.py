@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import STATE_DIR, browser, gitrepo, locate, registry, storage, transcripts
+from . import STATE_DIR, browser, connectors, gitrepo, locate, registry, storage, transcripts
 from .keybindings import Keybindings, KeysError
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
@@ -921,6 +921,25 @@ class Desk:
             raise HttpError(409, str(e))
         except OSError as e:
             raise HttpError(500, tr("Speichern fehlgeschlagen: ", "Saving failed: ") + str(e))
+
+    # -- connectors: the accesses Claude reaches other services with ----------------------------
+
+    def connectors(self, kind: str) -> dict:
+        try:
+            if kind == "mcp":
+                return connectors.mcp(self.terminals.claude)
+            return getattr(connectors, kind)()
+        except connectors.ConnectorError as e:
+            raise HttpError(502, str(e))
+
+    def connector_action(self, kind: str, action: str, body: dict) -> dict:
+        handler = getattr(connectors, f"{kind}_{action}", None)
+        if handler is None:
+            raise HttpError(404, tr("Nicht gefunden", "Not found"))
+        try:
+            return handler(self.terminals.claude, body) if kind == "mcp" else handler(body)
+        except connectors.ConnectorError as e:
+            raise HttpError(409, str(e))
 
     # -- settings ---------------------------------------------------------------------------
 

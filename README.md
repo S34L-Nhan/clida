@@ -100,6 +100,12 @@ Both are Markdown. Pasting rendered text keeps lists, bold and code (converter f
 - **Farbschema** (color theme): System, light, dark, Solarized, Catppuccin, Nord, Dracula, Gruvbox and Tokyo Night. It colors the terminal too. Set the CLI's own theme once with `/theme` to *Auto (match terminal)*.
 - **Diff-Farben** (diff colors): how strongly added and removed lines are tinted, from subtle to very strong. Comments and selected lines have their own color.
 
+The tab **Konnektoren** (connectors) lists the accesses Claude reaches other services with besides its own login, with what each may do. Tokens stay in the server; the page only gets names, scopes and dates.
+
+- **GitLab**, every host in glab's config: the user, the token's name, scopes, expiry (yellow within a month) and last use. *Erneuern* (renew) rotates the token on GitLab, with the same scopes and the same lifetime (one year at most), and puts the new one into glab and into git's plain-text store (`~/.git-credentials`, where git keeps a copy of glab's token when `credential.helper = store`). The old token stops working everywhere. *Widerrufen* (revoke) revokes it on GitLab and removes it from both. *Anmelden* (sign in) takes a token made on GitLab's page, once GitLab accepts it.
+- **GitHub**, the accounts of Git Credential Manager, if git uses it for github.com: the scopes GitHub reports for the token. *Neu anmelden* (sign in again) opens GCM's sign-in; *Abmelden* (sign out) removes the account from GCM. The grant itself stays on GitHub until it is revoked under Settings → Applications, which the tab links to.
+- **MCP connectors**, everything `claude mcp list` shows outside a project, with its health. A claude.ai connector (Jira and Confluence through Atlassian's, for one) is connected with `claude mcp login`, which opens claude.ai in the browser; claude.ai decides what it may do and disconnects it on its connectors page. Other HTTP servers sign in with OAuth in the browser and out with `claude mcp logout`.
+
 The tab **Tastenkürzel** (keyboard shortcuts) lists CLIDA's own shortcuts and the Claude CLI's, each with its keys now. *Ändern* (change) waits for the new key (Esc gives up), the arrow next to it goes back to the default, and nothing is stored before *Speichern* (save). A key taken twice is shown and cannot be saved; keys that never reach the CLI (Ctrl+C, the Windows or ⌘ key, a key CLIDA takes itself) are refused or marked. The CLI's shortcuts go to `~/.claude/keybindings.json`, which every running session reads again at once; what else that file holds stays. A handy one: *Eingabe beiseitelegen* (stash) on Ctrl+A empties the input in one go, and a second press brings the text back.
 
 ## Commands
@@ -153,6 +159,7 @@ Tabs can be reordered by dragging. Browser shortcuts that make no sense in an ap
   - `gitrepo.py` adds what changed in the chat's git repositories. Every git call uses `--no-optional-locks`, so it never blocks Claude's own commits.
   - `registry.py` reads the state each running CLI reports in `~/.claude/sessions/`.
   - `worktrees.py` makes, merges and removes the worktrees of chats started in one, and lists the branches the new-chat dialog offers.
+  - `connectors.py` lists the accesses of the settings' connectors tab (glab, Git Credential Manager, `claude mcp`) and renews or revokes them through those tools.
   - `keybindings.py` reads and writes the shortcuts: CLIDA's own and the CLI's `~/.claude/keybindings.json`, with the CLI actions the settings list and their defaults.
   - `library.py` (folders, archive), `notes.py`, `settings.py`, `ws.py` (WebSocket for the terminal).
 - `static/`: the frontend, plain JavaScript without a build step. `i18n.js` holds all texts in both languages. `tick.js` is a worker that times the status poll, so a minimized window still notices a session that waits.

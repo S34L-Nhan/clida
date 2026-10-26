@@ -64,6 +64,7 @@ function dates() {
     month: new Intl.DateTimeFormat(locale(), { month: 'long', year: 'numeric' }),
     short: new Intl.DateTimeFormat(locale(), { day: 'numeric', month: 'short' }),
     clock: new Intl.DateTimeFormat(locale(), { hour: '2-digit', minute: '2-digit' }),
+    day: new Intl.DateTimeFormat(locale(), { day: 'numeric', month: 'short', year: 'numeric' }),
   };
   return DATE_FORMATS[locale()];
 }
@@ -4158,6 +4159,287 @@ async function saveKeys() {
   toast(t('kb.saved'));
 }
 
+// ---- the connectors page of the settings --------------------------------------------------
+// The accesses Claude reaches other services with (clida/connectors.py), with what each may do,
+// renewed or revoked from here. Each kind loads on its own: the MCP servers' health check takes
+// a few seconds.
+
+const CONNECTOR_KINDS = ['gitlab', 'github', 'mcp'];
+
+function openConnectorsTab() {
+  state.conn ||= { seq: {}, busy: new Map(), errors: {}, tokens: {}, signin: new Set() };
+  state.conn.errors = {};
+  state.conn.signin.clear();
+  for (const kind of CONNECTOR_KINDS) loadConnectors(kind);
+}
+
+async function loadConnectors(kind) {
+  const conn = state.conn;
+  const seq = (conn.seq[kind] || 0) + 1;
+  conn.seq[kind] = seq;
+  conn[kind] = { ...conn[kind], loading: true };
+  renderConnectors();
+  let next;
+  try {
+    next = { data: await api('GET', `/api/connectors/${kind}`) };
+  } catch (e) {
+    next = { error: e.message };
+  }
+  if (conn.seq[kind] !== seq) return;  // a newer load is under way
+  conn[kind] = next;
+  renderConnectors();
+}
+
+function renderConnectors() {
+  const conn = state.conn;
+  const body = $('#connectors-body');
+  if (!conn || body.hidden) return;
+  // What is typed into a token field survives the redraw, and so does the focus there.
+  const focused = body.contains(document.activeElement) && document.activeElement.id;
+  const head = el('div', 'conn-head');
+  const refresh = el('button', 'btn', t('conn.refresh'));
+  refresh.type = 'button';
+  refresh.onclick = openConnectorsTab;
+  head.append(el('p', 'settings-hint', t('conn.hint')), refresh);
+  body.replaceChildren(head, ...CONNECTOR_KINDS.map(connSection));
+  if (focused) $(`#${CSS.escape(focused)}`)?.focus();
+}
+
+function connSection(kind) {
+  const section = el('section', 'conn-section');
+  section.append(el('h3', '', t(`conn.${kind}`)));
+  const { data, error, loading } = state.conn[kind] || {};
+  if (!data) {
+    if (error) section.append(el('p', 'settings-hint settings-warn', error));
+    else if (loading) section.append(el('p', 'settings-hint', t(kind === 'mcp' ? 'conn.loadingMcp' : 'conn.loading')));
+    return section;
+  }
+  if (kind === 'gitlab') {
+    if (!data.available) section.append(el('p', 'settings-hint', t('conn.noGlab')));
+    else section.append(...data.accounts.map(gitlabRow));
+  } else if (kind === 'github') {
+    if (!data.available) {
+      section.append(el('p', 'settings-hint', t('conn.noGcm')));
+      return section;
+    }
+    section.append(...data.accounts.map(githubRow));
+    if (!data.accounts.length) {
+      const row = connRow('github', '', t('conn.noGithubAccount'));
+      row.actions.append(connButton(t('conn.signIn'), () => connAction('github', 'renew', '', {},
+        { wait: 'conn.waitGithub', done: () => t('conn.githubSignedIn') })));
+      section.append(row.node);
+    }
+    const link = el('a', '', t('conn.githubApps'));
+    link.href = data.apps_url;
+    link.onclick = (ev) => { ev.preventDefault(); openExternal(data.apps_url); };
+    const hint = el('p', 'settings-hint conn-foot');
+    hint.append(...textWith('conn.githubHint', { link }));
+    section.append(hint);
+  } else {
+    const order = { connected: 0, failed: 1, auth: 2 };
+    const servers = [...data.servers].sort((a, b) => (order[a.state] ?? 3) - (order[b.state] ?? 3));
+    if (!servers.length) section.append(el('p', 'settings-hint', t('conn.noMcp')));
+    section.append(...servers.map((server) => mcpRow(server, data.manage_url)));
+    section.append(el('p', 'settings-hint conn-foot', t('conn.mcpHint')));
+  }
+  if (loading) section.classList.add('loading');
+  return section;
+}
+
+// One access: what it is and may do on the left, its buttons on the right, a message below.
+function connRow(kind, id, title, dot = null) {
+  const node = el('div', 'conn-row');
+  const what = el('div', 'conn-what');
+  const name = el('div', 'conn-title');
+  if (dot) name.append(el('span', `conn-dot ${dot}`));
+  name.append(el('span', '', title));
+  what.append(name);
+  const actions = el('div', 'conn-actions');
+  node.append(what, actions);
+  const key = `${kind}:${id}`;
+  const busy = state.conn.busy.get(key);
+  const message = busy ? { cls: 'wait', text: t(busy) } : state.conn.errors[key] && { cls: 'error', text: state.conn.errors[key] };
+  if (message) node.append(el('div', `conn-msg ${message.cls}`, message.text));
+  if (busy) node.classList.add('busy');
+  return { node, what, actions };
+}
+
+function connButton(label, onclick, cls = '') {
+  const button = el('button', `btn ${cls}`.trim(), label);
+  button.type = 'button';
+  button.onclick = onclick;
+  return button;
+}
+
+function connMeta(parts, cls = '') {
+  return el('div', `conn-meta ${cls}`.trim(), parts.filter(Boolean).join(' · '));
+}
+
+function connScopes(scopes) {
+  const box = el('div', 'conn-scopes');
+  box.append(...(scopes || []).map((scope) => el('code', '', scope)));
+  return box;
+}
+
+const fullDate = (iso) => dates().day.format(new Date(iso.length === 10 ? `${iso}T00:00:00` : iso));
+
+// When a token runs out, and whether that is soon (a month) or past.
+function expiry(iso) {
+  if (!iso) return { text: t('conn.noExpiry'), cls: '' };
+  const day = iso.slice(0, 10);  // GitLab gives a date, GitHub a date and time
+  const days = Math.ceil((new Date(`${day}T00:00:00`) - new Date()) / DAY);
+  if (days <= 0) return { text: t('conn.expired', { date: fullDate(day) }), cls: 'bad' };
+  if (days <= 30) return { text: `${t('conn.expires', { date: fullDate(day) })} (${t('conn.expiresSoon', { n: days })})`, cls: 'warn' };
+  return { text: t('conn.expires', { date: fullDate(day) }), cls: '' };
+}
+
+function gitlabRow(account) {
+  const { host, token } = account;
+  const row = connRow('gitlab', host, host, account.invalid ? 'failed' : account.signed_in ? 'connected' : null);
+  const tokenName = token ? t('conn.token', { name: token.name }) : null;
+  if (!account.signed_in) {
+    row.what.append(connMeta([t('conn.signedOut')]));
+  } else if (token) {
+    const ends = expiry(token.expires_at);
+    row.what.append(connMeta([account.user && t('conn.as', { user: account.user }), tokenName]),
+      connMeta([ends.text], ends.cls),
+      connMeta([token.last_used_at && t('conn.lastUsed', { date: fullDate(token.last_used_at) })]),
+      connScopes(token.scopes));
+  } else {
+    row.what.append(connMeta([account.user && t('conn.as', { user: account.user }), !account.error && t('conn.oauth')]));
+  }
+  if (account.error) row.what.append(connMeta([account.invalid ? t('conn.invalid') : account.error], 'bad'));
+  const strong = (text) => el('strong', '', text);
+  if (token && !account.invalid) {
+    row.actions.append(
+      connButton(t('conn.renew'), () => connAction('gitlab', 'renew', host, { host }, {
+        confirm: { title: t('conn.renewTitle'), text: textWith('conn.renewText', { token: strong(tokenName), host: strong(host) }), yes: t('conn.renew') },
+        done: (r) => t('conn.renewed', { date: fullDate(r.expires_at) }),
+      })),
+      connButton(t('conn.revoke'), () => connAction('gitlab', 'revoke', host, { host }, {
+        confirm: { title: t('conn.revokeTitle'), text: textWith('conn.revokeText', { token: strong(tokenName), host: strong(host) }), yes: t('conn.revoke'), danger: true },
+        done: (r) => t(r.was_valid ? 'conn.revoked' : 'conn.removed'),
+      }), 'danger'));
+  } else if (account.signed_in) {  // an OAuth sign-in, or a token GitLab no longer takes
+    row.actions.append(connButton(t(account.invalid ? 'conn.remove' : 'conn.signOut'), () => connAction('gitlab', 'revoke', host,
+      { host, local: !account.invalid }, {
+        confirm: { title: t('conn.removeTitle'), text: textWith('conn.removeText', { host: strong(host) }), yes: t('conn.remove'), danger: true },
+        done: () => t('conn.removed'),
+      }), 'danger'));
+  }
+  if (!account.signed_in || account.invalid) {
+    // The form for a new token opens on demand: glab lists gitlab.com even if it is never used.
+    const open = state.conn.signin.has(host) || state.conn.tokens[host];
+    if (open) row.what.append(gitlabSignin(account));
+    else row.actions.prepend(connButton(t(account.invalid ? 'conn.newTokenStore' : 'conn.signIn'), () => {
+      state.conn.signin.add(host);
+      renderConnectors();
+      $(`#${CSS.escape(`conn-token-${host}`)}`)?.focus();
+    }, 'primary'));
+  }
+  return row.node;
+}
+
+// A token made on GitLab's page, pasted here.
+function gitlabSignin(account) {
+  const { host } = account;
+  const form = el('div', 'conn-signin');
+  const create = connButton(t('conn.newToken'), () => openExternal(account.new_token_url));
+  const input = el('input');
+  input.type = 'password';
+  input.id = `conn-token-${host}`;
+  input.placeholder = t('conn.tokenPlaceholder');
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.value = state.conn.tokens[host] || '';
+  input.oninput = () => { state.conn.tokens[host] = input.value; };
+  const save = connButton(t('conn.store'), () => {
+    const token = input.value.trim();
+    if (!token) return input.focus();
+    connAction('gitlab', 'signin', host, { host, token }, {
+      done: (r) => {
+        delete state.conn.tokens[host];
+        state.conn.signin.delete(host);
+        return t('conn.signedIn', { user: r.user });
+      },
+    });
+  }, 'primary');
+  input.onkeydown = (ev) => { if (ev.key === 'Enter') save.click(); };
+  form.append(create, input, save);
+  const box = el('div');
+  box.append(form, el('p', 'settings-hint', t('conn.newTokenHint')));
+  return box;
+}
+
+function githubRow(account) {
+  const { user } = account;
+  const row = connRow('github', user, account.login || user, account.error ? 'failed' : 'connected');
+  const ends = account.expires_at ? expiry(account.expires_at) : null;
+  row.what.append(connMeta([account.app === 'gcm' ? t('conn.gcmApp') : null, ends?.text], ends?.cls));
+  if (account.scopes) row.what.append(connScopes(account.scopes));
+  if (account.error) row.what.append(connMeta([account.invalid ? t('conn.invalid') : account.error], 'bad'));
+  row.actions.append(
+    connButton(t('conn.signInAgain'), () => connAction('github', 'renew', user, { user },
+      { wait: 'conn.waitGithub', done: () => t('conn.githubSignedIn') })),
+    connButton(t('conn.signOut'), () => connAction('github', 'revoke', user, { user }, {
+      confirm: { title: t('conn.githubSignOutTitle'), text: textWith('conn.githubSignOutText', { user: el('strong', '', user) }), yes: t('conn.signOut'), danger: true },
+      done: () => t('conn.githubSignedOut'),
+    }), 'danger'));
+  return row.node;
+}
+
+function mcpRow(server, manageUrl) {
+  const { name, kind, state: status } = server;
+  const label = name.replace(/^claude\.ai /, '');
+  const row = connRow('mcp', name, label, status);
+  const said = t(`conn.state.${status}`);
+  row.what.append(connMeta([t(`conn.kind.${kind}`), said.startsWith('conn.') ? server.status : said],
+    status === 'failed' ? 'bad' : status === 'auth' ? 'warn' : ''));
+  row.what.append(el('div', 'conn-target', server.target));
+  // A program on this machine has nothing to sign in to; a server from a project's .mcp.json that
+  // waits for approval gets it in that project's CLI first.
+  if (kind === 'local' || status === 'pending') return row.node;
+  const connected = status === 'connected';
+  const signin = kind === 'claudeai' ? t(connected ? 'conn.reconnect' : 'conn.connect') : t(connected ? 'conn.signInAgain' : 'conn.signIn');
+  row.actions.append(connButton(signin, () => connAction('mcp', 'renew', name, { name }, {
+    wait: 'conn.waitBrowser',
+    done: (r) => t(r.claudeai ? 'conn.claudeaiOpened' : 'conn.mcpSignedIn', { name: label }),
+  }), connected ? '' : 'primary'));
+  if (kind === 'claudeai') {
+    if (connected) row.actions.append(connButton(t('conn.disconnect'), () => openExternal(manageUrl)));
+  } else {
+    row.actions.append(connButton(t('conn.signOut'), () => connAction('mcp', 'revoke', name, { name }, {
+      confirm: { title: t('conn.mcpSignOutTitle'), text: textWith('conn.mcpSignOutText', { name: el('strong', '', label) }), yes: t('conn.signOut'), danger: true },
+      done: () => t('conn.mcpSignedOut', { name: label }),
+    }), 'danger'));
+  }
+  return row.node;
+}
+
+// A change of one access: ask first if it takes something away, keep its row busy meanwhile
+// (a sign-in waits for the user in another window), then say what happened and look again.
+async function connAction(kind, action, id, body, { confirm = null, wait = 'conn.working', done }) {
+  const conn = state.conn;
+  const key = `${kind}:${id}`;
+  if (conn.busy.has(key)) return;
+  if (confirm && !(await ask(confirm))) return;
+  conn.busy.set(key, wait);
+  delete conn.errors[key];
+  renderConnectors();
+  try {
+    toast(done(await api('POST', `/api/connectors/${kind}/${action}`, body)));
+  } catch (e) {
+    conn.errors[key] = e.message;
+  } finally {
+    conn.busy.delete(key);
+  }
+  if (kind === 'mcp' && action === 'renew' && !conn.errors[key] && id.startsWith('claude.ai ')) {
+    renderConnectors();  // claude.ai connects it once the user agrees there: "Check again" then shows it
+    return;
+  }
+  loadConnectors(kind);
+}
+
 // The settings dialog closes only with nothing left unsaved, or once the user lets it go.
 async function closeSettings() {
   if (kbChanged()) {
@@ -4175,13 +4457,15 @@ function showSettingsTab(name) {
     button.classList.toggle('on', on);
     button.setAttribute('aria-selected', String(on));
   }
-  $('#settings-dialog').classList.toggle('wide', name === 'keys');
+  $('#settings-dialog').classList.toggle('wide', name !== 'general');
   $('#settings-body').hidden = name !== 'general';
-  $('#settings-actions').hidden = name !== 'general';
+  $('#settings-actions').hidden = name === 'keys';
   $('#keys-body').hidden = name !== 'keys';
   $('#keys-actions').hidden = name !== 'keys';
+  $('#connectors-body').hidden = name !== 'connectors';
   $('#settings-error').textContent = '';
   if (name === 'keys') openKeysTab();
+  if (name === 'connectors') openConnectorsTab();
 }
 
 // ---- wiring -------------------------------------------------------------------------------

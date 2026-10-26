@@ -69,6 +69,8 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("PUT", r"/api/settings", "update_settings"),
     ("GET", r"/api/keybindings", "keybindings"),
     ("PUT", r"/api/keybindings", "update_keybindings"),
+    ("GET", r"/api/connectors/(?P<kind>gitlab|github|mcp)", "connectors"),
+    ("POST", r"/api/connectors/(?P<kind>gitlab|github|mcp)/(?P<action>renew|revoke|signin)", "connector_action"),
     ("POST", r"/api/terminals", "start_terminal"),
     ("POST", r"/api/terminals/theme", "push_theme"),
     ("POST", rf"/api/terminals/{SID}/upload", "upload"),
@@ -345,6 +347,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_update_keybindings(self):
         self._send_json(200, self.desk.update_keybindings(self._body()))
+
+    def route_connectors(self, kind):
+        self._send_json(200, self.desk.connectors(kind))
+
+    def route_connector_action(self, kind, action):
+        self._send_json(200, self.desk.connector_action(kind, action, self._body()))
 
     def route_update_settings(self):
         self._send_json(200, self.desk.update_settings(self._body()))

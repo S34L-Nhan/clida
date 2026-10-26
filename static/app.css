@@ -973,3 +973,38 @@ body.mr-dragging, body.mr-dragging * { user-select: none !important; -webkit-use
 .kb-columns span:last-child { width: 28px; }
 #keys-actions .spacer { flex: 1; }
 #keys-actions { justify-content: flex-start; }
+
+/* ---- connectors (settings) -------------------------------------------------------------- */
+
+.conn-head { display: flex; align-items: flex-start; gap: 16px; }
+.conn-head .settings-hint { flex: 1; }
+.conn-head .btn { padding: 4px 12px; font-size: 12.5px; }
+.conn-section { margin-top: 18px; }
+.conn-section.loading { opacity: 0.6; }
+.conn-section h3 { margin: 0 0 2px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; }
+.conn-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 16px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.conn-what { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13.5px; }
+.conn-title { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.conn-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--muted); }
+.conn-dot.connected { background: var(--ok); }
+.conn-dot.auth { background: var(--warn); }
+.conn-dot.failed { background: var(--danger); }
+.conn-meta { color: var(--muted); font-size: 12.5px; }
+.conn-meta:empty { display: none; }
+.conn-meta.warn { color: color-mix(in srgb, var(--warn) 55%, var(--text)); }
+.conn-meta.bad { color: var(--danger); }
+.conn-target { overflow: hidden; color: var(--muted); font: 11px "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.conn-scopes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.conn-scopes:empty { display: none; }
+.conn-scopes code { padding: 0 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--sidebar); font: 11.5px "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
+.conn-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: none; }
+.conn-actions:empty { display: none; }
+.conn-row .btn { padding: 3px 10px; font-size: 12.5px; }
+.conn-row.busy .btn { opacity: 0.55; pointer-events: none; }
+.conn-msg { flex-basis: 100%; font-size: 12px; }
+.conn-msg.wait { color: var(--muted); }
+.conn-msg.error { color: var(--danger); white-space: pre-line; overflow-wrap: anywhere; }
+.conn-signin { display: flex; gap: 6px; margin-top: 8px; }
+.dialog .conn-signin input { flex: 1; min-width: 0; height: 28px; font: 12.5px "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
+.dialog .conn-foot { margin-top: 8px; }
+.conn-foot a { color: var(--accent); cursor: pointer; }
