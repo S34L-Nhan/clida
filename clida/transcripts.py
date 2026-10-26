@@ -23,7 +23,7 @@ from .settings import tr
 
 PROJECTS = CLAUDE_HOME / "projects"
 INDEX_FILE = STATE_DIR / "index.json"
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 # Metadata entries are written with "type" as their first key.
@@ -32,6 +32,7 @@ _META_PREFIXES = (
     b'{"type":"custom-title"',
     b'{"type":"summary"',
     b'{"type":"last-prompt"',
+    b'{"type":"relocated"',
 )
 # Large bookkeeping entries that never hold conversation content.
 _SKIP_PREFIXES = (
@@ -228,6 +229,10 @@ class Index:
                 info["summary"] = _str(entry.get("summary")) or info["summary"]
             elif kind == "last-prompt":
                 info["last_prompt"] = (_str(entry.get("lastPrompt")) or "")[:300] or info["last_prompt"]
+            elif kind == "relocated":
+                # The CLI went into a worktree (EnterWorktree) or back, and moved the transcript to that
+                # folder's project: the chat works there now, and resuming there goes on with it.
+                info["cwd"] = _str(entry.get("relocatedCwd")) or info["cwd"]
             if info["cwd"] is None and _str(entry.get("cwd")):
                 info["cwd"] = entry["cwd"]
             if info["first_prompt"] is None and kind == "user":

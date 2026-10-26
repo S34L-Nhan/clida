@@ -51,6 +51,7 @@ ROUTES = [(method, re.compile(pattern + r"\Z"), name) for method, pattern, name 
     ("PUT", rf"/api/sessions/{SID}/folder", "move_session"),
     ("PUT", rf"/api/sessions/{SID}/archived", "archive_session"),
     ("DELETE", rf"/api/sessions/{SID}", "delete_session"),
+    ("POST", rf"/api/sessions/{SID}/worktree", "add_worktree"),
     ("POST", rf"/api/sessions/{SID}/worktree/merge", "merge_worktree"),
     ("POST", rf"/api/sessions/{SID}/fork", "fork"),
     ("POST", rf"/api/sessions/{SID}/rewind-files", "rewind_files"),
@@ -292,6 +293,9 @@ class Handler(BaseHTTPRequestHandler):
     def route_delete_session(self, sid):
         keep = parse_qs(urlsplit(self.path).query).get("keep_worktree", [""])[0] == "1"
         self._send_json(200, self.desk.delete_session(sid, keep))
+
+    def route_add_worktree(self, sid):
+        self._send_json(200, self.desk.add_worktree(sid, self._body()))
 
     def route_merge_worktree(self, sid):
         self._send_json(200, self.desk.merge_worktree(sid))

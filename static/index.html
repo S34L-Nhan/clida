@@ -87,6 +87,26 @@
     </form>
   </dialog>
 
+  <dialog id="move-dialog" class="dialog">
+    <form id="move-form" method="dialog">
+      <h2 data-i18n="move.title">In eigenen Worktree</h2>
+      <p class="dialog-lead" data-i18n="move.text"></p>
+      <div id="move-worktree-box" class="worktree-choice">
+        <label class="check-row" for="move-wt-new"><input id="move-wt-new" name="move-wt-mode" type="radio" value="new"> <span data-i18n="new.wtNew">Neuer Branch clida/… von</span></label>
+        <input id="move-base" class="branch-input" list="move-base-list" autocomplete="off" spellcheck="false" data-i18n-placeholder="new.basePlaceholder" data-i18n-label="new.wtNew">
+        <label class="check-row" for="move-wt-existing"><input id="move-wt-existing" name="move-wt-mode" type="radio" value="existing"> <span data-i18n="new.wtExisting">Bestehender Branch</span></label>
+        <input id="move-branch" class="branch-input" list="move-branch-list" autocomplete="off" spellcheck="false" data-i18n-placeholder="new.branchPlaceholder" data-i18n-label="new.wtExisting">
+        <datalist id="move-base-list"></datalist>
+        <datalist id="move-branch-list"></datalist>
+      </div>
+      <p id="move-error" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" value="cancel" data-action="close-dialog" data-i18n="cancel">Abbrechen</button>
+        <button type="submit" class="btn primary" data-i18n="move.start">Verschieben</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="ask-dialog" class="dialog small" aria-labelledby="ask-title" aria-describedby="ask-text">
     <h2 id="ask-title"></h2>
     <p id="ask-text"></p>

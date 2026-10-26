@@ -1155,7 +1155,10 @@ function buildView(tab) {
   resume.onclick = () => resumeTab(tab);
   const stop = el('button', 'btn danger');
   stop.onclick = () => stopTab(tab);
-  actions.append(refresh, noteBtn, attach, resume, stop);
+  const moveBtn = el('button', 'icon-btn');
+  moveBtn.append(icon('branch'));
+  moveBtn.onclick = () => openMoveDialog(tab);
+  actions.append(refresh, noteBtn, attach, moveBtn, resume, stop);
   head.append(titleBox, widthCtl, seg, actions);
 
   const body = el('div', 'view-body');
@@ -1178,7 +1181,7 @@ function buildView(tab) {
   root.append(head, worktreeBar, sessionNote, body);
   $('#views').append(root);
   Object.assign(tab, { root, title, meta, widthCtl, widthRange, histBtn, termBtn, changesBtn, refresh, attach, noteBtn,
-    resume, stop, worktreeBar, sessionNote, hist, histInner, changesPane, changesInner, termWrap, termHost, overlay });
+    moveBtn, resume, stop, worktreeBar, sessionNote, hist, histInner, changesPane, changesInner, termWrap, termHost, overlay });
   labelView(tab);
 }
 
@@ -1192,6 +1195,7 @@ function labelView(tab) {
   tab.refresh.title = t(tab.view === 'changes' ? 'changes.reload' : 'history.reload');
   tab.attach.title = t('attach.title');
   tab.noteBtn.title = t('note.session');
+  tab.moveBtn.title = t('worktree.move');
   tab.resume.textContent = t('resume');
   tab.stop.textContent = t('stop');
   if (!tab.overlay.hidden && tab.overlayText) showOverlay(tab, ...tab.overlayText);
@@ -1456,6 +1460,8 @@ function paintView(tab) {
   tab.stop.hidden = !live;
   tab.refresh.hidden = showTerm;
   tab.attach.hidden = !(showTerm && live);
+  // Running in a repository without a worktree of its own: it can still get one.
+  tab.moveBtn.hidden = !(live && tab.changesCounts?.git && !tab.changesCounts.worktree);
   tab.widthCtl.hidden = showTerm || showChanges;
   tab.hist.hidden = showTerm || showChanges;
   tab.changesPane.hidden = !showChanges;
@@ -1593,6 +1599,7 @@ function renderWorktreeBar(tab) {
   const facts = [];
   if (!wt.exists) facts.push(t('worktree.gone'));
   else {
+    if (wt.entered === false) facts.push(t('worktree.notEntered'));
     if (wt.ahead) facts.push(t('worktree.ahead', { n: wt.ahead }));
     else if (wt.ahead === 0 && !wt.dirty) facts.push(t('worktree.noCommits'));
     if (wt.dirty) facts.push(t('worktree.dirty', { n: wt.dirty }));
@@ -1671,6 +1678,42 @@ async function removeWorktree(tab) {
     toast(t(keeps ? 'worktree.removedKeep' : 'worktree.removed', { branch: wt.branch }));
   } catch (e) {
     toast(e.message);
+  }
+}
+
+// A chat that runs in its repository gets a worktree of its own later, once the ticket and its
+// branch are there: the server makes it and asks the chat's CLI to go in (EnterWorktree), which
+// takes the chat's history along.
+function openMoveDialog(tab) {
+  const dialog = $('#move-dialog');
+  if (dialog.open) return;
+  const choice = branchChoice('move');
+  state.moveTarget = tab;
+  $('#move-error').textContent = '';
+  resetBranchChoice(choice);
+  loadBranches(choice, state.byId.get(tabSession(tab))?.cwd || state.terminals.get(tab.id)?.cwd || '');
+  dialog.showModal();
+  (choice.existing.checked ? choice.branch : choice.base).focus();
+}
+
+async function submitMove(ev) {
+  ev.preventDefault();
+  const tab = state.moveTarget;
+  const choice = branchChoice('move');
+  const chosen = chosenBranch(choice, $('#move-error'));
+  const submit = $('#move-form [type="submit"]');
+  if (!chosen || !tab || submit.disabled) return;
+  submit.disabled = true;
+  try {
+    const made = await change('POST', `/api/sessions/${tabSession(tab)}/worktree`, chosen);
+    store.set('newWorktreeMode', choice.existing.checked ? 'existing' : 'new');
+    $('#move-dialog').close();
+    toast(t('worktree.moving', { branch: made.branch }));
+    await loadChanges(tab);  // the bar, which says when the CLI is in
+  } catch (e) {
+    $('#move-error').textContent = e.message;
+  } finally {
+    submit.disabled = false;
   }
 }
 
@@ -3330,7 +3373,7 @@ async function openNewDialog() {
 }
 
 // A worktree takes a new branch from a base, or a branch there is already (a ticket's). The new
-// chat dialog has this choice, its parts named <prefix>-…. The
+// chat dialog and the move dialog each have this choice, its parts named <prefix>-…. The
 // suggestions are the branches of the chat's repository, asked again for another folder; the base
 // starts as the one the server proposes for that repository.
 function branchChoice(prefix) {
@@ -3987,12 +4030,13 @@ function wire() {
     else if (action === 'new-chat') openNewDialog();
     else if (action === 'new-folder' && ev.detail < 2) newFolder();  // a double click makes one folder
     else if (action === 'settings') openSettings();
-    else if (action === 'close-dialog') $('#new-dialog').close();
+    else if (action === 'close-dialog') ev.target.closest('dialog')?.close();
   });
   $('#new-form').addEventListener('submit', submitNewChat);
+  $('#move-form').addEventListener('submit', submitMove);
   $('#new-worktree').addEventListener('change', loadNewBranches);
   $('#new-cwd').addEventListener('change', loadNewBranches);
-  for (const choice of [branchChoice('new')]) {
+  for (const choice of [branchChoice('new'), branchChoice('move')]) {
     for (const radio of [choice.fresh, choice.existing]) {
       radio.addEventListener('change', () => {
         showWorktreeMode(choice);

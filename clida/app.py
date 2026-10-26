@@ -311,11 +311,15 @@ class Desk:
         # The branch of the chat's folder, or else of the first repository it worked in.
         where = cwd if cwd and os.path.isdir(cwd) else None
         git = (_git_state(where) if where else None) or (_git_state(repo["repos"][0]) if repo["repos"] else None)
-        return {"files": out, "git": git, "commits": repo["commits"],
-                "worktree": self.worktrees.status(self.worktrees.key_for(session_id))}
+        worktree = self.worktrees.status(self.worktrees.key_for(session_id))
+        if worktree and cwd:
+            # Given its worktree later, the chat works there only once its CLI went in (EnterWorktree).
+            worktree["entered"] = (os.path.realpath(cwd) + "/").startswith(os.path.realpath(worktree["path"]) + "/")
+        return {"files": out, "git": git, "commits": repo["commits"], "worktree": worktree}
 
     def _chat_cwd(self, session_id: str, info):
-        """The chat's folder: from its transcript, its terminal, or (said nothing yet) its worktree."""
+        """The chat's folder: from its transcript (where the CLI moved it last), its terminal, or (said
+        nothing yet) its worktree."""
         if info:
             return info["cwd"]
         term = next((t.cwd for t in self.terminals.all() if t.session_id == session_id), None)
@@ -437,6 +441,55 @@ class Desk:
         return {"id": term.id, "session_id": term.session_id, "cwd": term.cwd}
 
     # -- the chat's own worktree ------------------------------------------------------------
+
+    def add_worktree(self, session_id: str, body: dict) -> dict:
+        """Give a chat that runs in its repository a worktree of its own after all (once the ticket
+        and its branch are there), made as at the start, and ask its CLI to go in with its
+        EnterWorktree tool. The CLI moves the transcript along, and resuming finds it there."""
+        if self.worktrees.key_for(session_id) is not None:
+            raise HttpError(409, tr("Dieser Chat hat schon einen Worktree.", "This chat has a worktree already."))
+        row = next((t for t in self.status()["terminals"] if t["session_id"] == session_id and t["status"] != "exited"),
+                   None)
+        if row is None:
+            raise HttpError(409, tr("Der Chat läuft nicht in CLIDA; bitte erst fortsetzen.",
+                                    "The chat does not run in CLIDA; please resume it first."))
+        # Asked before anything is made: the request goes only into a CLI that is idle (see send_prompt).
+        if not self._cli_idle(self.terminals.get(row["id"])):
+            raise HttpError(409, tr("Die CLI ist gerade nicht bereit (sie arbeitet oder wartet auf eine Antwort); "
+                                    "bitte gleich noch einmal.",
+                                    "The CLI is not ready right now (it is working or waiting for an answer); "
+                                    "please try again in a moment."))
+        info = self._info(session_id)
+        cwd = self._chat_cwd(session_id, info)
+        if not cwd or not os.path.isdir(cwd):
+            raise HttpError(400, tr("Arbeitsverzeichnis existiert nicht mehr: ",
+                                    "Working directory no longer exists: ") + str(cwd))
+        base, branch = (" ".join(str(body.get(key) or "").split()) or None for key in ("base", "branch"))
+        # The folder is named after the chat, unless it has no name of its own yet.
+        title = self._title(session_id, info)
+        title = "" if title == tr("Neuer Chat", "New chat") else title
+        try:
+            used = [i["cwd"] for i in self.index.scan()] + [t.cwd for t in self.terminals.all()]
+            self.worktrees.create(session_id, cwd, title, used, base=base, branch=branch)
+        except WorktreeError as e:
+            raise HttpError(400, tr("Worktree ließ sich nicht anlegen: ", "Could not create the worktree: ") + str(e))
+        entry = self.worktrees.get(session_id)
+        request = tr(f"Wechsle bitte mit dem Tool EnterWorktree (path: {entry['path']}) in den Worktree, den CLIDA "
+                     f"für diesen Chat angelegt hat (Branch {entry['branch']}), und arbeite ab jetzt dort weiter.",
+                     f"Please switch with the EnterWorktree tool (path: {entry['path']}) into the worktree CLIDA "
+                     f"made for this chat (branch {entry['branch']}), and work there from now on.")
+        try:
+            self.send_prompt(row["id"], request)
+        except HttpError as e:
+            try:
+                self.worktrees.remove(session_id)  # nothing happened in it yet
+            except WorktreeError:
+                pass
+            if e.status != 409:
+                raise
+            raise HttpError(409, tr("Die CLI war nicht mehr bereit; der Worktree ist wieder entfernt. Bitte gleich noch einmal.",
+                                    "The CLI was no longer ready; the worktree is removed again. Please try again in a moment."))
+        return {"path": entry["path"], "branch": entry["branch"]}
 
     def _worktree_key(self, session_id: str) -> str:
         """The worktree record a chat works in (see Worktrees.key_for)."""
@@ -782,11 +835,7 @@ class Desk:
             raise HttpError(400, tr("Nichts zu senden", "Nothing to send"))
         if len(text) > (PROMPT_MAX if submit else TYPED_MAX):
             raise HttpError(413, tr("Text ist zu lang", "The text is too long"))
-        # Only into a CLI that says it is idle, checked now: typed into a permission prompt, the
-        # Enter (or the text's own letters) would answer it. Without its own report, "idle" is just
-        # quiet output, as a prompt is.
-        entry = registry.running().get(term.pid)
-        if entry is None or registry.cli_status(entry) != "idle":
+        if not self._cli_idle(term):
             raise HttpError(409, tr("Die CLI ist gerade nicht bereit (sie arbeitet oder wartet auf eine Antwort). "
                                     "Die Kommentare bleiben erhalten.",
                                     "The CLI is not ready right now (it is working or waiting for an answer). "
@@ -804,6 +853,14 @@ class Desk:
         time.sleep(0.2)  # the CLI takes the paste in first; an Enter in the same read could be part of it
         term.write(b"\r")
         return {"ok": True}
+
+    @staticmethod
+    def _cli_idle(term) -> bool:
+        """Whether the CLI says it is idle, checked now: only then may text go into it, as typed into a
+        permission prompt, the Enter (or the text's own letters) would answer it. Without its own
+        report, "idle" is just quiet output, as a prompt is."""
+        entry = registry.running().get(term.pid) if term else None
+        return entry is not None and registry.cli_status(entry) == "idle"
 
     def stop_terminal(self, terminal_id: str) -> dict:
         if not self.terminals.stop(terminal_id):
