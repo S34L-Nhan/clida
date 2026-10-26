@@ -1669,6 +1669,7 @@ async function removeWorktree(tab) {
   const text = [...textWith(keeps ? 'worktree.removeTextKeep' : 'worktree.removeText',
     { branch: el('strong', '', wt.branch), path: el('code', '', wt.path) })];
   if (wt.dirty) text.push(' ', t('worktree.removeDirty', { n: wt.dirty }));
+  else if (wt.registered === false) text.push(' ', t('worktree.removeUnregistered'));
   // Commits no other branch has, whatever the base: deleting the branch loses them.
   if (wt.unmerged) text.push(' ', t('worktree.removeUnmerged', { n: wt.unmerged }));
   else if (wt.unmerged == null) text.push(' ', t('worktree.removeUnknown'));

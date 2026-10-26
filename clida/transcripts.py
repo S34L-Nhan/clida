@@ -23,7 +23,7 @@ from .settings import tr
 
 PROJECTS = CLAUDE_HOME / "projects"
 INDEX_FILE = STATE_DIR / "index.json"
-INDEX_VERSION = 5
+INDEX_VERSION = 6
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 # Metadata entries are written with "type" as their first key.
@@ -98,7 +98,8 @@ def _user_text(entry: dict):
     if not isinstance(content, str):
         return None
     text = _PASTED.sub("", content).strip()
-    if not text or text.startswith("<") or text.startswith("[Request interrupted"):
+    # A command's text starts with its tag; a paste may start with "<" too (HTML, XML) and is still typed.
+    if not text or (text.startswith("<") and not _PASTED.search(content)) or text.startswith("[Request interrupted"):
         return None
     return text
 

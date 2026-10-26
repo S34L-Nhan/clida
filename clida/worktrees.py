@@ -406,6 +406,8 @@ class Worktrees:
             # Gone by hand: the branch may still hold commits, which removing would delete.
             out["unmerged"] = _unmerged(entry["repo"], branch, head=False, own=own)
             return out
+        # False: git lost it (a removal that stopped in the middle, say), and with it what is not committed.
+        out["registered"] = _registered(entry["repo"], path)
         status = git(path, "status", "--porcelain=v1", timeout=5)
         out["dirty"] = None if status is None else len(status.splitlines())
         out["unmerged"] = _unmerged(path, branch, head=True, own=own)
