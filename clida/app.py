@@ -169,6 +169,8 @@ class Desk:
             ours[term.pid] = term
             terminals.append({
                 "id": term.id, "session_id": term.session_id, "cwd": term.cwd,
+                # Where the CLI works now, by its own report: EnterWorktree moves it, the terminal stays.
+                "cli_cwd": entry.get("cwd") if entry and isinstance(entry.get("cwd"), str) else None,
                 "status": term.status(entry), "exit_code": term.exit_code, "started": term.started,
                 "reported": entry is not None,  # the CLI's own report, not CLIDA's guess from its output
             })
@@ -497,10 +499,11 @@ class Desk:
 
     def _running_in(self, folder: str) -> bool:
         """Whether a CLI works in folder or below it (ours or another terminal's), whatever its
-        session id: after /clear or /resume a chat's CLI goes on under another."""
+        session id: after /clear or /resume a chat's CLI goes on under another. Ours by where the
+        CLI says it works: a chat moved into a worktree (EnterWorktree) leaves its terminal's folder."""
         root = os.path.realpath(folder) + "/"
         status = self.status()
-        cwds = ([t["cwd"] for t in status["terminals"] if t["status"] != "exited"]
+        cwds = ([t["cli_cwd"] or t["cwd"] for t in status["terminals"] if t["status"] != "exited"]
                 + [e.get("cwd") for e in status["external"]])
         for cwd in filter(None, cwds):
             real = os.path.realpath(cwd) + "/"
