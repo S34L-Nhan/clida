@@ -14,7 +14,8 @@ import time
 import uuid
 from pathlib import Path
 
-from . import STATE_DIR, browser, connectors, gitrepo, locate, registry, storage, transcripts
+from . import STATE_DIR, browser, commits, connectors, gitrepo, locate, registry, storage, transcripts
+from .gitrepo import GitError
 from .keybindings import Keybindings, KeysError
 from .library import Library
 from .notes import BODY_MAX, PREVIEW_MAX, Notes
@@ -30,6 +31,8 @@ REWIND_TIMEOUT = 120
 PROMPT_MAX = 100_000  # characters a prompt from the window may have
 TYPED_MAX = 8_000  # characters typed in rather than pasted (see send_prompt): a few seconds of typing; as in app.js
 WINDOW_TTL = 90  # seconds a window counts as open after its last request; a hidden one polls once a minute
+COMMIT_MESSAGE_MAX = 10_000  # characters of a commit message from the changes view
+COMMITTABLE = ("staged", "unstaged", "partly", "untracked")  # git states a picked file can be committed from
 
 TITLES_FILE = STATE_DIR / "titles.json"
 
@@ -124,6 +127,7 @@ class Desk:
         self._status_seq = itertools.count(1)
         self._rewinding = set()  # chats whose files the CLI is putting back now
         self._rewinding_lock = threading.Lock()
+        self._committing = threading.Lock()  # one commit or push at a time: a second would race over the index
         # New on every start: an open window that sees it change reloads, with the new code.
         self.boot = secrets.token_hex(6)
         self._windows = {}  # window id -> time of its last request (monotonic)
@@ -322,7 +326,12 @@ class Desk:
         if worktree and cwd:
             # Given its worktree later, the chat works there only once its CLI went in (EnterWorktree).
             worktree["entered"] = (os.path.realpath(cwd) + "/").startswith(os.path.realpath(worktree["path"]) + "/")
-        return {"files": out, "git": git, "commits": repo["commits"], "worktree": worktree}
+        # Where a push of each repository's branch would go, for the view's push button; not for
+        # one git does not answer on, which would only wait out its timeouts again.
+        tops = dict.fromkeys(found["repo"]["top"] for found in states.values()
+                             if found.get("repo") and found["state"] != "unknown")
+        push = {top: commits.push_state(top) for top in tops}
+        return {"files": out, "git": git, "commits": repo["commits"], "worktree": worktree, "push": push}
 
     @staticmethod
     def _shell_worktrees(cwd, commands) -> list:
@@ -582,6 +591,83 @@ class Desk:
             self.library.forget(key)
             self.notes.forget(key)
         return {"ok": True}
+
+    # -- committing and pushing from the changes view ------------------------------------------
+
+    def _repo_states(self, session_id: str, paths: list) -> dict:
+        """Where each of paths stands in git (see RepoChanges.states), if the chat's changes list it:
+        nothing else is committed from here."""
+        listed = {f["path"] for f in self.changes(session_id, brief=True)["files"]}
+        gone = next((p for p in paths if p not in listed), None)
+        if gone:
+            raise HttpError(409, tr("Diese Datei steht nicht mehr in den Änderungen des Chats: ",
+                                    "This file is no longer among the chat's changes: ") + gone)
+        return self.repo_changes.states(paths, None)
+
+    def commit(self, session_id: str, body: dict) -> dict:
+        """Commit the picked files with the message, in each repository they are in, and push
+        there too if asked: {"repos": [{"repo", "top", "commit", "pushed", "error", "push_error"}]}."""
+        message = str(body.get("message") or "").strip()
+        if not message:
+            raise HttpError(400, tr("Bitte eine Commit-Nachricht eingeben.", "Please enter a commit message."))
+        if len(message) > COMMIT_MESSAGE_MAX:
+            raise HttpError(400, tr("Die Commit-Nachricht ist zu lang.", "The commit message is too long."))
+        paths = body.get("paths")
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            raise HttpError(400, tr("Ungültige Dateiliste", "Invalid file list"))
+        paths = list(dict.fromkeys(paths))
+        if not paths:
+            raise HttpError(400, tr("Bitte Dateien zum Committen ankreuzen.", "Please tick the files to commit."))
+        by_top = {}
+        for path, found in self._repo_states(session_id, paths).items():
+            if not found.get("repo"):
+                raise HttpError(409, tr("Diese Datei liegt in keinem Git-Repository: ",
+                                        "This file is not in a git repository: ") + path)
+            if found["state"] == "committed":
+                continue  # committed meanwhile (by Claude, say): what was asked for is done
+            if found["state"] not in COMMITTABLE:
+                raise HttpError(409, tr(f"Git committet diese Datei nicht ({found['state']}): ",
+                                        f"git does not commit this file ({found['state']}): ") + path)
+            by_top.setdefault(found["repo"]["top"], []).append(found["rel"])
+        if not by_top:
+            raise HttpError(409, tr("Die angekreuzten Dateien sind schon committet.", "The ticked files are committed already."))
+        if not self._committing.acquire(blocking=False):
+            raise HttpError(409, tr("Es läuft schon ein Commit oder Push.", "A commit or push is running already."))
+        try:
+            results = []
+            for top, rels in by_top.items():
+                done = {"repo": os.path.basename(top), "top": top, "files": len(rels)}
+                results.append(done)
+                try:
+                    done["commit"] = commits.commit(top, rels, message)
+                except GitError as e:
+                    done["error"] = str(e)
+                    continue
+                if body.get("push") is True:
+                    try:
+                        done["pushed"] = commits.push(top)["target"]
+                    except GitError as e:
+                        done["push_error"] = str(e)
+        finally:
+            self._committing.release()
+        return {"repos": results}
+
+    def push(self, session_id: str, body: dict) -> dict:
+        """Push the branch of one of the repositories the chat changed files in: {"target"}."""
+        top = body.get("repo")
+        files = self.changes(session_id, brief=True)["files"]
+        states = self.repo_changes.states([f["path"] for f in files], None)
+        if not isinstance(top, str) or top not in {found["repo"]["top"] for found in states.values() if found.get("repo")}:
+            raise HttpError(409, tr("Der Chat hat in diesem Repository nichts geändert.",
+                                    "The chat changed nothing in this repository."))
+        if not self._committing.acquire(blocking=False):
+            raise HttpError(409, tr("Es läuft schon ein Commit oder Push.", "A commit or push is running already."))
+        try:
+            return commits.push(top)
+        except GitError as e:
+            raise HttpError(409, str(e))
+        finally:
+            self._committing.release()
 
     # -- back to a message: its files, or the conversation up to it -----------------------------
 

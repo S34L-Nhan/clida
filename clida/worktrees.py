@@ -10,14 +10,12 @@ the folder and the branch.
 import os
 import re
 import shutil
-import signal
-import subprocess
 import threading
 import time
 import unicodedata
 
 from . import STATE_DIR, storage
-from .gitrepo import git
+from .gitrepo import GitError, git, run as _run
 from .settings import tr
 
 WORKTREES_FILE = STATE_DIR / "worktrees.json"
@@ -27,8 +25,8 @@ EXCLUDE_LINE = "**/.claude/worktrees/"  # in info/exclude, which stays local, un
 _IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply")
 
 
-class WorktreeError(Exception):
-    pass
+# git failing and CLIDA refusing alike: the server shows its message.
+WorktreeError = GitError
 
 
 def _slug(text: str, fallback: str) -> str:
@@ -39,33 +37,6 @@ def _slug(text: str, fallback: str) -> str:
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()  # é -> e
     slug = re.sub(r"[^a-z0-9]+", "-", text).strip("-")[:40].strip("-")
     return slug or fallback
-
-
-def _run(cwd, *args, timeout=30, ok=(0,), env=None):
-    """git's output; raises with git's own message when it fails. On a timeout the whole process
-    group goes: git worktree add runs a checkout of its own, which would go on otherwise."""
-    try:
-        proc = subprocess.Popen(["git", "-C", cwd, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                start_new_session=True, env=env)
-    except OSError as e:
-        raise WorktreeError(tr(f"git {args[0]} ließ sich nicht starten: {e}", f"git {args[0]} did not start: {e}"))
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.communicate()
-        raise WorktreeError(tr(f"git {args[0]} brauchte länger als {timeout} s und wurde abgebrochen.",
-                               f"git {args[0]} took longer than {timeout} s and was stopped."))
-    out = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
-    if out.returncode not in ok:
-        lines = (out.stderr or out.stdout).decode("utf-8", "replace").strip().splitlines()
-        message = "\n".join(line for line in lines if not line.startswith("Preparing worktree"))
-        raise WorktreeError(message or tr(f"git {args[0]} schlug fehl ({out.returncode})",
-                                          f"git {args[0]} failed ({out.returncode})"))
-    return out.stdout.decode("utf-8", "replace")
 
 
 def _main_checkout(cwd: str):

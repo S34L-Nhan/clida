@@ -9,11 +9,13 @@ anything else did in the same repository at that time counts too.
 """
 
 import os
+import signal
 import subprocess
 import time
 
 from . import transcripts
 from .lru import Lru
+from .settings import tr
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git's id of a tree with nothing in it
 MARGIN = 120  # seconds after the chat's last transcript write that still count as during the chat
@@ -37,6 +39,38 @@ def git(cwd, *args, binary=False, timeout=10, stdin=None, ok=(0,)):
     if out.returncode not in ok:
         return None
     return out.stdout if binary else out.stdout.decode("utf-8", "replace")
+
+
+class GitError(Exception):
+    pass
+
+
+def run(cwd, *args, timeout=30, ok=(0,), env=None):
+    """git's output, for a command that changes something; raises with git's own message when it
+    fails. On a timeout the whole process group goes: git worktree add runs a checkout of its own,
+    and a commit its hooks, which would go on otherwise. In a session of its own, git has no
+    terminal to ask for a login or a passphrase on."""
+    try:
+        proc = subprocess.Popen(["git", "-C", cwd, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True, env=env)
+    except OSError as e:
+        raise GitError(tr(f"git {args[0]} ließ sich nicht starten: {e}", f"git {args[0]} did not start: {e}"))
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        raise GitError(tr(f"git {args[0]} brauchte länger als {timeout} s und wurde abgebrochen.",
+                          f"git {args[0]} took longer than {timeout} s and was stopped."))
+    if proc.returncode not in ok:
+        lines = (stderr or stdout).decode("utf-8", "replace").strip().splitlines()
+        message = "\n".join(line for line in lines if not line.startswith("Preparing worktree"))
+        raise GitError(message or tr(f"git {args[0]} schlug fehl ({proc.returncode})",
+                                     f"git {args[0]} failed ({proc.returncode})"))
+    return stdout.decode("utf-8", "replace")
 
 
 def _linked_worktree(top: str) -> bool:

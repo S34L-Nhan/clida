@@ -124,6 +124,9 @@ const store = {
   set(key, value) {
     try { localStorage.setItem('desk.' + key, JSON.stringify(value)); } catch { /* storage unavailable */ }
   },
+  remove(key) {
+    try { localStorage.removeItem('desk.' + key); } catch { /* storage unavailable */ }
+  },
 };
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -2320,6 +2323,12 @@ const saveReview = (tab) => store.set(reviewKey(tab), tab.review);
 function renderChanges(tab) {
   tab.changesStale = false;
   const { files } = tab.changes;
+  // The commit box is kept over redraws, with what is typed in it; moving it drops the focus.
+  const typing = tab.commitBox?.contains(document.activeElement) ? document.activeElement : null;
+  const caret = typing && 'selectionStart' in typing ? [typing.selectionStart, typing.selectionEnd] : null;
+  // A ticked file that is committed meanwhile (by Claude, say), or gone from the list, is unticked.
+  const pickable = new Set(files.filter(committable).map((f) => f.path));
+  tab.picked = new Set([...(tab.picked || [])].filter((path) => pickable.has(path)));
   // Back to the same file and place after the redraw: the diffs above have only estimated
   // heights until drawn, so the same scroll offset could be in another file.
   const keep = { anchor: viewAnchor(tab), main: tab.mrMain?.scrollTop || 0, side: tab.mrList?.scrollTop || 0 };
@@ -2375,7 +2384,7 @@ function renderChanges(tab) {
   tab.mrQuery = query;
   const list = el('div', 'mr-tree');
   tab.mrList = list;
-  side.append(head, search, list);
+  side.append(head, search, list, commitBox(tab));
 
   main.append(changesTop(tab));
   tab.mrReview = el('div', 'mr-review');
@@ -2401,6 +2410,11 @@ function renderChanges(tab) {
   layout.append(side, column);
   tab.changesInner.replaceChildren(layout);
   renderFileList(tab);
+  renderCommitBox(tab);
+  if (typing) {
+    typing.focus({ preventScroll: true });
+    if (caret) typing.setSelectionRange(...caret);
+  }
   const anchored = keep.anchor && tab.mrBlocks.get(keep.anchor.path);
   if (anchored) {
     anchored.fill();
@@ -2485,11 +2499,22 @@ function renderFileList(tab) {
   }
   const rows = [];
   const byPath = pathCompare();
+  tab.pickBoxes = new Map();  // path -> its box, and each repository's box with its files
+  tab.groupPicks = [];
+  tab.canPick = tab.changes.files.some(committable);  // rows keep a box's room then, aligned
   for (const [key, group] of [...groups].sort(([a], [b]) => (!a) - (!b) || a.localeCompare(b))) {
     const head = el('div', `mr-group${group.repo ? '' : ' outside'}`);
     if (group.repo) {
+      const pickable = group.files.filter(committable);
+      if (pickable.length) head.append(groupPick(tab, pickable));
       head.append(icon('branch'), el('strong', '', group.repo.name), el('span', 'muted', group.repo.branch || t('changes.detached')));
       head.title = group.repo.top;
+      const push = tab.changes.push?.[key];
+      if (push?.unpushed) {
+        const ahead = el('span', 'push-badge', `↑${push.unpushed}`);
+        ahead.title = t('commit.unpushed', { n: push.unpushed, target: push.target, fresh: push.new });
+        head.append(ahead);
+      }
     } else {
       head.append(el('strong', '', t('git.outside')));
       head.title = t('git.outsideHint');
@@ -2499,6 +2524,7 @@ function renderFileList(tab) {
       : [...group.files].sort((a, b) => byPath(groupPath(a), groupPath(b))).map((file) => fileRow(tab, file, groupPath(file), 0))));
   }
   list.replaceChildren(...rows);
+  syncPicks(tab);
 }
 
 // The order of the file list, which the diffs follow: the tree's, or by path as a list.
@@ -2556,6 +2582,7 @@ function fileRow(tab, file, name, depth) {
   row.style.setProperty('--depth', depth);
   row.title = file.path;
   row.tabIndex = 0;
+  if (tab.canPick) row.append(pickBox(tab, file));
   row.append(icon('file'), middleEllipsis(name));
   if (file.added != null && (file.added || file.removed)) {
     row.append(el('span', 'diff-add', `+${file.added}`), el('span', 'diff-del', `-${file.removed}`));
@@ -2640,6 +2667,185 @@ function commitList(tab, commits) {
     box.append(row);
   }
   return box;
+}
+
+// ---- committing the ticked files, and pushing ---------------------------------------------
+// Tick files in the list, write a message, commit: the server commits them as they are on disk,
+// in each repository they are in, and pushes the branch there if asked (see clida/commits.py).
+// Other staged files stay staged and out of it. Pushing alone takes the commits made before.
+
+const committable = (file) => !!file.repo && ['staged', 'unstaged', 'partly', 'untracked'].includes(file.state);
+
+const commitDraftKey = (tab) => `commitMessage.${tabSession(tab)}`;
+
+function pickBox(tab, file) {
+  if (!committable(file)) return el('span', 'pick-slot');
+  const box = el('input', 'pick');
+  box.type = 'checkbox';
+  box.title = t('commit.pick');
+  box.onclick = (ev) => ev.stopPropagation();  // ticks it, without jumping to the diff
+  box.onkeydown = (ev) => ev.stopPropagation();  // Enter on the row jumps there, not on its box
+  box.onchange = () => {
+    if (box.checked) tab.picked.add(file.path);
+    else tab.picked.delete(file.path);
+    syncPicks(tab);
+    renderCommitBox(tab);
+  };
+  tab.pickBoxes.set(file.path, box);
+  return box;
+}
+
+// Ticks the files of the repository that the search shows, or unticks them.
+function groupPick(tab, files) {
+  const box = el('input', 'pick');
+  box.type = 'checkbox';
+  box.title = t('commit.pickAll');
+  box.onchange = () => {
+    for (const file of files) {
+      if (box.checked) tab.picked.add(file.path);
+      else tab.picked.delete(file.path);
+    }
+    syncPicks(tab);
+    renderCommitBox(tab);
+  };
+  tab.groupPicks.push({ box, files });
+  return box;
+}
+
+function syncPicks(tab) {
+  for (const [path, box] of tab.pickBoxes || []) box.checked = tab.picked.has(path);
+  for (const { box, files } of tab.groupPicks || []) {
+    const n = files.filter((f) => tab.picked.has(f.path)).length;
+    box.checked = n === files.length;
+    box.indeterminate = n > 0 && n < files.length;
+  }
+}
+
+// Made once per tab and moved into each redraw of the view, so a message being written stays.
+function commitBox(tab) {
+  if (tab.commitBox) return tab.commitBox;
+  const box = el('div', 'commit-box');
+  const area = el('textarea');
+  area.rows = 3;
+  area.value = store.get(commitDraftKey(tab), '');
+  area.oninput = () => {
+    // Kept over a reload; nothing stored for a chat without a draft.
+    if (area.value) store.set(commitDraftKey(tab), area.value);
+    else store.remove(commitDraftKey(tab));
+    renderCommitBox(tab);
+  };
+  area.onkeydown = (ev) => {
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+      ev.preventDefault();
+      commitPicked(tab, false);
+    }
+  };
+  const info = el('div', 'commit-info');
+  const error = el('div', 'commit-error');
+  const commit = el('button', 'btn');
+  commit.onclick = () => commitPicked(tab, false);
+  const both = el('button', 'btn primary');
+  both.onclick = () => commitPicked(tab, true);
+  const actions = el('div', 'commit-actions');
+  actions.append(commit, both);
+  const pushes = el('div', 'commit-pushes');
+  box.append(area, info, error, actions, pushes);
+  box.parts = { area, info, error, commit, both, pushes };
+  tab.commitBox = box;
+  return box;
+}
+
+function renderCommitBox(tab) {
+  const box = tab.commitBox;
+  if (!box || !tab.changes) return;
+  const { area, info, error, commit, both, pushes } = box.parts;
+  const pickable = tab.changes.files.filter(committable);
+  const picked = pickable.filter((f) => tab.picked.has(f.path));
+  const repos = new Set(picked.map((f) => f.repo.top)).size;
+  const unpushed = Object.entries(tab.changes.push || {}).filter(([, push]) => push?.unpushed);
+  const busy = tab.commitBusy;
+  box.hidden = !pickable.length && !unpushed.length && !area.value && !tab.commitError;
+  area.placeholder = t('commit.placeholder');
+  const hint = el('span', 'mr-hint', 'ⓘ');
+  hint.title = t('commit.hint');
+  info.replaceChildren(el('span', '', picked.length ? t('commit.picked', { n: picked.length, repos }) : t('commit.pickHint')), hint);
+  error.hidden = !tab.commitError;
+  error.textContent = tab.commitError || '';
+  const ready = picked.length && area.value.trim() && !busy;
+  commit.textContent = t(busy === 'commit' ? 'commit.committing' : 'commit.commit');
+  both.textContent = t(busy === 'both' ? 'commit.committingPush' : 'commit.commitPush');
+  commit.disabled = both.disabled = !ready;
+  const several = Object.keys(tab.changes.push || {}).length > 1;
+  pushes.replaceChildren(...unpushed.map(([top, push]) => {
+    const row = el('div', 'commit-push');
+    const what = el('span', '', (several ? `${top.split('/').pop()}: ` : '')
+      + t('commit.unpushed', { n: push.unpushed, target: push.target, fresh: push.new }));
+    what.title = top;
+    const go = el('button', 'btn', t(busy === top ? 'commit.pushing' : 'commit.push'));
+    go.disabled = !!busy;
+    go.onclick = () => pushRepo(tab, top);
+    row.append(what, go);
+    return row;
+  }));
+}
+
+async function commitPicked(tab, push) {
+  const { area } = tab.commitBox.parts;
+  const message = area.value.trim();
+  const files = tab.changes.files.filter((f) => committable(f) && tab.picked.has(f.path));
+  if (!message || !files.length || tab.commitBusy) return;
+  tab.commitBusy = push ? 'both' : 'commit';
+  tab.commitError = '';
+  renderCommitBox(tab);
+  try {
+    const { repos } = await api('POST', `/api/sessions/${tabSession(tab)}/commit`,
+      { paths: files.map((f) => f.path), message, push });
+    const several = repos.length > 1;
+    const done = [];
+    const errors = [];
+    for (const repo of repos) {
+      const name = several ? `${repo.repo}: ` : '';
+      if (repo.error) {
+        errors.push(name + repo.error);
+        continue;
+      }
+      // Committed: its files are no longer ticked, the others stay for another try.
+      for (const file of files) if (file.repo.top === repo.top) tab.picked.delete(file.path);
+      done.push(t('commit.done', { sha: repo.commit.sha.slice(0, 7), repo: several ? repo.repo : '' }));
+      if (repo.pushed) done.push(t('commit.pushed', { target: repo.pushed }));
+      if (repo.push_error) errors.push(`${name}${t('commit.pushFailed')}\n${repo.push_error}`);
+    }
+    if (repos.every((repo) => repo.commit)) {
+      area.value = '';
+      store.remove(commitDraftKey(tab));
+    }
+    tab.commitError = errors.join('\n\n');
+    if (done.length) toast(done.join(' · '));
+  } catch (e) {
+    tab.commitError = e.message;
+  } finally {
+    tab.commitBusy = null;
+    await loadChanges(tab);  // where the files stand in git now, and what is left to push
+    renderCommitBox(tab);
+    syncPicks(tab);
+  }
+}
+
+async function pushRepo(tab, top) {
+  if (tab.commitBusy) return;
+  tab.commitBusy = top;
+  tab.commitError = '';
+  renderCommitBox(tab);
+  try {
+    const done = await api('POST', `/api/sessions/${tabSession(tab)}/push`, { repo: top });
+    toast(t('commit.pushed', { target: done.target }));
+  } catch (e) {
+    tab.commitError = e.message;
+  } finally {
+    tab.commitBusy = null;
+    await loadChanges(tab);
+    renderCommitBox(tab);
+  }
 }
 
 // ---- diffs --------------------------------------------------------------------------------

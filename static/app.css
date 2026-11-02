@@ -378,6 +378,19 @@ code, pre { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", 
 .mr-group svg { width: 14px; height: 14px; color: var(--muted); }
 .mr-group .muted { color: var(--muted); }
 .mr-group.outside strong { color: var(--muted); font-weight: 600; }
+input.pick { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.pick-slot { flex: none; width: 14px; }
+.push-badge { margin-left: auto; font-size: 11.5px; color: var(--accent); cursor: default; }
+.commit-box { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 12px; border-top: 1px solid var(--border); }
+.commit-box textarea { width: 100%; box-sizing: border-box; min-height: 58px; max-height: 40vh; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); font: 13px/1.4 system-ui, sans-serif; resize: vertical; }
+.commit-box textarea:focus { outline: none; border-color: var(--accent); }
+.commit-info { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+.commit-error { max-height: 160px; overflow: auto; padding: 6px 8px; border-radius: 6px; font: 11.5px/1.4 "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.commit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.commit-actions .btn, .commit-push .btn { padding: 4px 10px; font-size: 12.5px; }
+.commit-pushes:empty { display: none; }
+.commit-push { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+.commit-push span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .git-mark { flex: none; width: 12px; text-align: center; font-size: 11px; color: var(--muted); }
 .git-mark.committed { color: var(--ok); }
 .git-mark.staged, .git-mark.partly, .git-mark.unstaged, .git-mark.untracked { color: var(--warn); }
