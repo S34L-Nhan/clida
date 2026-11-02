@@ -2673,6 +2673,8 @@ function commitList(tab, commits) {
 // Tick files in the list, write a message, commit: the server commits them as they are on disk,
 // in each repository they are in, and pushes the branch there if asked (see clida/commits.py).
 // Other staged files stay staged and out of it. Pushing alone takes the commits made before.
+// A push into a remote's default branch (development, main) is asked first: a chat moved into its
+// worktree later leaves its first changes in the repository, on that branch.
 
 const committable = (file) => !!file.repo && ['staged', 'unstaged', 'partly', 'untracked'].includes(file.state);
 
@@ -2789,17 +2791,28 @@ function renderCommitBox(tab) {
   }));
 }
 
+// Where a push of these repositories would go into the remote's default branch: "origin/development".
+const defaultTargets = (tab, tops) => tops.map((top) => tab.changes.push?.[top]).filter((push) => push?.default)
+  .map((push) => push.target);
+
+const askDefault = (targets) => ask({ title: t('commit.defaultTitle'),
+  text: t('commit.defaultText', { targets: targets.join(', '), n: targets.length }), yes: t('commit.defaultYes'), danger: true });
+
 async function commitPicked(tab, push) {
   const { area } = tab.commitBox.parts;
   const message = area.value.trim();
   const files = tab.changes.files.filter((f) => committable(f) && tab.picked.has(f.path));
   if (!message || !files.length || tab.commitBusy) return;
+  const tops = [...new Set(files.map((f) => f.repo.top))];
+  const targets = push ? defaultTargets(tab, tops) : [];
+  // Asked only when there is something to ask: otherwise busy at once, against a second click.
+  if (targets.length && (!(await askDefault(targets)) || tab.commitBusy)) return;
   tab.commitBusy = push ? 'both' : 'commit';
   tab.commitError = '';
   renderCommitBox(tab);
   try {
     const { repos } = await api('POST', `/api/sessions/${tabSession(tab)}/commit`,
-      { paths: files.map((f) => f.path), message, push });
+      { paths: files.map((f) => f.path), message, push, allow_default: tops });
     const several = repos.length > 1;
     const done = [];
     const errors = [];
@@ -2833,11 +2846,13 @@ async function commitPicked(tab, push) {
 
 async function pushRepo(tab, top) {
   if (tab.commitBusy) return;
+  const targets = defaultTargets(tab, [top]);
+  if (targets.length && (!(await askDefault(targets)) || tab.commitBusy)) return;
   tab.commitBusy = top;
   tab.commitError = '';
   renderCommitBox(tab);
   try {
-    const done = await api('POST', `/api/sessions/${tabSession(tab)}/push`, { repo: top });
+    const done = await api('POST', `/api/sessions/${tabSession(tab)}/push`, { repo: top, allow_default: true });
     toast(t('commit.pushed', { target: done.target }));
   } catch (e) {
     tab.commitError = e.message;

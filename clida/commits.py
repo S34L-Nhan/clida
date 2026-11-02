@@ -4,7 +4,8 @@ A commit takes the picked files as they are on disk now, staged or not; whatever
 stays staged and out of it (git commit --only). A push goes to the branch of the same name on the
 remote git would push to, never to an upstream of another name (a branch made from
 origin/development tracks that). A branch without an upstream gets that one. Never by force: a
-remote that has commits the branch lacks rejects the push, with git's message.
+remote that has commits the branch lacks rejects the push, with git's message. Into the remote's
+default branch only when asked for: the window asks first.
 """
 
 import os
@@ -14,6 +15,11 @@ from .settings import tr
 
 COMMIT_TIMEOUT = 120  # the repository's hooks (lint-staged, tests) take their time
 PUSH_TIMEOUT = 120
+USUAL_DEFAULTS = ("main", "master")  # a remote's default branch when git does not know it
+
+
+class DefaultBranchError(GitError):
+    pass
 
 
 def _env() -> dict:
@@ -65,25 +71,37 @@ def _push_remote(top: str, branch: str):
     return "origin" if "origin" in remotes else remotes[0] if len(remotes) == 1 else None
 
 
+def _is_default(top: str, remote: str, branch: str) -> bool:
+    """Whether branch is the remote's default branch, the one everybody works from: what
+    <remote>/HEAD points to (set by git clone), else main or master (a remote added by hand)."""
+    head = (git(top, "symbolic-ref", "-q", f"refs/remotes/{remote}/HEAD", ok=(0, 1)) or "").strip()
+    prefix = f"refs/remotes/{remote}/"
+    return head[len(prefix):] == branch if head.startswith(prefix) else branch in USUAL_DEFAULTS
+
+
 def push_state(top: str):
-    """Where a push of the checked-out branch goes: {"target": "origin/x", "new": not on the remote
-    yet, "unpushed": commits the remote lacks (None: unknown)}; None without a branch or a remote."""
+    """Where a push of the checked-out branch goes: {"target": "origin/x", "default": the remote's
+    default branch, "new": not on the remote yet, "unpushed": commits the remote lacks (None:
+    unknown)}; None without a branch or a remote."""
     branch = _branch(top)
     remote = branch and _push_remote(top, branch)
     if not remote:
         return None
+    out = {"target": f"{remote}/{branch}", "default": _is_default(top, remote, branch), "new": False, "unpushed": None}
     ref = f"refs/remotes/{remote}/{branch}"
     there = git(top, "rev-parse", "--verify", "-q", ref, ok=(0, 1))
     if there is None:
-        return {"target": f"{remote}/{branch}", "new": False, "unpushed": None}
+        return out
     # A branch new on the remote brings what no remote branch has yet.
     against = [f"^{ref}"] if there.strip() else ["--not", "--remotes"]
     count = (git(top, "rev-list", "--count", f"refs/heads/{branch}", *against) or "").strip()
-    return {"target": f"{remote}/{branch}", "new": not there.strip(), "unpushed": int(count) if count.isdigit() else None}
+    return {**out, "new": not there.strip(), "unpushed": int(count) if count.isdigit() else None}
 
 
-def push(top: str) -> dict:
-    """Push the checked-out branch to the branch of the same name on its push remote: {"target"}."""
+def push(top: str, to_default: bool = False) -> dict:
+    """Push the checked-out branch to the branch of the same name on its push remote: {"target"}.
+    Into the remote's default branch only with to_default: the window asks first, and what it
+    showed may be older than the branch checked out now."""
     branch = _branch(top)
     if not branch:
         raise GitError(tr("Kein Branch ausgecheckt (detached HEAD); bitte selbst pushen.",
@@ -92,6 +110,11 @@ def push(top: str) -> dict:
     if not remote:
         raise GitError(tr("Das Repository hat kein Remote, auf das sich pushen ließe.",
                           "The repository has no remote to push to."))
+    if not to_default and _is_default(top, remote, branch):
+        raise DefaultBranchError(tr(f"Nicht gepusht: {remote}/{branch} ist der Standard-Branch des Remotes. "
+                                    "„Pushen“ fragt vorher nach.",
+                                    f"Not pushed: {remote}/{branch} is the remote's default branch. "
+                                    "\"Push\" asks first."))
     tracks = (git(top, "config", "--get", f"branch.{branch}.merge", ok=(0, 1)) or "").strip()
     run(top, "push", *([] if tracks else ["--set-upstream"]), remote, f"refs/heads/{branch}:refs/heads/{branch}",
         timeout=PUSH_TIMEOUT, env=_env())

@@ -606,7 +606,8 @@ class Desk:
 
     def commit(self, session_id: str, body: dict) -> dict:
         """Commit the picked files with the message, in each repository they are in, and push
-        there too if asked: {"repos": [{"repo", "top", "commit", "pushed", "error", "push_error"}]}."""
+        there too if asked: {"repos": [{"repo", "top", "commit", "pushed", "error", "push_error"}]}.
+        Into a remote's default branch only for the repositories in allow_default, as confirmed."""
         message = str(body.get("message") or "").strip()
         if not message:
             raise HttpError(400, tr("Bitte eine Commit-Nachricht eingeben.", "Please enter a commit message."))
@@ -644,8 +645,9 @@ class Desk:
                     done["error"] = str(e)
                     continue
                 if body.get("push") is True:
+                    allowed = body.get("allow_default")
                     try:
-                        done["pushed"] = commits.push(top)["target"]
+                        done["pushed"] = commits.push(top, isinstance(allowed, list) and top in allowed)["target"]
                     except GitError as e:
                         done["push_error"] = str(e)
         finally:
@@ -653,7 +655,8 @@ class Desk:
         return {"repos": results}
 
     def push(self, session_id: str, body: dict) -> dict:
-        """Push the branch of one of the repositories the chat changed files in: {"target"}."""
+        """Push the branch of one of the repositories the chat changed files in: {"target"}; into the
+        remote's default branch only with allow_default, as confirmed."""
         top = body.get("repo")
         files = self.changes(session_id, brief=True)["files"]
         states = self.repo_changes.states([f["path"] for f in files], None)
@@ -663,7 +666,7 @@ class Desk:
         if not self._committing.acquire(blocking=False):
             raise HttpError(409, tr("Es läuft schon ein Commit oder Push.", "A commit or push is running already."))
         try:
-            return commits.push(top)
+            return commits.push(top, body.get("allow_default") is True)
         except GitError as e:
             raise HttpError(409, str(e))
         finally:
