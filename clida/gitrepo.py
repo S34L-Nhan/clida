@@ -45,11 +45,31 @@ class GitError(Exception):
     pass
 
 
+STOP_GRACE = 5  # seconds git gets after SIGTERM to delete its lock files, before SIGKILL
+
+
+def _stop(proc):
+    """Stop git and what it started, its whole process group: first with SIGTERM, on which git
+    deletes its lock files. SIGKILL alone would leave index.lock behind (a commit holds it while
+    its hooks run), and every later git write in the repository would fail on it, Claude's too.
+    SIGKILL follows only while git still runs, or a hook that ignores SIGTERM holds its output."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.communicate(timeout=STOP_GRACE if sig == signal.SIGTERM else None)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def run(cwd, *args, timeout=30, ok=(0,), env=None):
     """git's output, for a command that changes something; raises with git's own message when it
-    fails. On a timeout the whole process group goes: git worktree add runs a checkout of its own,
-    and a commit its hooks, which would go on otherwise. In a session of its own, git has no
-    terminal to ask for a login or a passphrase on."""
+    fails. On a timeout the whole process group goes (see _stop): git worktree add runs a checkout
+    of its own, and a commit its hooks, which would go on otherwise. In a session of its own, git
+    has no terminal to ask for a login or a passphrase on."""
     try:
         proc = subprocess.Popen(["git", "-C", cwd, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 start_new_session=True, env=env)
@@ -58,11 +78,7 @@ def run(cwd, *args, timeout=30, ok=(0,), env=None):
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.communicate()
+        _stop(proc)
         raise GitError(tr(f"git {args[0]} brauchte länger als {timeout} s und wurde abgebrochen.",
                           f"git {args[0]} took longer than {timeout} s and was stopped."))
     if proc.returncode not in ok:
