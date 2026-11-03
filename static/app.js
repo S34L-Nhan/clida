@@ -3435,7 +3435,7 @@ function connect(tab) {
     tab.term.reset();
     tab.overlay.hidden = true;
     fitTab(tab);
-    send(tab, { t: 'r', c: tab.term.cols, r: tab.term.rows });
+    redrawCli(tab);
   };
   ws.onmessage = (ev) => {
     if (typeof ev.data !== 'string') {
@@ -3488,6 +3488,21 @@ function disposeTerminal(tab) {
 
 function send(tab, msg) {
   if (tab.ws && tab.ws.readyState === WebSocket.OPEN) tab.ws.send(JSON.stringify(msg));
+}
+
+// What a tab gets on (re)connecting is the last output the server kept (see SCROLLBACK_BYTES), cut
+// anywhere, and the CLI goes on drawing only what changes: what it drew before the cut (the status
+// line, the prompt box) would stay blank, or show only the characters that changed since. A size
+// change makes it draw everything again, and the size it has already sends it no signal: so one
+// row less, then the real size. Sent after the replay, and the CLI's new drawing comes after it.
+const REDRAW_NUDGE_MS = 120;  // apart, so the CLI sees two sizes and not only the last one
+
+function redrawCli(tab) {
+  const { cols, rows } = tab.term;
+  if (rows > 1) send(tab, { t: 'r', c: cols, r: rows - 1 });
+  setTimeout(() => {
+    if (tab.term) send(tab, { t: 'r', c: tab.term.cols, r: tab.term.rows });
+  }, rows > 1 ? REDRAW_NUDGE_MS : 0);
 }
 
 function fitTab(tab) {
