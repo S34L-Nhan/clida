@@ -20,7 +20,7 @@ clida
 ### Chats
 
 - **Sidebar**: all past chats from `~/.claude/projects`, grouped by date, with search.
-- **Search**: finds chats by title, folder and first or last prompt. Tick *Erweiterte Suche* (advanced search) to search what was said in them too: every word of three or more letters must occur in one of your prompts or Claude's answers, in any case and also inside longer words. The first advanced search builds an index of all chats once, which can take a moment with a long history. With very many matches, the 300 chats with the newest ones are shown. A found chat shows the passage; a click opens it at that message, with the words marked.
+- **Search**: finds chats by title, folder and first or last prompt. Tick *Erweiterte Suche* (advanced search) to search what was said in them too: one of your prompts or Claude's answers must hold the search text exactly as typed, spaces and all ("wms failed" does not find "failed: wms down"), from three characters on, in any case and also inside longer words. The first advanced search builds an index of all chats once, which can take a moment with a long history. With very many matches, the 300 chats with the newest ones are shown. A found chat shows the passage; a click opens it at that message, with the search text marked.
 - **Rename**: double-click a title, use the pencil icon, or click the heading.
 - **Folders**: create one with the folder icon, then drag chats in and out. Right-click a folder to rename or delete it.
 - **Archive and delete**: right-click a chat. *Archivieren* (archive) hides it but keeps it; *Löschen* (delete) removes it from disk for good, after asking.

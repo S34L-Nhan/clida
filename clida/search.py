@@ -18,8 +18,7 @@ from .transcripts import _META_PREFIXES, _SKIP_PREFIXES, PROJECTS, SESSION_ID, _
 
 DB_FILE = STATE_DIR / "search.db"
 SCHEMA_VERSION = 2
-MIN_TERM = 3  # trigrams: shorter words cannot be looked up
-MAX_TERMS = 8
+MIN_QUERY = 3  # trigrams: shorter text cannot be looked up
 MAX_CHATS = 300
 SNIPPET_BEFORE, SNIPPET_AFTER = 50, 110  # characters around the first match
 _MESSAGE = (b'"type":"user"', b'"type":"assistant"')
@@ -238,14 +237,15 @@ class Search:
         """session id -> its best matching message: uid, role, ts, snippet, and how many match;
         None while the index is being built (the first time, that reads every transcript).
 
-        Every word of three or more characters must occur in the message, in any case; shorter
-        ones cannot be looked up. paths: only these transcripts (the ones the history shows).
-        The chats with the newest matches first, at most MAX_CHATS of them.
+        The message must hold query as it is, spaces and all, in any case, like the sidebar's
+        title search: "wms failed" does not find "failed: wms down". Shorter than three
+        characters, it cannot be looked up. paths: only these transcripts (the ones the history
+        shows). The chats with the newest matches first, at most MAX_CHATS of them.
         """
-        query = str(query or "").replace("\0", "")  # SQLite ends a string there
-        terms = [w for w in dict.fromkeys(query.lower().split()) if len(w) >= MIN_TERM][:MAX_TERMS]
-        if not terms:
+        query = str(query or "").replace("\0", "").strip().lower()  # SQLite ends a string at \0
+        if len(query) < MIN_QUERY:
             return {}
+        terms = [query]
         if not self._built.is_set() and not self._built_before():
             self._build()  # all transcripts, the first time ever: in the background
             return None
@@ -290,6 +290,7 @@ class Search:
         self._refresh()
         db = self._db
         if self._fts:
+            # One phrase: with trigrams, its letters in a row, so the text as it is.
             where, args, order = "msgs MATCH ?", [" AND ".join('"' + w.replace('"', '""') + '"' for w in terms)], "rank"
         else:
             like = [w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") for w in terms]

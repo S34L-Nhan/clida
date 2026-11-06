@@ -534,7 +534,7 @@ function searchMessages() {
   clearTimeout(searchTimer);
   if (!searchAdvanced) return;
   const query = searchQuery();
-  if (!query.split(/\s+/).some((word) => word.length >= SEARCH_MIN)) return;  // the server looks words up from three on
+  if (query.length < SEARCH_MIN) return;  // the server looks text up from three characters on
   searchTimer = setTimeout(async () => {
     const seq = ++state.hitsSeq;
     // The one before goes: the browser keeps only six requests to the server open at a time.
@@ -575,7 +575,7 @@ function hitLine(hit) {
   return line;
 }
 
-// The found message: in view, briefly lit, the search words marked (CSS Custom Highlight API).
+// The found message: in view, briefly lit, the search text marked (CSS Custom Highlight API).
 function revealMessage(tab) {
   const uid = tab.jumpTo;
   if (!uid) return;
@@ -596,12 +596,13 @@ function revealMessage(tab) {
   void node.offsetWidth;  // restart the animation
   node.classList.add('found');
   node.addEventListener('animationend', () => node.classList.remove('found'), { once: true });
-  markWords(node, tab.jumpQuery || '');
+  markQuery(node, tab.jumpQuery || '');
 }
 
-function markWords(node, query) {
+// The whole search text, as the server matched it, not each word on its own.
+function markQuery(node, query) {
   if (!window.Highlight || !CSS.highlights) return;
-  const words = query.split(/\s+/).filter((w) => w.length >= SEARCH_MIN);
+  const words = query.length >= SEARCH_MIN ? [query] : [];
   const ranges = [];
   const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
   for (let text = walker.nextNode(); text; text = walker.nextNode()) {
@@ -1085,7 +1086,7 @@ function saveTabs() {
 
 // Open a chat: in the tab of its running terminal, else in the tab that shows it already, else in a
 // new history tab. A terminal tab's id is the terminal's, a history tab's id is the chat's.
-// at: a message to show, in the history (a search hit); query: the words to mark in it.
+// at: a message to show, in the history (a search hit); query: the text to mark in it.
 function openSession(sid, { at = null, query = '' } = {}) {
   const term = state.bySession.get(sid);
   const shown = term ? findTab(term.id) : state.tabs.find((tab) => tabSession(tab) === sid);
